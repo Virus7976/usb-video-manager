@@ -99,6 +99,15 @@ npm run dist                        # electron-builder → dist\USB SD Auto-Acti
   (CSS variables in `styles.css`). Verifying the look is part of "done". Group settings/modal
   content with the shared `.pref-section` / `.pref-sec-t` / `.pref-body` primitives (uppercase
   header + card body + steady spacing) instead of ad-hoc inline margins.
+- **Restrained, purposeful motion.** This is a precise pro tool, not a toy — motion must
+  *explain state*, never perform. Keep transitions/entrances ~120–200ms with standard easing
+  (`ease`); **no** bounce/overshoot, springy scales, breathing "glow" pulses, decorative
+  sweeps/shimmers, or sparkle/confetti celebrations. Continuous *indicators* of active work
+  are fine (spinners, the analyze scanline) because they convey ongoing state. The motion
+  vocabulary lives in the "Coherent motion" block + the per-component rules in `styles.css`,
+  and the bottom-of-file `@media (prefers-reduced-motion: reduce)` block must keep covering any
+  new looping/decorative animation (functional spinners are intentionally left turning).
+  Don't reintroduce a "delight" flourish — taste/restraint was a deliberate pass (see CHANGELOG).
 - **Offline AI only.** Frames go to local Ollama and nowhere else. Never add a cloud call.
 - **Faces are SUGGESTIONS, not auto-tags.** Recognised faces are saved to a person's profile
   as *unconfirmed* and surfaced for the user to confirm (or the explicit 🤖 Auto-faces toggle).

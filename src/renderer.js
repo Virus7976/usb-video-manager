@@ -2395,7 +2395,7 @@ function flashNamed(i) {
   card.classList.remove('just-named');
   void card.offsetWidth;                 // restart the animation if it's still mid-flash
   card.classList.add('just-named');
-  setTimeout(() => card.classList.remove('just-named'), 1100);
+  setTimeout(() => card.classList.remove('just-named'), 500);
 }
 function renderAiHazard() {
   const el = $('aiHazard'); if (!el) return;

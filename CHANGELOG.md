@@ -69,6 +69,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 - **Richer searchable metadata.** Filed clips now also get a **Places** tag branch (browse by
   location in digiKam/Lightroom, like People), and tag names containing slashes no longer
   split into bogus tag-tree levels.
+- **Calmer, tool-grade motion** — pared back the celebratory/"delight" animation so the app
+  reads as a precise utility. Removed the decorative progress-bar shimmer, the breathing
+  "glow" pulses, and the sparkle-burst on the done screen; shortened entrances to ~120–200ms
+  with standard easing (no bounce/overshoot). The task theater's frame no longer breathes and
+  the thumbnail conveyor no longer flings — the moving scanline stays as the "actively
+  scanning" signal. Motion now explains state instead of performing. Added full
+  `prefers-reduced-motion` support (decorative loops off; functional spinners keep turning).
 
 ### Fixed
 - **Filing can no longer drop or overwrite a clip.** Two different clips that happen to share

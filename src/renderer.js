@@ -198,7 +198,7 @@ let cfg = null;
   // straight to its progress so you can see where it's at — and continue.
   const cs = await window.api.copyStatus();
   if (cs && cs.active) { updateCopyChip(cs); goToCopyProgress(cs); }
-  maybeAutoTour();   // first-ever launch → walk the user through the app
+  maybeFirstRunSetup();   // first-ever launch → setup wizard, else the spotlight tour
 })();
 
 // All available removable drives, listed on the home screen so you can see & pick
@@ -4668,6 +4668,7 @@ const MENUS = {
     { label: 'Open intake folder', action: () => window.api.openFolder(state.intakeFolder) }
   ],
   help: [
+    { label: 'Setup wizard…', action: () => showSetupWizard() },
     { label: 'How this app works…', action: () => showWorkflowGuide() },
     { label: 'Take a tour', action: () => startTour() },
     { label: 'Command palette… (Ctrl+K)', action: () => showCommandPalette() },
@@ -5005,6 +5006,7 @@ function getCommands() {
     { label: 'Select: Invert', hint: 'select', run: invertClipSelection },
     { label: 'Feedback: Report…', hint: 'help', run: () => showFeedbackReportDialog(lastFeedbackSection) },
     { label: 'Feedback: Export…', hint: 'help', run: showFeedbackExportDialog },
+    { label: 'Help: Setup wizard…', hint: 'help', run: () => showSetupWizard() },
     { label: 'Help: How this app works…', hint: 'help', run: () => showWorkflowGuide() },
     { label: 'Help: Take a tour', hint: 'help', run: () => startTour() },
     { label: 'Help: Diagnostics…', hint: 'help', run: showDiagnostics },
@@ -5204,7 +5206,8 @@ function showSettingsHub() {
     { ic: '⌨️', title: 'Keyboard shortcuts', sub: 'Rebind keys, DaVinci-style', go: showKeyboardShortcuts },
     { ic: '🗂️', title: 'Organizing fields', sub: 'The metadata fields used to file footage', go: showOrganizeFields },
     { ic: '📂', title: 'Filing rules', sub: 'Where footage goes by subject / descriptor', go: () => showRoutingRules() },
-    { ic: '🫥', title: 'People & faces', sub: 'Manage recognized people', go: showPeopleManager }
+    { ic: '🫥', title: 'People & faces', sub: 'Manage recognized people', go: showPeopleManager },
+    { ic: '🧭', title: 'Setup wizard', sub: 'Re-run guided onboarding (folders, AI, faces)', go: () => showSetupWizard() }
   ];
   ov.innerHTML = `<div class="modal-card settings-hub">
     <div class="pd-hd"><span class="pd-hd-icon keep-emoji">⚙️</span><div class="pd-hd-tx"><h3>Settings</h3><p class="muted small pd-hd-sub">Everything you can tune, in one place.</p></div></div>
@@ -5216,6 +5219,234 @@ function showSettingsHub() {
   ov.querySelector('.sh-close').addEventListener('click', close);
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
   ov.querySelectorAll('.sh-card').forEach((b) => b.addEventListener('click', () => { close(); cards[Number(b.dataset.i)].go(); }));
+}
+
+// ---------------------------------------------------------------------------
+// First-run setup wizard (issue #1) — guided onboarding that points the core
+// folders (intake, Projects root, optional NAS) and gets the optional local AI +
+// face recognition ready, so a brand-new user never has to discover Edit →
+// Settings cold. Auto-shows ONCE on a genuine first launch (main reports
+// cfg.firstRun); re-runnable anytime from Help → "Setup wizard…", the Settings
+// hub, and the command palette. Nothing is persisted until Finish — except model
+// downloads, which are global to Ollama anyway.
+// ---------------------------------------------------------------------------
+function showSetupWizard(opts = {}) {
+  const firstRun = !!opts.firstRun;
+  const wz = {
+    intake: (cfg && cfg.intakeFolder) || state.intakeFolder || '',
+    projects: (cfg && cfg.projectsRoot) || '',
+    nas: { enabled: !!(nasBackup && nasBackup.enabled), path: (nasBackup && nasBackup.path) || '' },
+    ai: { enabled: !!(aiCfg && aiCfg.enabled), endpoint: (aiCfg && aiCfg.endpoint) || 'http://localhost:11434', model: (aiCfg && aiCfg.model) || '', touched: false },
+    face: null   // {ok,error} once checked
+  };
+  const STEPS = ['welcome', 'intake', 'projects', 'nas', 'ai', 'faces', 'done'];
+  let step = 0;
+
+  const ov = document.createElement('div'); ov.className = 'modal-overlay';
+  const card = document.createElement('div'); card.className = 'modal-card setup-wizard';
+  ov.appendChild(card); document.body.appendChild(ov);
+
+  function close() { document.removeEventListener('keydown', onKey, true); ov.remove(); }
+  function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); if (firstRun) skip(); else close(); } }
+  document.addEventListener('keydown', onKey, true);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov && !firstRun) close(); });
+
+  function markOnboarded() {
+    try { uiPrefs.onboarded = true; window.api.setUiPref('onboarded', true); } catch { /* ignore */ }
+    try { localStorage.setItem('tourSeen', '1'); } catch { /* ignore */ }
+  }
+  function skip() {
+    markOnboarded(); close();
+    if (firstRun) showToast('You can finish setup anytime: Help → “Setup wizard…”.', 4200);
+  }
+  async function finish() {
+    const wantTour = !!(card.querySelector('#wizTour') && card.querySelector('#wizTour').checked);
+    const btn = card.querySelector('.wiz-finish'); if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      if (wz.intake) { await window.api.setIntake(wz.intake); state.intakeFolder = wz.intake; if (cfg) cfg.intakeFolder = wz.intake; const el = $('intakePathLine'); if (el) el.textContent = wz.intake; }
+      if (wz.projects) { await window.api.setProjectsRoot(wz.projects); if (cfg) cfg.projectsRoot = wz.projects; }
+      // Merge the FULL current aiCfg so a re-run never wipes other AI settings
+      // (frames, prompt, memories, faces…) — prefs:set rebuilds ai from the patch.
+      nasBackup = { enabled: !!wz.nas.enabled, path: wz.nas.path || '' };
+      aiCfg = { ...aiCfg, enabled: !!wz.ai.enabled, endpoint: wz.ai.endpoint, model: wz.ai.model };
+      await window.api.setPrefs({ nasBackup, ai: aiCfg });
+      if (cfg) { cfg.nasBackup = { ...nasBackup }; cfg.ai = { ...(cfg.ai || {}), enabled: aiCfg.enabled, endpoint: aiCfg.endpoint, model: aiCfg.model }; }
+      applyAiPref();
+      markOnboarded();
+    } catch { showToast('Could not save some settings — adjust them in Settings.', 4200); }
+    close();
+    showToast('Setup complete ✓', 2400);
+    if (wantTour) setTimeout(() => startTour(), 350);
+  }
+
+  function bodyFor(k) {
+    if (k === 'welcome') {
+      return `<p class="wiz-lead">This quick setup points the app at your folders and gets the optional local AI + face recognition ready. It takes about a minute — you can change anything later in <b>Settings</b>.</p>
+        <ul class="wiz-list keep-emoji">
+          <li>📥 <b>Intake folder</b> — where renamed clips are copied</li>
+          <li>🗂️ <b>Projects root</b> — where footage gets filed</li>
+          <li>💾 <b>NAS backup</b> — an optional second copy</li>
+          <li>✨ <b>Local AI</b> &amp; 🫥 <b>face recognition</b> — optional, 100% offline</li>
+        </ul>`;
+    }
+    if (k === 'intake') {
+      return `<label class="pref-label">Intake folder</label>
+        <p class="muted small wiz-hint">Renamed clips are verified-copied here before the card is cleared. A sensible default under your Videos folder is already set.</p>
+        <div class="pref-row"><input class="pref-path" id="wizIntake" readonly value="${escapeHtml(wz.intake)}"><button type="button" class="btn wiz-pick" data-tgt="intake">Change…</button></div>`;
+    }
+    if (k === 'projects') {
+      return `<label class="pref-label">Projects root</label>
+        <p class="muted small wiz-hint">The tree your footage gets organised into on the <b>Organize &amp; back up</b> screen.</p>
+        <div class="pref-row"><input class="pref-path" id="wizProjects" readonly value="${escapeHtml(wz.projects)}"><button type="button" class="btn wiz-pick" data-tgt="projects">Change…</button></div>`;
+    }
+    if (k === 'nas') {
+      return `<label class="wiz-check"><input type="checkbox" id="wizNasOn" ${wz.nas.enabled ? 'checked' : ''}> Keep a second copy on a NAS or external drive</label>
+        <p class="muted small wiz-hint">During copy, each clip is mirrored (with verify) to this location too. Optional.</p>
+        <div class="pref-row${wz.nas.enabled ? '' : ' wiz-hide'}" id="wizNasRow"><input class="pref-path" id="wizNas" readonly value="${escapeHtml(wz.nas.path)}" placeholder="Choose a backup folder…"><button type="button" class="btn wiz-pick" data-tgt="nas">Change…</button></div>`;
+    }
+    if (k === 'ai') {
+      return `<div class="ai-status" id="wizAiStatus">Checking for Ollama…</div>
+        <div id="wizAiPick" class="wiz-hide">
+          <label class="pref-label" style="margin-top:12px">Vision model</label>
+          <select id="wizAiModel" class="wiz-select"></select>
+          <label class="wiz-check" style="margin-top:11px"><input type="checkbox" id="wizAiOn"> Enable AI naming &amp; descriptions</label>
+        </div>
+        <div class="wiz-foot-row"><button type="button" class="btn" id="wizAiBrowse">Browse &amp; download models…</button><button type="button" class="btn subtle" id="wizAiRecheck">Re-check</button></div>
+        <p class="muted small wiz-hint">100% offline — frames are sent only to your local Ollama, never the cloud. Skip this if you don’t want AI; you can enable it later.</p>`;
+    }
+    if (k === 'faces') {
+      return `<div class="ai-status" id="wizFaceStatus">Checking face recognition…</div>
+        <p class="muted small wiz-hint">Face recognition is bundled and runs fully offline — we just verify the engine and models load. Recognised faces are always <b>suggestions you confirm</b>, never auto-applied.</p>
+        <button type="button" class="btn subtle" id="wizFaceRetry">Re-check</button>`;
+    }
+    // done
+    return `<p class="wiz-lead">You’re all set 🎉 Here’s what we configured:</p>
+      <ul class="wiz-summary keep-emoji">
+        <li>📥 Intake — <code>${escapeHtml(wz.intake || '(default)')}</code></li>
+        <li>🗂️ Projects — <code>${escapeHtml(wz.projects || '(default)')}</code></li>
+        <li>💾 NAS backup — ${wz.nas.enabled ? `<code>${escapeHtml(wz.nas.path || '(set a path in Settings)')}</code>` : 'off'}</li>
+        <li>✨ AI — ${wz.ai.enabled ? `on · <code>${escapeHtml(wz.ai.model || '(no model)')}</code>` : 'off'}</li>
+        <li>🫥 Faces — ${wz.face ? (wz.face.ok ? 'ready ✓' : 'needs attention') : 'not checked'}</li>
+      </ul>
+      <label class="wiz-check" style="margin-top:14px"><input type="checkbox" id="wizTour" checked> Show me a quick tour of the app</label>`;
+  }
+
+  function footerFor(k) {
+    const isLast = k === 'done';
+    const back = step > 0 ? `<button type="button" class="btn wiz-back">Back</button>` : '';
+    const lead = (firstRun && !isLast) ? `<button type="button" class="btn subtle wiz-skip">Skip setup</button>`
+      : (!firstRun ? `<button type="button" class="btn subtle wiz-skip">Cancel</button>` : '');
+    const nextLabel = k === 'welcome' ? 'Get started' : (isLast ? 'Finish' : 'Next');
+    const nextCls = isLast ? 'btn primary wiz-finish' : 'btn primary wiz-next';
+    return `${lead ? `<span class="wiz-lead-slot">${lead}</span>` : ''}${back}<button type="button" class="${nextCls}">${nextLabel}</button>`;
+  }
+
+  const HEADERS = {
+    welcome: ['👋', 'Welcome to USB / SD Auto-Action', 'Let’s get you set up.'],
+    intake: ['📥', 'Intake folder', 'Where renamed clips land.'],
+    projects: ['🗂️', 'Projects root', 'Where footage gets filed.'],
+    nas: ['💾', 'NAS backup', 'An optional second copy.'],
+    ai: ['✨', 'Local AI (optional)', 'Offline naming via Ollama.'],
+    faces: ['🫥', 'Face recognition', 'Bundled, offline, opt-in.'],
+    done: ['✅', 'All set', 'Review and finish.']
+  };
+
+  async function refreshAiStep() {
+    const statusEl = card.querySelector('#wizAiStatus'); if (!statusEl) return;
+    const pick = card.querySelector('#wizAiPick');
+    statusEl.textContent = 'Checking for Ollama…'; statusEl.className = 'ai-status';
+    let s = null; try { s = await window.api.getAiStatus(); } catch { s = null; }
+    if (!card.querySelector('#wizAiStatus')) return;   // step changed while awaiting
+    if (!s || !s.running) {
+      statusEl.innerHTML = '⚠ Ollama isn’t running. Install it from <code>ollama.com</code> (it runs in the background), then click <b>Re-check</b>. AI is optional — you can skip and set it up later.';
+      statusEl.classList.add('warn'); if (pick) pick.classList.add('wiz-hide'); return;
+    }
+    const vis = (s.vision && s.vision.length) ? s.vision : [];
+    if (!vis.length) {
+      statusEl.innerHTML = '✓ Ollama is running, but no <b>vision</b> model is installed yet. Click “Browse &amp; download models” and grab one (e.g. <code>qwen2.5vl</code>), then Re-check.';
+      statusEl.classList.add('ok'); if (pick) pick.classList.add('wiz-hide'); return;
+    }
+    statusEl.innerHTML = `✓ Ollama running · ${vis.length} vision model${vis.length !== 1 ? 's' : ''} ready`;
+    statusEl.classList.add('ok');
+    if (pick) pick.classList.remove('wiz-hide');
+    const sel = card.querySelector('#wizAiModel');
+    if (sel) {
+      sel.innerHTML = vis.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+      if (!wz.ai.model || !vis.includes(wz.ai.model)) wz.ai.model = vis[0];
+      sel.value = wz.ai.model;
+      sel.onchange = () => { wz.ai.model = sel.value; };
+    }
+    const on = card.querySelector('#wizAiOn');
+    if (on) {
+      // A vision model is available → default to enabled, unless the user already
+      // made a choice on this step (so toggling, leaving, returning is sticky).
+      if (!wz.ai.touched) wz.ai.enabled = true;
+      on.checked = wz.ai.enabled;
+      on.onchange = () => { wz.ai.enabled = on.checked; wz.ai.touched = true; };
+    }
+  }
+  async function refreshFaceStep() {
+    const el = card.querySelector('#wizFaceStatus'); if (!el) return;
+    el.textContent = 'Checking face recognition…'; el.className = 'ai-status';
+    let r = null; try { r = await ensureFaceModels(); } catch (e) { r = { ok: false, error: (e && e.message) || 'unknown' }; }
+    wz.face = r;
+    const cur = card.querySelector('#wizFaceStatus'); if (!cur) return;
+    if (r && r.ok) { cur.innerHTML = '✓ Face recognition is ready — the engine and bundled models loaded.'; cur.classList.add('ok'); }
+    else { cur.innerHTML = `⚠ Face recognition couldn’t start: ${escapeHtml((r && r.error) || 'unknown')} You can still use everything else; try again later.`; cur.classList.add('warn'); }
+  }
+
+  function wire() {
+    const k = STEPS[step];
+    const back = card.querySelector('.wiz-back'); if (back) back.onclick = () => { step = Math.max(0, step - 1); render(); };
+    const next = card.querySelector('.wiz-next'); if (next) next.onclick = () => { step = Math.min(STEPS.length - 1, step + 1); render(); };
+    const fin = card.querySelector('.wiz-finish'); if (fin) fin.onclick = finish;
+    const sk = card.querySelector('.wiz-skip'); if (sk) sk.onclick = () => { if (firstRun) skip(); else close(); };
+    if (k === 'intake' || k === 'projects' || k === 'nas') {
+      card.querySelectorAll('.wiz-pick').forEach((b) => { b.onclick = async () => {
+        const tgt = b.dataset.tgt;
+        const cur = tgt === 'intake' ? wz.intake : tgt === 'projects' ? wz.projects : wz.nas.path;
+        const titles = { intake: 'Choose your intake folder', projects: 'Choose your Projects root', nas: 'Choose a NAS / backup folder' };
+        const picked = await window.api.pickFolder({ title: titles[tgt], defaultPath: cur || undefined });
+        if (!picked) return;
+        if (tgt === 'intake') { wz.intake = picked; const el = card.querySelector('#wizIntake'); if (el) el.value = picked; }
+        else if (tgt === 'projects') { wz.projects = picked; const el = card.querySelector('#wizProjects'); if (el) el.value = picked; }
+        else { wz.nas.path = picked; const el = card.querySelector('#wizNas'); if (el) el.value = picked; }
+      }; });
+      const nasOn = card.querySelector('#wizNasOn');
+      if (nasOn) nasOn.onchange = () => { wz.nas.enabled = nasOn.checked; const row = card.querySelector('#wizNasRow'); if (row) row.classList.toggle('wiz-hide', !nasOn.checked); };
+    }
+    if (k === 'ai') {
+      const browse = card.querySelector('#wizAiBrowse'); if (browse) browse.onclick = () => { try { showModelStore(); } catch { /* ignore */ } };
+      const recheck = card.querySelector('#wizAiRecheck'); if (recheck) recheck.onclick = () => refreshAiStep();
+      refreshAiStep();
+    }
+    if (k === 'faces') {
+      const retry = card.querySelector('#wizFaceRetry'); if (retry) retry.onclick = () => refreshFaceStep();
+      refreshFaceStep();
+    }
+  }
+
+  function render() {
+    const k = STEPS[step];
+    const [icon, title, sub] = HEADERS[k];
+    card.innerHTML = `<div class="pd-hd"><span class="pd-hd-icon keep-emoji">${icon}</span><div class="pd-hd-tx"><h3>${escapeHtml(title)}</h3><p class="muted small pd-hd-sub">${escapeHtml(sub)}</p></div></div>
+      <div class="wiz-dots">${STEPS.map((_s, i) => `<span class="wiz-dot${i === step ? ' on' : ''}${i < step ? ' done' : ''}"></span>`).join('')}</div>
+      <div class="wiz-body">${bodyFor(k)}</div>
+      <div class="modal-actions wiz-foot">${footerFor(k)}</div>`;
+    wire();
+  }
+  render();
+}
+
+// On a genuine first launch (no saved config), walk the user through setup.
+// Otherwise fall back to the existing one-time spotlight tour. The wizard's final
+// step offers the tour, so the two never stack.
+function maybeFirstRunSetup() {
+  try {
+    const onboarded = !!(uiPrefs && uiPrefs.onboarded);
+    if (cfg && cfg.firstRun && !onboarded) { setTimeout(() => showSetupWizard({ firstRun: true }), 700); return; }
+  } catch { /* ignore */ }
+  maybeAutoTour();
 }
 
 // ---------------------------------------------------------------------------

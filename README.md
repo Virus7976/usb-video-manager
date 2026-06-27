@@ -170,7 +170,6 @@ See the **[Issues](../../issues)** tab for the live list. Highlights:
 
 - **Vision models can hallucinate** a subject (describe something that isn't there). The **🎬 Sort with me** flow and manual rename are the human-in-the-loop cure; improving the prompt/model is ongoing.
 - **Photos in the Step-1 Rename grid** ("Path B") — photos are fully supported on the **Organize** screen today (tick *Include photos*); pulling them into the rename grid alongside videos is planned.
-- **First-run setup wizard** — guided onboarding for intake/Projects/NAS/model/faces.
 - **Source-abstraction refactor** — unify the GoPro/SD and phone import paths.
 
 ---

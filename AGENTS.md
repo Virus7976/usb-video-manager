@@ -135,6 +135,17 @@ npm run dist                        # electron-builder → dist\USB SD Auto-Acti
   images. "Path B" (photos in the Step-1 rename grid) is NOT done yet.
 - **Metadata embed** (`finalize:run`, `buildEmbedTags`): rich XMP/IPTC via ExifTool incl.
   `lr:HierarchicalSubject` (digiKam/Lightroom), `iptcExt:PersonInImage`, Resolve CSV.
+- **First-run setup wizard** (`showSetupWizard` in `src/renderer.js`; issue #1): a multi-step
+  `.modal-overlay`/`.setup-wizard` flow (welcome → intake → projects → nas → ai → faces → done)
+  that points the core folders + optional AI/faces, then offers the tour. Nothing persists until
+  Finish (it merges the FULL current `aiCfg` into `prefs:set` so a re-run never wipes other AI
+  settings). **First-run detection:** `main.js` captures `USER_CONFIG_EXISTED` at module load
+  (before any `saveConfig`) and reports `firstRun` via `config:get`; the renderer's
+  `maybeFirstRunSetup()` shows the wizard once when `cfg.firstRun && !uiPrefs.onboarded`, else
+  falls back to `maybeAutoTour()`. Completion sets the `onboarded` ui-pref (via `ui:set`, which
+  preserves arbitrary keys) **and** localStorage `tourSeen`. Re-run from Help → "Setup wizard…",
+  the Settings hub, or the command palette. Reuses `showModelStore()` (AI step) and
+  `ensureFaceModels()` (faces step).
 
 ## 6. Known limitations / traps
 

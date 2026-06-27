@@ -592,21 +592,32 @@ function csvCell(v) {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-// Move a file, falling back to copy+unlink across volumes (rename gives EXDEV
-// when the organized destination is on a different drive than the source).
+// Move a file, falling back to copy+verify+unlink across volumes (rename gives
+// EXDEV when the organized destination is on a different drive than the source).
+// The cross-device path is "verify before destroy": copy to a temp sibling, confirm
+// it matches the source, atomically rename it into place, and only THEN delete the
+// original. A failure or crash at any step leaves the SOURCE intact (a clip is never
+// lost) and never leaves a half-written file at the real destination path.
 async function moveFileCrossDevice(src, dest) {
-  try { await fsp.rename(src, dest); }
-  catch (err) {
-    if (err.code === 'EXDEV') { await fsp.copyFile(src, dest); await fsp.unlink(src); }
-    else throw err;
+  try { await fsp.rename(src, dest); return; }
+  catch (err) { if (err.code !== 'EXDEV') throw err; }
+  const tmp = `${dest}.part-${process.pid}-${Date.now()}`;
+  try {
+    await fsp.copyFile(src, tmp);
+    if (!(await fingerprintsMatch(src, tmp))) throw new Error('verify failed after cross-device copy');
+    await fsp.rename(tmp, dest);
+  } catch (err) {
+    try { await fsp.unlink(tmp); } catch { /* best-effort cleanup of the temp copy */ }
+    throw err;
   }
+  await fsp.unlink(src);
 }
 
 // Move a file into targetDir, idempotently:
-//  - already at the target path        → 'in-place' (skip)
-//  - a same-size file already there     → 'skip-dup' (treat as identical, skip)
-//  - a different file already there     → version the name " (n)" and move
-//  - nothing there                      → move
+//  - already at the target path           → 'in-place' (skip)
+//  - a byte-identical file already there   → 'skip-dup' (true duplicate / re-run, skip)
+//  - a DIFFERENT file sharing the name     → version the name " (n)" and move
+//  - nothing there                         → move
 async function organizeMove(srcPath, targetDir, fileName) {
   await ensureDir(targetDir);
   const targetPath = path.join(targetDir, fileName);
@@ -616,9 +627,12 @@ async function organizeMove(srcPath, targetDir, fileName) {
   let existing = null;
   try { existing = await fsp.stat(targetPath); } catch { existing = null; }
   if (existing) {
-    let srcSize = -1;
-    try { srcSize = (await fsp.stat(srcPath)).size; } catch { /* ignore */ }
-    if (existing.size === srcSize) return { action: 'skip-dup', path: targetPath };
+    // Something already occupies the target name. Skip ONLY if it is byte-for-byte
+    // identical (size + sampled SHA-256) — an idempotent re-run or a genuine
+    // duplicate. If it's a different clip that merely shares this name, version ours
+    // so a distinct clip is never overwritten or silently left unfiled (the old
+    // size-only test could collide two different files of equal size).
+    if (await fingerprintsMatch(srcPath, targetPath)) return { action: 'skip-dup', path: targetPath };
     const versioned = await uniqueDest(targetDir, fileName);
     await moveFileCrossDevice(srcPath, versioned);
     return { action: 'moved', path: versioned };
@@ -724,17 +738,34 @@ ipcMain.handle('projects:move', async (_e, payload) => {
   const results = [];
   for (const mv of moves) {
     try {
+      // Embed metadata BEFORE the move (write to the source path, which still exists).
+      // A failure here must never block filing the clip — but we DO record it so the
+      // caller can tell the user "filed, but metadata didn't write" instead of it
+      // silently vanishing.
+      let embedded = null; let embedError = null;
       if (et && mv.meta && typeof mv.meta === 'object') {
         try {
           const tags = buildEmbedTags(mv.meta, String(mv.rel || '').split('/').filter(Boolean), mv.name || path.basename(mv.from));
-          // eslint-disable-next-line no-await-in-loop
-          if (Object.keys(tags).length) await et.write(mv.from, tags, ['-overwrite_original']);
-        } catch { /* embed failure shouldn't block filing */ }
+          if (Object.keys(tags).length) {
+            // eslint-disable-next-line no-await-in-loop
+            await et.write(mv.from, tags, ['-overwrite_original']);
+            embedded = true;
+          }
+        } catch (e) { embedded = false; embedError = (e && e.message) ? String(e.message).slice(0, 200) : 'embed failed'; }
       }
       // eslint-disable-next-line no-await-in-loop
       const r = await organizeMove(mv.from, mv.toDir, mv.name || path.basename(mv.from));
-      results.push({ from: mv.from, ok: true, action: r.action, path: r.path });
-    } catch (err) { results.push({ from: mv.from, ok: false, error: err.message || String(err) }); }
+      const out = { from: mv.from, ok: true, action: r.action, path: r.path };
+      if (embedded != null) out.embedded = embedded;
+      if (embedError) out.embedError = embedError;
+      results.push(out);
+    } catch (err) {
+      // Keep the documented result shape {from, ok, action, path} uniform even on
+      // failure so callers can read it without branching. The clip stays where it
+      // was (organizeMove/moveFileCrossDevice never delete a source they didn't
+      // safely land) — nothing is lost; this run just gets retried.
+      results.push({ from: mv.from, ok: false, action: 'error', path: null, error: err.message || String(err) });
+    }
   }
   // Record this run's actual relocations so it can be UNDONE (move files back).
   const undoable = results.filter((x) => x.ok && x.action === 'moved' && x.path && x.from).map((x) => ({ from: x.from, to: x.path }));
@@ -1088,6 +1119,15 @@ ipcMain.handle('routes:save', (_e, list) => {
   saveConfig();
   return config.ai.routes;
 });
+// Words that name a TYPE of shot (a "descriptor"), never a project on their own.
+// Used to robustly reclassify a rule the model mislabelled as a route when it has
+// no destination — a bare descriptor word can't be a project folder.
+const DESCRIPTOR_WORDS = new Set([
+  'vlog', 'vlogs', 'pov', 'timelapse', 'time-lapse', 'hyperlapse', 'b-roll', 'broll',
+  'interview', 'montage', 'cutaway', 'slow-mo', 'slowmo', 'slow-motion', 'talking-head',
+  'establishing', 'drone', 'aerial', 'gimbal', 'handheld'
+]);
+
 // Parse a plain-English filing instruction into a structured route, using the
 // real folder tree so the destination path matches what already exists.
 ipcMain.handle('ai:parseRoute', async (_e, payload) => {
@@ -1123,15 +1163,15 @@ ipcMain.handle('ai:parseRules', async (_e, payload) => {
 
 Two KINDS of rule:
 - "route": a real PROJECT/subject keyword that files into a specific folder. Fields: match (keywords), dest (use an EXISTING folder path from the list when the user names one, else a sensible new path under the right category), byDay (does each day get its own dated subfolder?).
-- "descriptor": a word that describes the TYPE of shot, NOT a project — e.g. vlog, timelapse, b-roll, interview, montage, slow-mo, cutaway. Clips tagged with it must NOT all be lumped into one folder. Fields: match (keywords), joinProject.
+- "descriptor": a word that describes the TYPE of shot, NOT a project — e.g. vlog, timelapse, b-roll, interview, montage, slow-mo, cutaway. Clips tagged with it must NOT all be lumped into one folder.
 
 Decide KIND from meaning: if the user gives a word a destination folder → route. If a word is "not its own project", "separate projects", "belongs with", "goes in the project it was taken in", or is "just a label" → descriptor.
 
-Decide joinProject for a descriptor (READ CAREFULLY — they are opposites):
-- joinProject = FALSE when the clips are SEPARATE projects / "not just one project" / each is its own thing → each shooting DAY becomes its own separate project folder. (e.g. "vlogs are separate projects" → false)
-- joinProject = TRUE when the clip BELONGS WITH other footage / "goes in the project it was taken in" / is a side-shot of a bigger shoot → file it into that day's project. (e.g. "timelapse goes in the project it was taken in" → true)
+For a DESCRIPTOR, choose "placement" — how its clips are organised. Pick EXACTLY ONE of these two strings (each option spells out exactly what it means, so you cannot get it backwards):
+- "separate"  → the clips are their OWN separate projects; EACH shooting DAY becomes its own project folder. Choose this for: "X is its own project", "X are separate projects", "each X is separate", "not part of another shoot". Example: "vlogs are separate projects" → "separate".
+- "with_day"  → the clip BELONGS WITH the main footage shot that day; file it INTO that day's existing project. Choose this for: "X goes in the project it was taken in", "X belongs with the shoot", "X is a side-shot of the bigger project". Example: "timelapse goes with the day's project" → "with_day".
 
-One instruction may describe SEVERAL behaviors — output one rule per distinct behavior.
+One instruction may describe SEVERAL behaviors — output one rule per distinct behavior (e.g. "vlogs are separate but timelapses go with the shoot" = two descriptor rules).
 
 Existing folders:
 ${folderList}
@@ -1139,22 +1179,51 @@ ${folderList}
 Instruction (derive everything from THIS — do not copy the placeholders):
 "${text}"
 
-Reply STRICT JSON only: {"rules":[{"kind":"<route|descriptor>","name":"<short label>","match":["<word>"],"dest":"<folder path — route only>","byDay":<true|false>,"joinProject":<true|false — descriptor only>}]}`;
+Reply STRICT JSON only: {"rules":[{"kind":"<route|descriptor>","name":"<short label>","match":["<word>"],"dest":"<folder path — route only>","byDay":<true|false>,"placement":"<separate|with_day — descriptor only>"}]}`;
   try {
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.1, timeout: 120000 }));
     const arr = Array.isArray(o.rules) ? o.rules : (Array.isArray(o) ? o : []);
-    const rules = arr.map((r) => {
-      const kind = (String(r.kind || '').toLowerCase() === 'descriptor') ? 'descriptor' : 'route';
-      const match = (Array.isArray(r.match) ? r.match : String(r.match || '').split(',')).map((s) => String(s).trim().toLowerCase()).filter(Boolean);
-      const out = { kind, name: String(r.name || (match[0] || '')).slice(0, 80), match };
-      if (kind === 'descriptor') { out.joinProject = !!(r.joinProject || r.joinproject || r.join); out.byDay = true; }
-      else { out.dest = String(r.dest || r.path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/\/\d{4}-\d{2}-\d{2}$/, '').trim(); out.byDay = !!(r.byDay || r.byday); }
-      return out;
-    }).filter((r) => r.match.length && (r.kind === 'descriptor' || r.dest));
+    const rules = arr.map((r) => normalizeParsedRule(r)).filter((r) => r && r.match.length && (r.kind === 'descriptor' || r.dest));
     if (!rules.length) return { ok: false, error: 'Could not understand that — try naming the subject(s) and where they go.' };
     return { ok: true, rules };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
 });
+
+// Normalise one raw parsed rule into the canonical rule shape the rest of the app
+// uses ({kind,name,match[],dest?,byDay,joinProject?}). The model now returns an
+// explicit "placement" enum for descriptors (separate | with_day) which CANNOT be
+// flipped like the old joinProject boolean — we still emit joinProject (derived)
+// for backward compatibility with stored rules + the renderer.
+function descriptorPlacement(r) {
+  // Prefer the explicit enum; fall back to a legacy joinProject boolean if that's
+  // all the model returned. Default 'separate' (each day its own project).
+  const p = String((r && (r.placement || r.Placement)) || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (p === 'withday' || p === 'joinday' || p === 'join' || p === 'withproject') return 'with_day';
+  if (p === 'separate' || p === 'separateprojects' || p === 'own' || p === 'perday') return 'separate';
+  if (r && (r.joinProject != null || r.joinproject != null || r.join != null)) return (r.joinProject || r.joinproject || r.join) ? 'with_day' : 'separate';
+  return 'separate';
+}
+function normalizeParsedRule(r) {
+  if (!r || typeof r !== 'object') return null;
+  let kind = (String(r.kind || '').toLowerCase() === 'descriptor') ? 'descriptor' : 'route';
+  const match = (Array.isArray(r.match) ? r.match : String(r.match || '').split(',')).map((s) => String(s).trim().toLowerCase()).filter(Boolean);
+  const dest = String(r.dest || r.path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/\/\d{4}-\d{2}-\d{2}$/, '').trim();
+  // Route-vs-descriptor safety net: a rule the model called a "route" but that has
+  // NO destination and whose keywords are ALL known shot-type words can't really be
+  // a project folder — treat it as a descriptor so it isn't lumped into one folder.
+  if (kind === 'route' && !dest && match.length && match.every((m) => DESCRIPTOR_WORDS.has(m))) kind = 'descriptor';
+  const out = { kind, name: String(r.name || (match[0] || '')).slice(0, 80), match };
+  if (kind === 'descriptor') {
+    const placement = descriptorPlacement(r);
+    out.placement = placement;                 // explicit, unambiguous
+    out.joinProject = placement === 'with_day'; // derived — kept for back-compat
+    out.byDay = true;
+  } else {
+    out.dest = dest;
+    out.byDay = !!(r.byDay || r.byday);
+  }
+  return out;
+}
 
 // --- Per-clip analysis memory: cache each clip's vision observation keyed by its
 // file fingerprint, so re-analyzing reuses prior work instead of looking again.
@@ -4064,6 +4133,10 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
 function buildEmbedTags(meta, parts, fallbackName) {
   const m = meta || {};
   const deh = (s) => String(s || '').replace(/[-_]+/g, ' ').trim();   // de-hyphen for human text
+  // Hierarchy-safe component: like deh, but also strips the path separators that
+  // structure a hierarchical tag ('|' '/' '\') so a value like "AC/DC" or
+  // "Smith | Jones" can't accidentally split into bogus extra tree levels.
+  const hc = (s) => deh(s).replace(/[|/\\]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
   const fieldIds = (config.organizeFields || []).map((f) => f.id);
   const fieldVals = fieldIds.map((id) => m[id]).filter(Boolean);
   const date = String(m.date || '');
@@ -4080,7 +4153,7 @@ function buildEmbedTags(meta, parts, fallbackName) {
   // Hierarchical tags (digiKam/Lightroom): the category→project→subject chain and
   // the actual folder path the clip files into.
   const hier = [];
-  const chain = uniqStrings([m.category, m.project, m.subject]);
+  const chain = uniqStrings([m.category, m.project, m.subject].map(hc));
   if (chain.length > 1) hier.push(chain.join('|'));
   if (Array.isArray(parts) && parts.length > 1) hier.push(parts.join('|'));
   // A readable caption for full-text search — and append the AI's visual
@@ -4115,8 +4188,8 @@ function buildEmbedTags(meta, parts, fallbackName) {
       tags['XMP-mwg-rs:RegionPersonDisplayName'] = ppl;
       tags['XMP-mwg-rs:RegionName'] = ppl;
       tags['XMP-mwg-rs:RegionType'] = ppl.map(() => 'Face');
-      const peopleHier = ppl.map((n) => `People|${deh(n)}`);
-      const peopleTags = ppl.map((n) => `People/${deh(n)}`);
+      const peopleHier = ppl.map((n) => `People|${hc(n)}`);
+      const peopleTags = ppl.map((n) => `People/${hc(n)}`);
       tags['XMP-lr:HierarchicalSubject'] = uniqStrings([...(tags['XMP-lr:HierarchicalSubject'] || hier), ...peopleHier]);
       tags['XMP-digiKam:TagsList'] = peopleTags;
     }
@@ -4131,6 +4204,14 @@ function buildEmbedTags(meta, parts, fallbackName) {
       tags['XMP-lr:HierarchicalSubject'] = uniqStrings([...(tags['XMP-lr:HierarchicalSubject'] || hier), ...ut]);
       tags['XMP-dc:Subject'] = uniqStrings([...(tags['XMP-dc:Subject'] || keywords), ...ut]);
     }
+  }
+  // Location → a "Places/<location>" branch (digiKam Places tree + Lightroom),
+  // mirroring how people get a People branch, so footage is browsable by place and
+  // not just findable as a flat keyword.
+  const place = hc(m.location);
+  if (place) {
+    tags['XMP-lr:HierarchicalSubject'] = uniqStrings([...(tags['XMP-lr:HierarchicalSubject'] || hier), `Places|${place}`]);
+    tags['XMP-digiKam:TagsList'] = uniqStrings([...(tags['XMP-digiKam:TagsList'] || []), `Places/${place}`]);
   }
   return tags;
 }

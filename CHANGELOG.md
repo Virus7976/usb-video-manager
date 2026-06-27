@@ -44,6 +44,22 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 - Renamed the misleading "Compress, Rename & Delete" home action to "Import, Rename & Clear card".
 - Suggest-with-AI asks far fewer questions (auto-accepts confident folder matches); typed
   categories autocomplete and register in one step.
+- **Teaching a filing rule is now reliable.** When you describe a rule in plain English
+  ("vlogs are their own thing, but timelapses go with the shoot"), the app no longer relies
+  on an easily-flipped yes/no flag — it reads an explicit choice ("each day = its own
+  project" vs "joins the day's project"), so it stops occasionally doing the exact opposite
+  of what you said. It also splits a multi-part instruction into separate rules and won't
+  treat a bare shot-type word (vlog, b-roll…) as a project folder.
+- **Richer searchable metadata.** Filed clips now also get a **Places** tag branch (browse by
+  location in digiKam/Lightroom, like People), and tag names containing slashes no longer
+  split into bogus tag-tree levels.
+
+### Fixed
+- **Filing can no longer drop or overwrite a clip.** Two different clips that happen to share
+  a name and file size are now told apart by content (sampled checksum) and the second is
+  safely versioned instead of being skipped. Cross-drive moves copy → **verify** → then
+  delete the original, so a crash or error mid-move always leaves the source intact and never
+  leaves a half-written file at the destination.
 
 ### Known issues
 - Vision models can hallucinate a subject → mis-placement (use 🎬 Sort with me / manual rename).

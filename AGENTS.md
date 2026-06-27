@@ -143,7 +143,30 @@ npm run dist                        # electron-builder → dist\USB SD Auto-Acti
   stills); the rest of the chain (poster/contact-sheet/ExifTool XMP into JPG) already handled
   images. "Path B" (photos in the Step-1 rename grid) is NOT done yet.
 - **Metadata embed** (`finalize:run`, `buildEmbedTags`): rich XMP/IPTC via ExifTool incl.
-  `lr:HierarchicalSubject` (digiKam/Lightroom), `iptcExt:PersonInImage`, Resolve CSV.
+  `lr:HierarchicalSubject` (digiKam/Lightroom), `iptcExt:PersonInImage`, Resolve CSV. People
+  AND location both get a hierarchical branch (`People|<name>`, `Places|<location>`) + a
+  `digiKam:TagsList` entry so they're browsable, not just flat keywords. Hierarchy components
+  are run through `hc()` (de-hyphen + strip `| / \`) so a value like `AC/DC` can't split into
+  bogus tree levels.
+- **Plain-English filing rules** (`ai:parseRules` → `normalizeParsedRule`/`descriptorPlacement`
+  in main.js; `ai:parseRoute` for the single-rule editor). A rule is a `route` (keyword →
+  `dest` folder, optional `byDay`) or a `descriptor` (a shot TYPE — vlog/timelapse/b-roll —
+  that must NOT be lumped into one folder). **Descriptors carry a `placement` enum, not a bare
+  boolean:** `'separate'` (each shooting day = its own project) vs `'with_day'` (file into the
+  day's existing project). The old `joinProject` boolean was polarity-prone (the prompt itself
+  warned "they are opposites"); the model now returns the self-describing enum and we **derive
+  `joinProject` from it** (`with_day` → true) for back-compat with stored rules + the renderer
+  — so don't reintroduce a boolean as the model's job. `DESCRIPTOR_WORDS` is a safety net: a
+  rule the model labelled `route` but with NO dest whose keywords are all known shot-types is
+  reclassified to `descriptor`. Rule shape stays `{kind,name,match[],dest?,byDay,joinProject?}`
+  plus the additive `placement` on descriptors.
+- **Safe filing** (`organizeMove` + `moveFileCrossDevice`, both main.js): "verify before
+  destroy". Name collisions are resolved by CONTENT (`fingerprintsMatch` = size + sampled
+  SHA-256), not size alone — a different clip sharing a name+size is versioned `" (n)"`, never
+  skipped/overwritten. Cross-device moves (EXDEV) copy to a `.part-…` temp, verify the
+  fingerprint, atomically rename into place, then unlink the source — a crash anywhere leaves
+  the source intact and no half-file at the destination. `projects:move` returns the uniform
+  shape `{from, ok, action, path}` (+ optional `embedded`/`embedError`) even on failure.
 
 ## 6. Known limitations / traps
 

@@ -16,6 +16,29 @@ notes can also go in the repo **Wiki**.
 
 ---
 
+## 0. ⭐ ALWAYS CHECK THE ISSUES TAB FIRST ⭐
+
+**Before doing ANY work on this repo — every session, every time — read the open
+[Issues](../../issues).** They are the live to-do list, roadmap, and bug tracker.
+
+- Start by listing open issues and deciding what (if anything) to pick up or update.
+- When you finish a change, check whether it **closes or affects** an open issue and update
+  it (comment, label, or `Closes #N` in the commit/PR).
+- File a new issue for anything you discover and don't fix immediately. Don't let work
+  live only in your head — it belongs in the Issues tab so the next person/AI sees it.
+- The **Actions** tab runs `issue-check.yml` daily to print all open issues into the log —
+  a server-side backstop so the list is always surfaced even when no one's looking.
+
+This is rule **zero** for a reason. A change that ignores the issue tracker is incomplete.
+
+How to list them from the CLI:
+```
+curl -s -H "Authorization: token <YOUR_TOKEN>" \
+  "https://gitea-gour.jakegour.com/api/v1/repos/liamgour/USB-Video-Downloader/issues?state=open&type=issues"
+```
+
+---
+
 ## 1. What the app is
 
 An offline Windows (Electron) desktop app for videographers. Pipeline:

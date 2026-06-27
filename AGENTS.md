@@ -31,6 +31,19 @@ notes can also go in the repo **Wiki**.
 
 This is rule **zero** for a reason. A change that ignores the issue tracker is incomplete.
 
+### Issue-first workflow (how every request is handled)
+
+When the user brings ANY request or bug (one or many):
+1. **File each as its own Gitea issue FIRST**, before coding.
+2. Write a **big, self-contained description** so the next person/AI can act on it cold,
+   without re-reading any chat (don't make others waste tokens). Include: Summary, Context/why,
+   Where it shows up (screen + files/functions), Acceptance criteria checklist, Notes/constraints,
+   and a label.
+3. **Fix one by one.** Each: implement -> `node --check` -> `npm run dist` -> verify the asar
+   marker -> close the issue (`Closes #N`) with a comment summarizing the fix + commit.
+
+Full details and a copy-paste issue template are in the Wiki -> **Issue Workflow** page.
+
 How to list them from the CLI:
 ```
 curl -s -H "Authorization: token <YOUR_TOKEN>" \

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Preview</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+      font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; }
+    #v { width: 100%; height: 100%; object-fit: contain; background: #000; display: none; }
+    #name {
+      position: fixed; left: 0; right: 0; bottom: 0; padding: 7px 12px;
+      color: #fff; font-size: 12px; text-align: center;
+      background: linear-gradient(transparent, rgba(0, 0, 0, .72));
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+    }
+    #empty { position: absolute; inset: 0; display: grid; place-items: center;
+      color: #8a8a8a; font-size: 13px; padding: 16px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div id="empty">Focus a clip on the Rename screen to preview it here.</div>
+  <video id="v" controls autoplay loop></video>
+  <div id="name"></div>
+  <script>
+    const v = document.getElementById('v');
+    const nm = document.getElementById('name');
+    const em = document.getElementById('empty');
+    let curSpeed = 1;
+    window.api.onPreviewUpdate((d) => {
+      if (!d || !d.url) return;
+      em.style.display = 'none';
+      v.style.display = 'block';
+      v.muted = d.muted !== false;       // honor the app's mute/“play audio on hover” setting
+      curSpeed = d.speed || 1;
+      if (v.src !== d.url) { v.src = d.url; v.play().catch(() => {}); }
+      v.playbackRate = curSpeed;
+      nm.textContent = d.name || '';
+    });
+    // playbackRate resets when a new source loads — reapply it.
+    v.addEventListener('loadedmetadata', () => { v.playbackRate = curSpeed; });
+    v.addEventListener('play', () => { v.playbackRate = curSpeed; });
+  </script>
+</body>
+</html>

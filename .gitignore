@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build output (installers are published as Gitea Releases, not committed)
+dist/
+out/
+*.exe
+*.blockmap
+*.nsis.7z
+
+# Local/editor
+.shim/
+.claude/
+.DS_Store
+Thumbs.db
+*.log
+
+# Runtime user data should never be committed (it lives in %APPDATA%)
+# but ignore any stray local copies just in case
+config.local.json
+*.local.json

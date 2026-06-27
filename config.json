@@ -1,0 +1,12 @@
+{
+  "ffmpegPath": "ffmpeg",
+  "ffprobePath": "ffprobe",
+  "hotkey": "CommandOrControl+Alt+U",
+  "launchAtLogin": true,
+  "autoPoll": false,
+  "pollIntervalMs": 2500,
+  "videoExtensions": [
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".wmv", ".flv", ".webm",
+    ".mpg", ".mpeg", ".mts", ".m2ts", ".ts", ".3gp", ".mxf", ".insv", ".braw"
+  ]
+}

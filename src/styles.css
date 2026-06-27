@@ -2460,3 +2460,25 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
   font-size: 12px; color: var(--text-2); max-height: 160px; overflow-y: auto;
 }
 .fin-result li { padding: 2px 0; }
+
+/* First-run setup wizard (issue #1) */
+.modal-card.setup-wizard { width: min(560px, 94vw); max-width: none; text-align: left; padding: 26px 28px; }
+.setup-wizard .wiz-dots { display: flex; gap: 6px; margin: 6px 0 18px; }
+.setup-wizard .wiz-dot { flex: 1; height: 4px; border-radius: 2px; background: var(--text-3); opacity: .3; transition: opacity .15s, background .15s; }
+.setup-wizard .wiz-dot.done { opacity: .55; background: var(--accent); }
+.setup-wizard .wiz-dot.on { opacity: 1; background: var(--accent); }
+.setup-wizard .wiz-body { min-height: 196px; }
+.setup-wizard .wiz-lead { margin: 0 0 14px; font-size: 14px; color: var(--text-2); line-height: 1.55; }
+.setup-wizard .wiz-hint { margin: 6px 0 12px; line-height: 1.5; }
+.setup-wizard .wiz-list, .setup-wizard .wiz-summary { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.setup-wizard .wiz-list li, .setup-wizard .wiz-summary li { font-size: 13.5px; color: var(--text-2); line-height: 1.4; }
+.setup-wizard .wiz-summary code { font-size: 12px; background: var(--control); padding: 1px 6px; border-radius: 5px; word-break: break-all; }
+.setup-wizard .wiz-check { display: flex; align-items: center; gap: 9px; font-size: 13.5px; color: var(--text); cursor: pointer; user-select: none; }
+.setup-wizard .wiz-select { width: 100%; background: var(--control); color: var(--text); border: 1px solid var(--stroke); border-bottom-color: var(--input-underline); border-radius: var(--radius-sm); padding: 7px 10px; font-size: 13px; }
+.setup-wizard .wiz-foot-row { display: flex; gap: 8px; margin: 12px 0 0; flex-wrap: wrap; }
+.setup-wizard .wiz-hide { display: none !important; }
+.setup-wizard .pref-row { margin-top: 4px; }
+.setup-wizard .wiz-foot .wiz-lead-slot { margin-right: auto; }
+.setup-wizard .ai-status { font-size: 13px; line-height: 1.5; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--control); }
+.setup-wizard .ai-status.ok { color: var(--text); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.setup-wizard .ai-status.warn { color: var(--text); background: color-mix(in srgb, var(--warn, #d98324) 16%, transparent); }

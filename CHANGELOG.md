@@ -26,6 +26,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 - **Data safety** — checksum verify before delete, NAS mirror with verify/resume, undo/move-log
   for filing, duplicate/already-imported detection, a session activity log.
 - **Phone (MTP) import** — list/scan/copy photos & videos off a phone with no drive letter.
+- **First-run setup wizard** (issue #1) — a guided onboarding modal that opens automatically on
+  the first launch: point your **intake folder**, **Projects root**, and an optional **NAS
+  backup**, pick/enable a local **AI vision model** (with a Browse-&-download shortcut), and run
+  a **face-recognition check** — then hands off to the tour. Re-runnable anytime from
+  **Help → Setup wizard…**, the Settings hub, and the command palette.
 
 ### Changed
 - **Organize, rebuilt as one screen.** The destination map is now a single **Plan** view that
@@ -71,7 +76,6 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 ### Known issues
 - Vision models can hallucinate a subject → mis-placement (use 🎬 Sort with me / manual rename).
 - Photos not yet in the Step-1 Rename grid ("Path B") — Organize screen only.
-- No first-run setup wizard yet.
 
 ## [0.1.0]
 - Initial internal build: USB/SD auto-detect, rename grid, copy-to-intake, delete-from-card,

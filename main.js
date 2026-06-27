@@ -178,6 +178,13 @@ let config_readFailed = false;
 
 const config = loadConfig();
 
+// Whether a saved user config existed BEFORE this launch — the signal the
+// renderer uses to auto-show the first-run setup wizard (issue #1) exactly once,
+// on a genuine first run. Captured now, before any saveConfig() writes the file,
+// so it stays true for this whole session. Defaults to "not first run" on error
+// so we never pop the wizard spuriously over an existing install.
+const USER_CONFIG_EXISTED = (() => { try { return fs.existsSync(USER_CONFIG); } catch { return true; } })();
+
 // --- Organizing fields (custom taxonomy) normalisation + migration ----------
 const RESERVED_FIELD_IDS = new Set(['date', 'subject', 'description', 'version', 'ts', 'keywords', 'selected', 'name', 'size', 'ext', 'sourcepath', 'derived', 'matchtype', 'meta', 'posterurl', 'datelocked', 'origbase']);
 function normalizeOrganizeFields(list) {
@@ -2021,7 +2028,9 @@ ipcMain.handle('config:get', () => ({
     memories: Array.isArray(config.ai && config.ai.memories) ? config.ai.memories : []
   },
   nasBackup: { enabled: !!(config.nasBackup && config.nasBackup.enabled), path: (config.nasBackup && config.nasBackup.path) || '' },
-  detectionEnabled: DETECTION_ENABLED
+  detectionEnabled: DETECTION_ENABLED,
+  // First-ever launch (no saved config yet) → renderer shows the setup wizard once.
+  firstRun: !USER_CONFIG_EXISTED
 }));
 
 // Persist rename-screen prefs that aren't simple booleans (zoom width, hotkeys,

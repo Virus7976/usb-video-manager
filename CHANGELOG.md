@@ -33,6 +33,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 - Renamed the misleading "Compress, Rename & Delete" home action to "Import, Rename & Clear card".
 - Suggest-with-AI asks far fewer questions (auto-accepts confident folder matches); typed
   categories autocomplete and register in one step.
+- **Calmer, tool-grade motion** — pared back the celebratory/"delight" animation so the app
+  reads as a precise utility. Removed the decorative progress-bar shimmer, the breathing
+  "glow" pulses, and the sparkle-burst on the done screen; shortened entrances to ~120–200ms
+  with standard easing (no bounce/overshoot). The task theater's frame no longer breathes and
+  the thumbnail conveyor no longer flings — the moving scanline stays as the "actively
+  scanning" signal. Motion now explains state instead of performing. Added full
+  `prefers-reduced-motion` support (decorative loops off; functional spinners keep turning).
 
 ### Known issues
 - Vision models can hallucinate a subject → mis-placement (use 🎬 Sort with me / manual rename).

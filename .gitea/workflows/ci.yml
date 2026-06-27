@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Syntax-check the JS
+        run: |
+          node --check main.js
+          node --check preload.js
+          node --check src/renderer.js
+          node --check watch-drives.js
+      - name: Install dependencies
+        run: npm ci || npm install
+      - name: Validate config.json is valid JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('config.json','utf8')); console.log('config.json OK')"

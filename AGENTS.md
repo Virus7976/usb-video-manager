@@ -123,9 +123,18 @@ npm run dist                        # electron-builder → dist\USB SD Auto-Acti
 - **🎬 Sort with me** (`openSortChat` inside `showDestinationMap`): guided one-subject-at-a-time
   chat — autoplaying clip + "where does this go?" (folder chips + typed autocomplete) → files the
   group AND saves a filing rule (`routesCache`/`saveRoutes`) so future footage auto-routes.
-- **Destination map** (`showDestinationMap`): the live Projects-tree placement, rules
-  (`routesCache`), day-folder scheme discovery (`projectBase`/`stripDayLeaf`/`dayFolderMap`),
-  the "Suggest with AI" wizard (`openSuggestWizard`).
+- **Destination map / Organize** (`showDestinationMap`): the live placement engine
+  (`recomputeAuto` → `placement{}`/`autoKeys`, rules in `routesCache`, day-folder scheme
+  discovery `projectBase`/`stripDayLeaf`/`dayFolderMap`). TWO views via `render()` dispatcher:
+  the default **Plan** (`renderPlan` — clips grouped by destination project into confidence-
+  ranked cards, "Needs you" vs "Confident" sections, inline change/remember) and **Folders**
+  (`renderTreeView` — the colour-coded tree). Every placement records WHY + confidence in
+  `placeMeta` (`setMeta`): rule / ledger / subject / unsorted / ai / manual. Accuracy comes from
+  the **project ledger**: `ledgerMatch` (renderer, deterministic pre-file of obvious repeats)
+  and `suggestLedgerMemory` (main.js — feeds the ledger's people/subjects/summaries into the
+  `ai:suggestProjects` prompt; that handler also returns per-placement `why`/`confidence`).
+  `runAiPlan` is the shared AI pass (primary "Suggest with AI", Refine, and the on-open
+  `maybeAutoPlan`); `openSuggestWizard`/`openSortChat` remain as secondary tools under "More".
 - **Compression** (`compress:run`/`compress:list`/`compress:defaults` in main): ffmpeg presets
   (balanced H.264 1080p / smaller H.265 / hq); `config.compressMode` = `'external'` (Tdarr
   watch-folder, default) | `'app'` (local ffmpeg). Live progress via `-progress pipe:1`.

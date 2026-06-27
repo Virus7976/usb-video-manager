@@ -5590,6 +5590,13 @@ async function showDestinationMap(rawClips, opts = {}) {
   const autoKeys = new Set(clips.map((c) => c.key));   // keys still auto-placed (recomputed from rules + tree)
   const selected = new Set();   // multi-select for bulk move / drag
   const recentlyPlaced = new Set();   // keys to flash after an AI placement
+  // WHY each clip landed where it did + how sure we are — powers the plan view's
+  // confidence badges and the "Needs you" vs "Confident" split. {reason, conf 0-1, kind}.
+  const placeMeta = {};
+  const setMeta = (key, reason, conf, kind) => { placeMeta[key] = { reason, conf, kind }; };
+  let ledgerCache = [];   // remembered projects (window.api.ledgerGet) for deterministic pre-match + quick chips
+  let viewMode = 'plan';  // 'plan' (grouped destinations) | 'tree' (folder tree)
+  let autoPlanned = false; // guard so the on-open AI pass runs at most once
 
   // Which top-level category a path belongs to (drives the colour coding + legend).
   const categoryKey = (rel) => { const s = String(rel || '').toLowerCase(); if (/client/.test(s)) return 'client'; if (/personal/.test(s)) return 'personal'; if (/social/.test(s)) return 'social'; return 'other'; };
@@ -5659,6 +5666,29 @@ async function showDestinationMap(rawClips, opts = {}) {
     if (route) return route.byDay && c.date ? `${route.dest}/${c.date}` : route.dest;
     const subj = slug(c.subject || c.location || '');
     return subj ? `${pickCategory(c)}/${subj}` : `${pickCategory(c)}/_Unsorted`;
+  }
+  // Deterministic ledger match: score a clip against every remembered project by
+  // shared people / subject / location tokens (people weighted highest, mirroring
+  // main's ledger:matchDates + suggestLedgerMemory). Returns the best project when
+  // it clears a confidence bar, so obvious repeats file themselves — no AI needed.
+  const _tok = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter((w) => w.length > 2);
+  function ledgerMatch(c) {
+    if (!ledgerCache.length) return null;
+    const subjT = new Set([...(_tok(c.subject)), ...(_tok(c.description))]);
+    const locT = new Set(_tok(c.location));
+    const pplT = new Set((dmapPeople(c) || []).map((p) => String(p).toLowerCase().trim()).filter(Boolean));
+    let best = null;
+    for (const m of ledgerCache) {
+      if (!m || !m.rel) continue;
+      let s = 0;
+      (m.people || []).forEach((p) => { if (pplT.has(String(p).toLowerCase().trim())) s += 3; });
+      (m.subjects || []).forEach((x) => { if (_tok(x).some((t) => subjT.has(t))) s += 2; });
+      (m.keywords || []).forEach((k) => { if (_tok(k).some((t) => subjT.has(t) || locT.has(t))) s += 1.5; });
+      (m.locations || []).forEach((l) => { if (_tok(l).some((t) => locT.has(t))) s += 2; });
+      if (!best || s > best.s) best = { rel: m.rel, name: m.name || m.rel.split('/').pop(), s };
+    }
+    // Need a real signal: a person match, or two content matches. One stray token isn't enough.
+    return best && best.s >= 3 ? best : null;
   }
   // Immediate child folder names that already exist under a relative path.
   function childrenOf(parentRel) {
@@ -5746,7 +5776,8 @@ async function showDestinationMap(rawClips, opts = {}) {
       const { route } = info.get(c.key); if (route && route.byDay && c.date) byDayClips.push({ dest: route.dest, c });
     }
     const dmap = dayFolderMap(byDayClips);
-    // PASS 1 — routes + plain subjects (descriptors deferred).
+    // PASS 1 — routes + plain subjects (descriptors deferred). Each placement also
+    // records WHY + a confidence, which drives the plan view's badges/sections.
     for (const c of autoClips) {
       // Same-shoot suggestion accepted at analyze time → file into a continued day
       // folder under the project (no date wrapper, no double-nesting).
@@ -5754,17 +5785,30 @@ async function showDestinationMap(rawClips, opts = {}) {
         const base = projectBase(c._ledgerRel);
         if (c.date) { const dn = dmap[`${base}__${c.date}`] || c.date; const inner = dayInner[base] || ''; placement[c.key] = `${base}/${dn}${inner ? `/${inner}` : ''}`; }
         else placement[c.key] = base;
+        setMeta(c.key, 'the shoot you confirmed', 0.95, 'ledger');
         continue;
       }
       const { route, desc } = info.get(c.key);
       if (route) {
         if (route.byDay && c.date) { const dayName = dmap[`${route.dest}__${c.date}`] || c.date; const inner = dayInner[route.dest] || ''; placement[c.key] = `${route.dest}/${dayName}${inner ? `/${inner}` : ''}`; }
         else placement[c.key] = route.dest;
+        setMeta(c.key, `rule: ${route.name || (route.match || [])[0] || 'filing rule'}`, 0.9, 'rule');
         continue;
       }
       if (desc) continue;
+      // No rule → try the deterministic ledger match (a project you've filed
+      // matching footage into before). Strong matches file straight in.
+      const lm = ledgerMatch(c);
+      if (lm) {
+        const base = projectBase(lm.rel);
+        if (c.date) { const dn = (dayFolderMap([{ dest: base, c }])[`${base}__${c.date}`]) || c.date; const inner = dayInner[base] || ''; placement[c.key] = `${base}/${dn}${inner ? `/${inner}` : ''}`; }
+        else placement[c.key] = base;
+        setMeta(c.key, `matches your “${lm.name}”`, lm.s >= 5 ? 0.85 : 0.7, 'ledger');
+        continue;
+      }
       const subj = slug(c.subject || c.location || '');
-      placement[c.key] = (!subj || groupCount[subj] <= 1) ? `${pickCategory(c)}/_Unsorted` : `${pickCategory(c)}/${subj}`;
+      if (!subj || groupCount[subj] <= 1) { placement[c.key] = `${pickCategory(c)}/_Unsorted`; setMeta(c.key, subj ? 'only clip with this subject' : 'no subject yet', 0.12, 'unsorted'); }
+      else { placement[c.key] = `${pickCategory(c)}/${subj}`; setMeta(c.key, `grouped by subject (${groupCount[subj]})`, 0.5, 'subject'); }
     }
     // PASS 2 — descriptor clips, now that the day's real projects are known.
     const descAuto = autoClips.filter((c) => { const { route, desc } = info.get(c.key); return !route && desc; });
@@ -5772,21 +5816,31 @@ async function showDestinationMap(rawClips, opts = {}) {
       const dom = dominantByDate();
       for (const c of descAuto) {
         const { desc } = info.get(c.key);
-        if (desc.joinProject && c.date && dom[c.date]) placement[c.key] = dom[c.date];     // join the project shot that day
-        else placement[c.key] = c.date ? `${descCategory(desc, c)}/${c.date}` : `${descCategory(desc, c)}/_Unsorted`;   // each day its own project
+        if (desc.joinProject && c.date && dom[c.date]) { placement[c.key] = dom[c.date]; setMeta(c.key, `${desc.name || 'descriptor'} → joins the day’s project`, 0.6, 'subject'); }     // join the project shot that day
+        else { placement[c.key] = c.date ? `${descCategory(desc, c)}/${c.date}` : `${descCategory(desc, c)}/_Unsorted`; setMeta(c.key, `${desc.name || 'descriptor'} → own project per day`, c.date ? 0.55 : 0.15, c.date ? 'subject' : 'unsorted'); }   // each day its own project
       }
     }
   }
 
   const host = opts.host || null;   // when set, render INLINE into this element instead of a modal
-  const intro = host
-    ? `Drag clips onto a folder, or let <b>Suggest with AI</b> plan it. ✎ edits a clip · Apply files everything.`
-    : `Where each clip will be filed in your Projects folder. Click clips to select, drag onto a folder or use Move; ✎ fixes a clip's subject/location; ${editable ? 'Apply files them for real.' : 'preview only — files actually move at the Organize step.'}`;
+  const intro = `Each clip grouped by where it'll be filed, with how sure the AI is. Fix the “Needs you” few, then file. Switch to Folders for the full tree.`;
   const cardInner = `
-    ${host ? '' : `<div class="ai-hd"><span class="ai-hd-icon keep-emoji">🗂️</span><div class="ai-hd-text"><h3>Destination map</h3><p class="muted small">${intro}</p></div></div>`}
+    ${host ? '' : `<div class="ai-hd"><span class="ai-hd-icon keep-emoji">🗂️</span><div class="ai-hd-text"><h3>Organize &amp; file</h3><p class="muted small">${intro}</p></div></div>`}
     ${host ? `<p class="muted small dmap-introline">${intro}</p>` : ''}
-    <div class="dmap-bar"><span class="dmap-root muted small"></span><button type="button" class="btn subtle dmap-root-btn">Change…</button><button type="button" class="btn subtle dmap-rules">Filing rules…</button><button type="button" class="btn primary dmap-sortme" title="Go clip-by-clip: watch each subject and tell it where to file — it learns a rule so it stops guessing">🎬 Sort with me</button><button type="button" class="btn subtle dmap-ai">✨ Suggest with AI</button><button type="button" class="btn subtle dmap-refine" title="Tell the AI what to change and it re-plans — repeat until it's right">↻ Refine…</button><span class="dmap-status muted small"></span></div>
-    <div class="dmap-legend">
+    <div class="dmap-bar">
+      <span class="dmap-viewtoggle"><button type="button" class="dmap-vt on" data-view="plan">Plan</button><button type="button" class="dmap-vt" data-view="tree">Folders</button></span>
+      <span class="dmap-root muted small" title="Projects folder"></span><button type="button" class="btn subtle dmap-root-btn">Change…</button>
+      <span class="dmap-spacer"></span>
+      <button type="button" class="btn primary dmap-ai" title="Let the local AI plan where every clip goes (it analyzes anything it hasn't seen first)">✨ Suggest with AI</button>
+      <button type="button" class="btn subtle dmap-more" title="More tools">More ▾</button>
+      <span class="dmap-moretools hidden">
+        <button type="button" class="btn subtle dmap-refine" title="Tell the AI what to change and it re-plans">↻ Refine…</button>
+        <button type="button" class="btn subtle dmap-sortme" title="Go clip-by-clip and tell it where each goes — it learns a rule">🎬 Sort with me</button>
+        <button type="button" class="btn subtle dmap-rules" title="Manage standing filing rules">Filing rules…</button>
+      </span>
+      <span class="dmap-status muted small"></span>
+    </div>
+    <div class="dmap-legend hidden">
       <span class="dmap-leg dmap-cat-client"><span class="dmap-dot"></span>Client Work</span>
       <span class="dmap-leg dmap-cat-personal"><span class="dmap-dot"></span>Personal</span>
       <span class="dmap-leg dmap-cat-social"><span class="dmap-dot"></span>Social Media</span>
@@ -5834,8 +5888,10 @@ async function showDestinationMap(rawClips, opts = {}) {
     for (const dest of byDayDests) {
       try { const il = await window.api.projectsInnerLayout(dest); if (il && il.ok && il.inner) dayInner[dest] = il.inner; } catch { /* ignore */ }
     }
+    try { ledgerCache = (await window.api.ledgerGet()) || []; } catch { ledgerCache = []; }
     recomputeAuto();
-    renderTree();
+    render();
+    maybeAutoPlan();
   }
   const countClips = (node) => { let n = node.clips.length; for (const ch of node.children.values()) n += countClips(ch); return n; };
   function buildMerged() {
@@ -5853,7 +5909,11 @@ async function showDestinationMap(rawClips, opts = {}) {
     for (const c of clips) ensure(placement[c.key] || 'misc', false).clips.push(c);
     return rootNode;
   }
-  function renderTree() {
+  // Dispatcher: every re-render goes through here so all existing callers honour the
+  // current view. renderTree() is kept as the alias the rest of the code calls.
+  function render() { if (viewMode === 'tree') renderTreeView(); else renderPlan(); }
+  function renderTree() { render(); }
+  function renderTreeView() {
     const el = q('.dmap-tree'); el.innerHTML = '';
     const merged = buildMerged();
     const renderNode = (node, container, depth) => {
@@ -5895,6 +5955,120 @@ async function showDestinationMap(rawClips, opts = {}) {
     if (!el.children.length) el.innerHTML = '<p class="muted small">No placements yet.</p>';
     updateSelBar();
   }
+
+  // ---- PLAN VIEW: clips grouped by their destination PROJECT, each as one card
+  // with a confidence badge + the reason it landed there. Low-confidence / unsorted
+  // groups float to a "Needs you" section so you fix the few that matter, fast. ----
+  const confClass = (c) => (c >= 0.75 ? 'hi' : c >= 0.45 ? 'mid' : 'lo');
+  function planGroups() {
+    const groups = new Map();
+    for (const c of clips) {
+      const full = placement[c.key] || `${pickCategory(c)}/_Unsorted`;
+      const gkey = /\/_Unsorted$/i.test(full) ? full : (stripDayLeaf(projectBase(full)) || full);
+      if (!groups.has(gkey)) groups.set(gkey, { gkey, keys: [] });
+      groups.get(gkey).keys.push(c.key);
+    }
+    const arr = [...groups.values()].map((g) => {
+      const metas = g.keys.map((k) => placeMeta[k] || { conf: 0.3, reason: '', kind: 'subject' });
+      const conf = Math.min(...metas.map((m) => (m.conf == null ? 0.3 : m.conf)));
+      const counts = {}; metas.forEach((m) => { const r = m.reason || ''; counts[r] = (counts[r] || 0) + 1; });
+      const reason = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || '';
+      const unsorted = /\/_Unsorted$/i.test(g.gkey);
+      const kind = metas.find((m) => m.kind === 'ledger') ? 'ledger' : metas.find((m) => m.kind === 'rule') ? 'rule' : metas.find((m) => m.kind === 'manual') ? 'manual' : ((metas[0] && metas[0].kind) || 'subject');
+      return { ...g, conf, reason, unsorted, needs: unsorted || conf < 0.45, kind, count: g.keys.length, exists: folderPaths.includes(g.gkey), cat: categoryKey(g.gkey) };
+    });
+    arr.sort((a, b) => (a.needs !== b.needs) ? (a.needs ? -1 : 1) : (a.needs ? a.conf - b.conf : a.gkey.localeCompare(b.gkey, undefined, { numeric: true })));
+    return arr;
+  }
+  // Candidate destinations offered as one-tap chips on a "Needs you" group: the
+  // best ledger matches for the group's clips, then the top-level categories.
+  function planChips(g) {
+    const rep = clipByKey[g.keys[0]]; const out = []; const seen = new Set();
+    const lm = ledgerMatch(rep); if (lm) { const b = projectBase(lm.rel); out.push({ dest: b, label: lm.name }); seen.add(b); }
+    for (const cat of treeCategories()) { if (seen.has(cat)) continue; seen.add(cat); out.push({ dest: cat, label: cat.split('/').pop() }); }
+    return out.slice(0, 4);
+  }
+  async function learnRouteFromGroup(keys, dest) {
+    const subjs = keys.map((k) => clipByKey[k]).filter(Boolean).map((c) => slug(c.subject || c.location || '')).filter(Boolean);
+    const kw = [...new Set(subjs.flatMap((s) => s.split('-')).filter((w) => w.length > 2))].slice(0, 6);
+    if (!kw.length) return false;
+    const base = projectBase(dest);
+    const existing = routesCache.find((r) => r.kind !== 'descriptor' && (r.match || []).some((m) => kw.includes(String(m).toLowerCase())));
+    if (existing) existing.dest = base; else routesCache.push({ name: (clipByKey[keys[0]] && clipByKey[keys[0]].subject) || base.split('/').pop(), kind: 'route', match: kw, dest: base, byDay: false });
+    try { routesCache = (await window.api.saveRoutes(routesCache)) || routesCache; } catch { /* non-fatal */ }
+    return true;
+  }
+  async function planChange(g, dest, remember) {
+    const clean = String(dest || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim();
+    if (!clean) return;
+    moveKeys(g.keys.slice(), clean);
+    if (remember && await learnRouteFromGroup(g.keys, clean)) showToast('Got it — I’ll auto-file these next time ✓', 3800);
+  }
+  const expandedGroups = new Set();   // gkeys whose clip list is shown
+  function renderPlan() {
+    const el = q('.dmap-tree'); el.innerHTML = '';
+    const groups = planGroups();
+    if (!groups.length) { el.innerHTML = '<p class="muted small">No clips to file.</p>'; updateSelBar(); return; }
+    const needs = groups.filter((g) => g.needs); const sure = groups.filter((g) => !g.needs);
+    const total = clips.length; const sureN = sure.reduce((n, g) => n + g.count, 0);
+    const section = (title, sub, list) => {
+      if (!list.length) return;
+      const h = document.createElement('div'); h.className = 'dmap-sec'; h.innerHTML = `<span class="dmap-sec-t">${escapeHtml(title)}</span><span class="muted small">${escapeHtml(sub)}</span>`;
+      el.appendChild(h);
+      for (const g of list) el.appendChild(groupCard(g));
+    };
+    section('Needs you', needs.length ? `${needs.reduce((n, g) => n + g.count, 0)} clip${needs.length ? 's' : ''} the AI is unsure about` : '', needs);
+    section('Confident', sureN ? `${sureN} clip${sureN !== 1 ? 's' : ''} ready to file` : '', sure);
+    updateSelBar();
+    q('.dmap-status').textContent = `${total} clip${total !== 1 ? 's' : ''} · ${groups.length} folder${groups.length !== 1 ? 's' : ''}`;
+  }
+  function groupCard(g) {
+    const card = document.createElement('div');
+    card.className = `dplan-group dmap-cat-${g.cat}${g.needs ? ' needs' : ''}`;
+    const name = g.gkey.split('/').pop(); const parent = g.gkey.split('/').slice(0, -1).join('/');
+    const pct = Math.round(g.conf * 100);
+    const flash = g.keys.some((k) => recentlyPlaced.has(k)) ? ' just-placed' : '';
+    card.className += flash;
+    card.innerHTML = `
+      <div class="dplan-hd">
+        <span class="dplan-caret">${expandedGroups.has(g.gkey) ? '▾' : '▸'}</span>
+        <span class="dplan-ficon keep-emoji">${g.exists ? '📁' : '✨'}</span>
+        <span class="dplan-name">${escapeHtml(name)}</span>
+        ${g.exists ? '' : '<span class="dmap-badge new">new</span>'}
+        <span class="dplan-count">${g.count}</span>
+        <span class="dplan-conf conf-${confClass(g.conf)}" title="How confident the placement is">${pct}%</span>
+      </div>
+      <div class="dplan-meta">
+        <span class="dplan-path muted small">${escapeHtml(parent || '(Projects root)')}</span>
+        ${g.reason ? `<span class="dplan-why">${escapeHtml(g.reason)}</span>` : ''}
+      </div>
+      <div class="dplan-acts">
+        ${g.needs ? planChips(g).map((ch) => `<button type="button" class="btn subtle dplan-chip" data-dest="${escapeHtml(ch.dest)}">${escapeHtml(ch.label)}</button>`).join('') : ''}
+        <button type="button" class="btn subtle dplan-change">Change…</button>
+        ${g.needs ? '<label class="dplan-remember" title="Save this as a filing rule so it happens automatically next time"><input type="checkbox" class="dplan-rem"> remember</label>' : ''}
+      </div>
+      <div class="dplan-clips${expandedGroups.has(g.gkey) ? ' open' : ''}"></div>`;
+    const remEl = () => card.querySelector('.dplan-rem');
+    const hd = card.querySelector('.dplan-hd');
+    hd.addEventListener('click', () => {
+      if (expandedGroups.has(g.gkey)) expandedGroups.delete(g.gkey); else expandedGroups.add(g.gkey);
+      renderPlan();
+    });
+    card.querySelector('.dplan-change').addEventListener('click', () => pickFolder(g.gkey, (rel) => planChange(g, rel, !!(remEl() && remEl().checked))));
+    card.querySelectorAll('.dplan-chip').forEach((b) => b.addEventListener('click', () => planChange(g, b.dataset.dest, !!(remEl() && remEl().checked))));
+    if (expandedGroups.has(g.gkey)) { const cw = card.querySelector('.dplan-clips'); for (const k of g.keys) { const c = clipByKey[k]; if (c) cw.appendChild(clipRow(c, 1)); } }
+    return card;
+  }
+  // Auto-run a placement pass on open when there's real ambiguity and AI is ready —
+  // so the screen shows a finished plan instead of a pile of _Unsorted. Runs once.
+  async function maybeAutoPlan() {
+    if (autoPlanned) return; autoPlanned = true;
+    if (!editable || typeof aiReady !== 'function' || !aiReady()) return;
+    const unrouted = clips.filter((c) => autoKeys.has(c.key) && ((placeMeta[c.key] || {}).conf == null || (placeMeta[c.key] || {}).conf < 0.45));
+    if (unrouted.length < Math.max(2, Math.ceil(clips.length * 0.2))) return;
+    await runAiPlan('', { pool: unrouted, silent: true });
+  }
+
   // Compact metadata chips on a map leaf — same vocabulary as the Match screen so
   // the whole Organize flow reads as one app: subject/description, 👤 people, shot.
   function dmapClipChips(c) {
@@ -5936,7 +6110,7 @@ async function showDestinationMap(rawClips, opts = {}) {
   // Apply a folder to a set of clips (explicit move — they leave their auto group).
   function moveKeys(keys, rel) {
     const clean = String(rel).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim() || 'misc';
-    for (const k of keys) { placement[k] = clean; autoKeys.delete(k); }
+    for (const k of keys) { placement[k] = clean; autoKeys.delete(k); setMeta(k, 'you placed it here', 1, 'manual'); }
     renderTree();
   }
   function toggleSel(key) { if (selected.has(key)) selected.delete(key); else selected.add(key); renderTree(); }
@@ -6039,26 +6213,46 @@ async function showDestinationMap(rawClips, opts = {}) {
     setTimeout(() => pq('.dpk-subj').focus(), 30);
   }
   q('.dmap-root-btn').addEventListener('click', async () => { const r = await window.api.pickProjectsRoot(); if (r) loadTree(); });
-  q('.dmap-rules').addEventListener('click', () => showRoutingRules(folderPaths, () => { recomputeAuto(); renderTree(); }, clips.map((c) => ({ name: c.name, subject: c.subject, location: c.location, description: c.description, date: c.date }))));
+  // Plan ⇄ Folders view toggle. The legend is only meaningful for the colour-coded tree.
+  card.querySelectorAll('.dmap-vt').forEach((b) => b.addEventListener('click', () => {
+    viewMode = b.dataset.view;
+    card.querySelectorAll('.dmap-vt').forEach((x) => x.classList.toggle('on', x === b));
+    const lg = q('.dmap-legend'); if (lg) lg.classList.toggle('hidden', viewMode !== 'tree');
+    card.classList.toggle('dmap-planmode', viewMode === 'plan');
+    render();
+  }));
+  card.classList.toggle('dmap-planmode', viewMode === 'plan');
+  { const mo = q('.dmap-more'); if (mo) mo.addEventListener('click', () => { const t = q('.dmap-moretools'); if (t) t.classList.toggle('hidden'); }); }
+  q('.dmap-rules').addEventListener('click', () => showRoutingRules(folderPaths, () => { recomputeAuto(); render(); }, clips.map((c) => ({ name: c.name, subject: c.subject, location: c.location, description: c.description, date: c.date }))));
   // Iterative refine: the user types what's wrong, the AI re-plans, repeat until right.
-  q('.dmap-refine').addEventListener('click', () => showRefinePrompt((feedback) => { if (feedback) refineWithAi(feedback); }));
-  async function refineWithAi(feedback) {
-    if (!aiReady()) { showToast('Turn on AI to refine'); return; }
+  q('.dmap-refine').addEventListener('click', () => showRefinePrompt((feedback) => { if (feedback) runAiPlan(feedback); }));
+  // Run the AI placement pass over the still-auto clips (or a given pool) and apply
+  // its destinations, carrying each clip's AI "why"/confidence into placeMeta so the
+  // plan view shows it. Used by the primary Suggest button, Refine, and auto-plan.
+  async function runAiPlan(feedback, opts = {}) {
+    if (!aiReady()) { if (!opts.silent) showToast('Turn on AI to plan placement'); return 0; }
     const auto = clips.filter((c) => autoKeys.has(c.key));
-    const pool = auto.length ? auto : clips;   // if everything's manually placed, refine all
-    aiActivity('AI is re-planning with your notes…', '');
+    const pool = opts.pool || (auto.length ? auto : clips);   // default: everything still on auto
+    if (!pool.length) { if (!opts.silent) showToast('Nothing left to plan'); return 0; }
+    aiActivity(feedback ? 'AI is re-planning with your notes…' : 'AI is planning where each clip goes…', '');
     let r;
-    try { r = await window.api.aiSuggestProjects({ clips: pool.map((c) => ({ name: c.name, subject: c.subject, description: c.description, location: c.location, date: c.date, observation: dmapObs(c), people: dmapPeople(c) })), folders: folderPaths, categories: treeCategories(), context: '', feedback }); }
-    catch { aiActivityDone('Could not refine — check the model in AI settings'); return; }
-    if (!r || !r.ok || !Array.isArray(r.placements)) { aiActivityDone(r && r.error ? r.error : 'Could not refine'); return; }
-    const byPath = {};
-    r.placements.forEach((pl) => { const c = pool[pl.i]; if (!c) return; const dest = projectBase(pl.path) || pl.path; (byPath[dest] = byPath[dest] || []).push(c); });
+    try { r = await window.api.aiSuggestProjects({ clips: pool.map((c) => ({ name: c.name, subject: c.subject, description: c.description, location: c.location, date: c.date, observation: dmapObs(c), people: dmapPeople(c) })), folders: folderPaths, categories: treeCategories(), context: '', feedback: feedback || '' }); }
+    catch { aiActivityDone('Could not plan — check the model in AI settings'); return 0; }
+    if (!r || !r.ok || !Array.isArray(r.placements)) { aiActivityDone(r && r.error ? r.error : 'Could not plan'); return 0; }
+    // Group placements by destination project, remembering each clip's reason/conf.
+    const byPath = {}; const whyByKey = {};
+    r.placements.forEach((pl) => { const c = pool[pl.i]; if (!c) return; const dest = projectBase(pl.path) || pl.path; (byPath[dest] = byPath[dest] || []).push(c); whyByKey[c.key] = { why: pl.why || 'AI placed', conf: pl.confidence }; });
     let placed = 0;
     for (const dest of Object.keys(byPath)) {
-      for (const pc of placeGroupClips({ dest, clips: byPath[dest] })) { placement[pc.key] = pc.dest; autoKeys.delete(pc.key); recentlyPlaced.add(pc.key); placed += 1; }
+      for (const pc of placeGroupClips({ dest, clips: byPath[dest] })) {
+        placement[pc.key] = pc.dest; autoKeys.delete(pc.key); recentlyPlaced.add(pc.key);
+        const w = whyByKey[pc.key] || {}; setMeta(pc.key, w.why || 'AI placed', (w.conf == null ? 0.6 : w.conf), 'ai');
+        placed += 1;
+      }
     }
-    aiActivityDone(placed ? `Re-planned ${placed} clip${placed !== 1 ? 's' : ''} with your notes ✓` : 'No changes — try being more specific');
-    renderTree();
+    aiActivityDone(placed ? `${feedback ? 'Re-planned' : 'Planned'} ${placed} clip${placed !== 1 ? 's' : ''} ✓` : 'No changes — try being more specific');
+    render();
+    return placed;
   }
   // Live activity strip — shows the user exactly what the AI is doing, step by step.
   const activity = () => q('.dmap-ai-activity');
@@ -6212,7 +6406,7 @@ async function showDestinationMap(rawClips, opts = {}) {
           setTimeout(() => aiAnalyzeSelected(), 60);
         } else {
           const n = await analyzeDmapTargets(targets);   // analyze right here, in the map
-          if (n) setTimeout(() => openSuggestWizard(), 250);   // then re-plan with real data
+          if (n) setTimeout(() => runAiPlan(''), 250);   // then re-plan with real data
         }
       });
       ov.querySelector('.eaf-anyway').addEventListener('click', () => done('proceed'));
@@ -6599,7 +6793,16 @@ async function showDestinationMap(rawClips, opts = {}) {
     show();
   }
 
-  q('.dmap-ai').addEventListener('click', openSuggestWizard);
+  // Primary action: analyze anything unseen (so the AI isn't guessing from a bare
+  // label), then run the placement pass inline — no separate wizard to wade through.
+  async function aiPlanFlow() {
+    if (!aiReady()) { showToast('Turn on AI in settings to auto-plan placement'); return; }
+    const targets = clips.filter((c) => autoKeys.has(c.key));
+    const g = await ensureAnalyzedFirst(targets.length ? targets : clips);
+    if (g === 'cancel' || g === 'analyze') return;   // the analyze path re-plans itself
+    await runAiPlan('');
+  }
+  q('.dmap-ai').addEventListener('click', aiPlanFlow);
   { const sm = q('.dmap-sortme'); if (sm) sm.addEventListener('click', openSortChat); }
   if (editable) {
     q('.dmap-apply').addEventListener('click', async () => {

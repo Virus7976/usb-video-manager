@@ -946,26 +946,73 @@ ipcMain.handle('ai:suggestProjects', async (_e, payload) => {
   const routes = aiRoutes();
   if (!clips.length) return { ok: true, placements: [] };
   if (!aiTextModel()) return { ok: false, error: 'No model selected (set one in AI settings)' };
-  const folderList = folders.slice(0, 250).join('\n') || '(no existing folders)';
+  const folderList = folders.slice(0, 600).join('\n') || '(no existing folders)';
   const clipList = clips.map((c, i) => {
-    const saw = c.observation ? ` saw="${String(c.observation).replace(/"/g, "'").slice(0, 200)}"` : '';
+    const saw = c.observation ? ` saw="${String(c.observation).replace(/"/g, "'").slice(0, 400)}"` : '';
     const ppl = (Array.isArray(c.people) && c.people.length) ? ` people="${c.people.join(', ')}"` : '';
     return `${i}: subject="${c.subject || ''}" desc="${c.description || ''}" location="${c.location || ''}" date="${c.date || ''}"${saw}${ppl} file="${c.name || ''}"`;
   }).join('\n');
+  // PAST FILING MEMORY — the single strongest signal. The app remembers every
+  // project footage was filed into (people, subjects, places, an AI summary). Score
+  // each remembered project against THIS batch's tokens and feed the model the most
+  // relevant ones so it reuses the EXACT existing project instead of re-guessing.
+  const ledgerBlock = suggestLedgerMemory(clips);
   const ctxLine = context ? `\nWhat the videographer told us about this batch (use it to identify the subjects/people/shoot and group correctly): "${context}"\n` : '';
   const catLine = categories.length ? `EVERY clip MUST be filed under exactly one of these top-level categories (use the path that starts with it): ${categories.join(' | ')}.` : '';
   const routeRules = routes.filter((r) => r.kind !== 'descriptor');
   const routeLine = routeRules.length ? `\nThe user has STANDING filing rules — obey them when a clip matches:\n${routeRules.map((r) => `- if it's about [${(r.match || []).join(', ')}] → "${r.dest}"${r.byDay ? ' (return just this project path; the app adds the day folder)' : ''}`).join('\n')}` : '';
   const fbLine = feedback ? `\nTHE USER REVIEWED YOUR LAST PLAN AND WANTS THESE CORRECTIONS — obey them above all other rules:\n"${feedback}"\n` : '';
   const structDigest = structureDigest(folders);
-  const prompt = `A videographer files video clips into this project-folder tree (relative paths):\n${folderList}\n${structDigest}\nClips to place:\n${clipList}\n${ctxLine}${fbLine}\n${catLine}${routeLine}\n\nRULES for choosing each clip's destination folder PATH (relative, "/" separators):\n- Match by what the clip IS — its SUBJECT / description / content — NOT merely by sharing a date with other clips. A clip about something else must NOT be filed into a project just because it was shot the same day.\n- Strongly PREFER an EXISTING project folder when the clip's subject genuinely belongs there. Reuse the exact existing path.\n- DISCOVER each target project's existing internal structure (see the "organized inside" list above) and CONTINUE that same pattern — whatever it is: "Day 1/Day 2…" → the next "Day N"; dates → a date; "01 - desc" / "Shoot 03" → the next in that series. Do NOT impose dates on a project that uses a different scheme. ONLY when a project has no consistent pattern (its folders are messy/bad) should you fall back to the clip's date (YYYY-MM-DD).\n- Return the project path and (if you're confident) the matching subfolder; if unsure of the exact subfolder name, return just the project path and the app will continue the discovered pattern for you. NEVER nest one date folder inside another.\n- Group clips of the SAME subject/shoot under that one project. Clips that fit no project — or that would be alone in a new folder — go under "<their category>/_Unsorted". Do not force unrelated clips together.\nReply STRICT JSON only: {"placements":[{"i":0,"path":"2026/2026 - Social Media/Calisthetics Journey"}]}.`;
+  const prompt = `A videographer files video clips into this project-folder tree (relative paths):\n${folderList}\n${structDigest}${ledgerBlock}\nClips to place:\n${clipList}\n${ctxLine}${fbLine}\n${catLine}${routeLine}\n\nRULES for choosing each clip's destination folder PATH (relative, "/" separators):\n- USE PAST FILING MEMORY FIRST: if a clip's subject / people / place match a remembered project above, reuse that EXACT project path — this is the strongest signal, stronger than folder names alone.\n- Match by what the clip IS — its SUBJECT / description / content — NOT merely by sharing a date with other clips. A clip about something else must NOT be filed into a project just because it was shot the same day.\n- Strongly PREFER an EXISTING project folder when the clip's subject genuinely belongs there. Reuse the exact existing path.\n- DISCOVER each target project's existing internal structure (see the "organized inside" list above) and CONTINUE that same pattern — whatever it is: "Day 1/Day 2…" → the next "Day N"; dates → a date; "01 - desc" / "Shoot 03" → the next in that series. Do NOT impose dates on a project that uses a different scheme. ONLY when a project has no consistent pattern (its folders are messy/bad) should you fall back to the clip's date (YYYY-MM-DD).\n- Return the project path and (if you're confident) the matching subfolder; if unsure of the exact subfolder name, return just the project path and the app will continue the discovered pattern for you. NEVER nest one date folder inside another.\n- Group clips of the SAME subject/shoot under that one project. Clips that fit no project — or that would be alone in a new folder — go under "<their category>/_Unsorted". Do not force unrelated clips together.\nFor EACH clip also give a SHORT "why" (≤8 words, e.g. "matches your Lawn Mowing shoot", "new project", "unsorted — unclear") and a "confidence" 0-1 (how sure you are of the destination).\nReply STRICT JSON only: {"placements":[{"i":0,"path":"2026/2026 - Social Media/Calisthetics Journey","why":"existing project","confidence":0.9}]}.`;
   try {
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.2, timeout: 180000 }));
     const arr = Array.isArray(o.placements) ? o.placements : (Array.isArray(o) ? o : []);
-    const placements = arr.map((p) => ({ i: Number(p.i != null ? p.i : (p.I != null ? p.I : p.index)), path: String(p.path || p.Path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim() })).filter((p) => isFinite(p.i) && p.path);
+    const placements = arr.map((p) => {
+      const conf = Number(p.confidence != null ? p.confidence : p.conf);
+      return {
+        i: Number(p.i != null ? p.i : (p.I != null ? p.I : p.index)),
+        path: String(p.path || p.Path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim(),
+        why: String(p.why || p.reason || '').trim().slice(0, 60),
+        confidence: isFinite(conf) ? Math.max(0, Math.min(1, conf)) : null
+      };
+    }).filter((p) => isFinite(p.i) && p.path);
     return { ok: true, placements };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
 });
+
+// Build the "PAST FILING MEMORY" prompt block: the remembered projects (ledger)
+// most relevant to THIS batch, scored by shared people / subject / location tokens
+// (people weighted highest, mirroring ledger:matchDates). Returns '' when there's
+// no useful memory so the prompt stays lean.
+function suggestLedgerMemory(clips) {
+  const ledger = Array.isArray(config.projectLedger) ? config.projectLedger : [];
+  if (!ledger.length) return '';
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const toks = (s) => norm(s).split(' ').filter((w) => w.length > 2);
+  const batchSubj = new Set(); const batchPeople = new Set(); const batchLoc = new Set();
+  for (const c of clips) {
+    toks(c.subject).forEach((t) => batchSubj.add(t));
+    toks(c.description).forEach((t) => batchSubj.add(t));
+    toks(c.location).forEach((t) => batchLoc.add(t));
+    (Array.isArray(c.people) ? c.people : []).forEach((p) => batchPeople.add(norm(p)));
+  }
+  const scored = ledger.map((m) => {
+    let s = 0;
+    (m.people || []).forEach((p) => { if (batchPeople.has(norm(p))) s += 3; });
+    (m.subjects || []).forEach((x) => { if (toks(x).some((t) => batchSubj.has(t))) s += 2; });
+    (m.keywords || []).forEach((k) => { if (toks(k).some((t) => batchSubj.has(t) || batchLoc.has(t))) s += 1.5; });
+    (m.locations || []).forEach((l) => { if (toks(l).some((t) => batchLoc.has(t))) s += 2; });
+    return { m, s };
+  }).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 24);
+  if (!scored.length) return '';
+  const lines = scored.map(({ m }) => {
+    const ppl = (m.people || []).slice(0, 6).join(', ');
+    const subj = (m.subjects || []).slice(0, 6).join(', ');
+    const sum = m.summary ? ` — ${String(m.summary).slice(0, 160)}` : '';
+    return `- "${m.rel}"${ppl ? ` [people: ${ppl}]` : ''}${subj ? ` [about: ${subj}]` : ''}${sum}`;
+  }).join('\n');
+  return `\nPAST FILING MEMORY (projects you've already filed similar footage into — reuse the EXACT path when a clip matches one):\n${lines}\n`;
+}
 
 // Look at a batch summary and ask the user 2-4 SHORT clarifying questions whose
 // answers most reduce filing ambiguity (is a label a real project or a descriptor?

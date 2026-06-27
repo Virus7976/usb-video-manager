@@ -1124,6 +1124,39 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
   100% { background: transparent; }
 }
 
+/* ---- Plan view (grouped-by-destination cards) + view toggle ---- */
+.dmap-viewtoggle { display: inline-flex; background: var(--control); border: 1px solid var(--card-stroke); border-radius: var(--radius-sm); overflow: hidden; flex: 0 0 auto; }
+.dmap-vt { border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 12.5px; padding: 5px 12px; cursor: pointer; }
+.dmap-vt:hover { background: var(--subtle-hover); }
+.dmap-vt.on { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.dmap-spacer { flex: 1 1 auto; }
+.dmap-moretools { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.dmap-moretools.hidden { display: none; }
+.dmap-sec { display: flex; align-items: baseline; gap: 8px; margin: 12px 4px 7px; }
+.dmap-sec:first-child { margin-top: 2px; }
+.dmap-sec-t { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-2); }
+.dplan-group { border: 1px solid var(--card-stroke); border-left: 3px solid color-mix(in srgb, var(--cat, var(--text-3)) 70%, transparent); border-radius: var(--radius-sm); padding: 9px 11px; margin: 0 0 8px; background: color-mix(in srgb, var(--cat, var(--accent)) 4%, transparent); }
+.dplan-group.needs { border-left-color: var(--warn, #d98324); background: color-mix(in srgb, var(--warn, #d98324) 7%, transparent); }
+.dplan-group.just-placed { animation: dmap-flash 1.1s ease-out 1; }
+.dplan-hd { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.dplan-caret { width: 12px; flex: 0 0 auto; color: var(--text-3); font-size: 10px; }
+.dplan-ficon { flex: 0 0 auto; font-size: 13px; }
+.dplan-name { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dplan-count { flex: 0 0 auto; font-size: 11px; color: var(--text-2); background: var(--control); border-radius: 999px; padding: 0 8px; min-width: 18px; text-align: center; }
+.dplan-conf { flex: 0 0 auto; margin-left: auto; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; padding: 1px 8px; border-radius: 999px; }
+.dplan-conf.conf-hi { color: var(--cat-personal, #3fb950); background: color-mix(in srgb, var(--cat-personal, #3fb950) 18%, transparent); }
+.dplan-conf.conf-mid { color: var(--warn, #d98324); background: color-mix(in srgb, var(--warn, #d98324) 18%, transparent); }
+.dplan-conf.conf-lo { color: #e5534b; background: color-mix(in srgb, #e5534b 18%, transparent); }
+.dplan-meta { display: flex; align-items: baseline; gap: 8px; margin: 4px 0 0; padding-left: 20px; flex-wrap: wrap; }
+.dplan-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+.dplan-why { font-size: 11.5px; color: var(--text-2); font-style: italic; }
+.dplan-acts { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; padding-left: 20px; flex-wrap: wrap; }
+.dplan-acts .btn { font-size: 12px; padding: 3px 10px; }
+.dplan-chip { border: 1px dashed var(--card-stroke) !important; }
+.dplan-remember { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-3); cursor: pointer; margin-left: 2px; }
+.dplan-clips { display: none; margin: 8px 0 2px; padding-left: 12px; border-left: 1px solid var(--divider); }
+.dplan-clips.open { display: block; }
+
 /* ---- Analyze-with-AI dialog ---- */
 .an-card { width: min(540px, 94vw); text-align: left; }
 .an-dir { width: 100%; box-sizing: border-box; resize: vertical; min-height: 64px; font-family: inherit; }

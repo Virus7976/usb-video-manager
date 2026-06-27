@@ -28,6 +28,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 - **Phone (MTP) import** — list/scan/copy photos & videos off a phone with no drive letter.
 
 ### Changed
+- **Organize, rebuilt as one screen.** The destination map is now a single **Plan** view that
+  groups every clip by where it'll be filed, shows **how confident** each placement is and
+  **why**, and floats the few it's unsure about into a **“Needs you”** section you fix inline
+  (one-tap destination chips + “remember” to make it a rule) — then **File**. The old
+  button-bar-of-modals (Sort with me / Suggest with AI / Filing rules / Refine) folds into one
+  primary **✨ Suggest with AI** action + a **More** menu, with a **Folders** toggle for the full
+  colour-coded tree. Much less “pile of separate features”.
+- **Smarter placement.** Suggestions now use your **filing history**: the app remembers every
+  project it's filed footage into (people, subjects, places, an AI summary) and both pre-files
+  obvious repeats automatically (“matches your *Lawn Mowing* shoot”) and feeds that memory to
+  the AI — so it reuses the right existing project instead of guessing from a blank slate.
 - Genericised for public use: no baked-in personal projects/clients, defaults derive from the
   OS Videos folder, dev-only phone simulation off by default.
 - Renamed the misleading "Compress, Rename & Delete" home action to "Import, Rename & Clear card".

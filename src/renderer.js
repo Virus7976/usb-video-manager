@@ -7983,23 +7983,37 @@ function showPreferences() {
        <button type="button" class="hk-reset" data-hk="${a.id}" title="Reset to default">⟲</button>
      </div>`
   ).join('');
-  ov.innerHTML = `<div class="modal-card modal-form" style="max-height:82vh;overflow-y:auto">
+  ov.innerHTML = `<div class="modal-card modal-form pref-modal">
     <h3>Preferences</h3>
-    <label class="pref-label">Compression intake folder</label>
-    <div class="pref-row">
-      <input type="text" class="pref-path" readonly value="${escapeAttr(pending)}" />
-      <button type="button" class="btn pref-browse">Browse…</button>
-    </div>
-    <p class="muted small">Footage is copied here in the Upload step.</p>
+    <p class="pref-intro muted small">Where footage is copied, and the shortcuts used while renaming.</p>
 
-    <label class="pref-label" style="margin-top:16px">Keyboard shortcuts</label>
-    <p class="muted small" style="margin:-2px 0 4px">Active on the Rename screen. Click a shortcut, then press your keys.</p>
-    <div class="hk-list">${hkRows}</div>
+    <section class="pref-section">
+      <div class="pref-sec-h"><span class="pref-sec-t">Intake folder</span></div>
+      <div class="pref-body">
+        <div class="pref-row">
+          <input type="text" class="pref-path" readonly value="${escapeAttr(pending)}" />
+          <button type="button" class="btn pref-browse">Browse…</button>
+        </div>
+        <p class="muted small pref-hint">Footage is copied here in the Upload step.</p>
+      </div>
+    </section>
 
-    <label class="pref-label" style="margin-top:16px">Text shortcuts</label>
-    <p class="muted small" style="margin:-2px 0 4px">Press a shortcut while typing in a field to insert its text. Use a modifier (Ctrl/Alt) so it won't clash with normal typing.</p>
-    <div class="tm-list"></div>
-    <button type="button" class="btn tm-add" style="margin-top:8px">＋ Add text shortcut</button>
+    <section class="pref-section">
+      <div class="pref-sec-h"><span class="pref-sec-t">Keyboard shortcuts</span><span class="pref-sec-sub muted small">Rename screen</span></div>
+      <div class="pref-body">
+        <p class="muted small pref-hint">Click a shortcut, then press your keys.</p>
+        <div class="hk-list">${hkRows}</div>
+      </div>
+    </section>
+
+    <section class="pref-section">
+      <div class="pref-sec-h"><span class="pref-sec-t">Text shortcuts</span></div>
+      <div class="pref-body">
+        <p class="muted small pref-hint">Press a shortcut while typing in a field to insert its text. Use a modifier (Ctrl/Alt) so it won't clash with normal typing.</p>
+        <div class="tm-list"></div>
+        <button type="button" class="btn subtle tm-add">＋ Add text shortcut</button>
+      </div>
+    </section>
 
     <div class="modal-actions">
       <button type="button" class="btn primary pref-save">Save</button>

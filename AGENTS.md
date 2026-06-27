@@ -96,7 +96,9 @@ npm run dist                        # electron-builder → dist\USB SD Auto-Acti
 ## 4. Conventions (do not break these)
 
 - **Native dark Fluent look.** Every new UI must match the existing dark Fluent style
-  (CSS variables in `styles.css`). Verifying the look is part of "done".
+  (CSS variables in `styles.css`). Verifying the look is part of "done". Group settings/modal
+  content with the shared `.pref-section` / `.pref-sec-t` / `.pref-body` primitives (uppercase
+  header + card body + steady spacing) instead of ad-hoc inline margins.
 - **Offline AI only.** Frames go to local Ollama and nowhere else. Never add a cloud call.
 - **Faces are SUGGESTIONS, not auto-tags.** Recognised faces are saved to a person's profile
   as *unconfirmed* and surfaced for the user to confirm (or the explicit 🤖 Auto-faces toggle).

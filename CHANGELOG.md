@@ -28,6 +28,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 - **Phone (MTP) import** — list/scan/copy photos & videos off a phone with no drive letter.
 
 ### Changed
+- **Tool-grade UI polish (in progress).** Settings/Preferences regrouped into clear, consistent
+  labelled sections with card bodies and a steady spacing rhythm (no more ad-hoc margins), so it
+  reads like a precise settings panel rather than a flat list. (First pass of a wider polish
+  sweep across the core screens.)
 - Genericised for public use: no baked-in personal projects/clients, defaults derive from the
   OS Videos folder, dev-only phone simulation off by default.
 - Renamed the misleading "Compress, Rename & Delete" home action to "Import, Rename & Clear card".

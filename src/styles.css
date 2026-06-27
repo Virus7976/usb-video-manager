@@ -2218,6 +2218,17 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 /* Modal forms (Preferences, Edit subjects) */
 .modal-form { width: 380px; text-align: left; }
 .modal-form h3 { margin: 0 0 12px; font-size: 18px; }
+/* Grouped settings sections — consistent hierarchy + spacing rhythm (no ad-hoc margins) */
+.pref-modal { width: min(540px, 94vw); max-width: none; max-height: 82vh; overflow-y: auto; }
+.pref-modal h3 { margin: 0 0 2px; }
+.pref-intro { margin: 0 0 4px; }
+.pref-section { margin-top: 18px; }
+.pref-sec-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.pref-sec-t { font-size: 11.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-2); }
+.pref-sec-sub { margin-left: auto; }
+.pref-body { background: color-mix(in srgb, var(--text-3) 5%, transparent); border: 1px solid var(--card-stroke); border-radius: var(--radius-sm); padding: 12px 14px; }
+.pref-hint { margin: 0 0 9px; }
+.pref-body > .pref-hint:first-child { margin-top: 0; }
 .pref-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .pref-row { display: flex; gap: 8px; }
 .pref-path {

@@ -1,5 +1,5 @@
-# Dependencies
-node_modules/
+# Dependencies (also ignore a node_modules *symlink*, not just a directory)
+node_modules
 
 # Build output (installers are published as Gitea Releases, not committed)
 dist/

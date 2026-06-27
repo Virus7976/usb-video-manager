@@ -1,0 +1,17 @@
+# Keeps the Issues tab actively monitored: runs daily (and on demand) and prints the
+# current open issues into the Actions log, so the project's to-do list is always surfaced.
+name: Issue check
+on:
+  schedule:
+    - cron: '0 8 * * *'   # every day 08:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  list-open-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List open issues
+        run: |
+          curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/issues?state=open&type=issues&limit=50" \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print(f"{len(d)} OPEN ISSUES:\n"); [print(f"  #{i[\"number\"]}  {i[\"title\"]}  [{\", \".join(l[\"name\"] for l in i.get(\"labels\",[]))}]") for i in d]'

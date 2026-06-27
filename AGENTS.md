@@ -133,6 +133,20 @@ npm run dist                        # electron-builder → dist\USB SD Auto-Acti
   the **project ledger**: `ledgerMatch` (renderer, deterministic pre-file of obvious repeats)
   and `suggestLedgerMemory` (main.js — feeds the ledger's people/subjects/summaries into the
   `ai:suggestProjects` prompt; that handler also returns per-placement `why`/`confidence`).
+- **Placement brain (`ai:suggestProjects`, main.js)**: contract is
+  `{ ok, placements:[{ i, path, why, confidence }] }` — keep it. Two pure, unit-testable
+  helpers shape its accuracy: **`rankCandidateFolders`** ranks the folder tree toward THIS
+  batch (people/subject/location token overlap + category + a strong boost so standing-route
+  dests are never hidden) and caps the list shown to the model — the right project stays
+  visible, distractors that drive mis-placement are dropped, and the omitted count is told to
+  the model so it picks `_Unsorted` instead of forcing a far-fetched match (small trees are
+  shown whole). **`calibratePlacements`** then *overrides the model's self-reported confidence
+  deterministically* — `_Unsorted` ≤0.3, brand-new project ≤0.5, existing/route/child-of-
+  existing trusted — and forces clips that share a subject onto ONE destination. The renderer's
+  "Needs you" vs "Confident" split depends on this calibration, so don't trust the raw model
+  number. Confidence is *capped* by destination type, never *raised*. `suggestLedgerMemory`
+  is @ledger's (a black box this consumes). Test pure helpers with a throwaway node script
+  (extract the source between the markers; Ollama isn't runnable in CI).
   `runAiPlan` is the shared AI pass (primary "Suggest with AI", Refine, and the on-open
   `maybeAutoPlan`); `openSuggestWizard`/`openSortChat` remain as secondary tools under "More".
 - **Compression** (`compress:run`/`compress:list`/`compress:defaults` in main): ffmpeg presets

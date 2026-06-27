@@ -39,6 +39,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   project it's filed footage into (people, subjects, places, an AI summary) and both pre-files
   obvious repeats automatically (“matches your *Lawn Mowing* shoot”) and feeds that memory to
   the AI — so it reuses the right existing project instead of guessing from a blank slate.
+- **Better destination picks + honest confidence.** When you have many projects, the app now
+  shows the AI a **shortlist ranked toward the current batch** (so the right folder is always
+  in view instead of buried among hundreds), with a sharper prompt and a worked example. It
+  then **calibrates each placement's confidence** from where the clip is actually going —
+  brand-new or unclear destinations are marked low and routed to **“Needs you”** rather than
+  auto-filed, and clips of the same subject are kept together — so fewer clips land in the
+  wrong folder and the ones it's unsure about reliably ask you first.
 - Genericised for public use: no baked-in personal projects/clients, defaults derive from the
   OS Videos folder, dev-only phone simulation off by default.
 - Renamed the misleading "Compress, Rename & Delete" home action to "Import, Rename & Clear card".

@@ -935,6 +935,94 @@ function structureDigest(folders) {
   if (!lines.length) return '';
   return `\nHOW THE EXISTING PROJECTS ARE ORGANIZED INSIDE — read each one and CONTINUE its own pattern, never impose a different scheme:\n${lines.slice(0, 50).join('\n')}\n`;
 }
+// ---- Placement-brain helpers (pure — unit-testable without Ollama) ----
+// Normalize a string to a space-joined lowercase token string.
+function pbNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+// Meaningful tokens (≥3 chars) from a string.
+function pbToks(s) { return pbNorm(s).split(' ').filter((w) => w.length > 2); }
+// Strip leading/trailing slashes + backslashes → a comparable relative path.
+function pbCleanPath(p) { return String(p || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim(); }
+
+// CANDIDATE SELECTION — rank the existing folder tree toward THIS batch so the
+// genuinely-relevant project is always visible to the model (and distractors that
+// drive mis-placement are dropped). Scores each folder by token overlap with the
+// batch's people (weighted highest) / subjects / locations, a nudge for matching the
+// batch's top-level category, and a strong boost for any standing-route destination
+// (which must never be hidden). Small trees are shown whole — hiding helps nothing.
+// Returns { shown:[paths], hiddenCount, ranked }. Pure.
+function rankCandidateFolders(folders, clips, categories, routeRules, opts) {
+  const MAX = (opts && opts.max) || 80;
+  const list = (folders || []).map(pbCleanPath).filter(Boolean);
+  if (list.length <= MAX) return { shown: list, hiddenCount: 0, ranked: false };
+  const subj = new Set(); const ppl = new Set(); const loc = new Set();
+  for (const c of (clips || [])) {
+    pbToks(c && c.subject).forEach((t) => subj.add(t));
+    pbToks(c && c.description).forEach((t) => subj.add(t));
+    pbToks(c && c.location).forEach((t) => loc.add(t));
+    (Array.isArray(c && c.people) ? c.people : []).forEach((p) => pbToks(p).forEach((t) => ppl.add(t)));
+  }
+  const hasSignal = subj.size || ppl.size || loc.size;
+  const cats = (categories || []).map(pbNorm).filter(Boolean);
+  const routeDests = new Set((routeRules || []).map((r) => pbCleanPath(r && r.dest)).filter(Boolean));
+  const score = (f) => {
+    const segs = f.split('/').filter(Boolean);
+    const ft = new Set(); segs.forEach((s) => pbToks(s).forEach((t) => ft.add(t)));
+    let s = 0;
+    ft.forEach((t) => { if (ppl.has(t)) s += 3; if (subj.has(t)) s += 2; if (loc.has(t)) s += 2; });
+    if (cats.length && cats.includes(pbNorm(segs[0] || ''))) s += 1;
+    if (routeDests.has(f)) s += 6;
+    return s;
+  };
+  const scored = list.map((f, idx) => ({ f, s: score(f), idx }));
+  const anyHit = scored.some((x) => x.s > 0);
+  // No usable signal/overlap → keep the original (recent-first) order, just truncated.
+  if (!hasSignal || !anyHit) return { shown: list.slice(0, MAX), hiddenCount: list.length - MAX, ranked: false };
+  const chosen = scored.slice().sort((a, b) => b.s - a.s || a.idx - b.idx).slice(0, MAX).map((x) => x.f);
+  // Guarantee every standing-route destination is present even if it scored out.
+  for (const d of routeDests) { if (d && list.includes(d) && !chosen.includes(d)) chosen.push(d); }
+  return { shown: chosen, hiddenCount: Math.max(0, list.length - chosen.length), ranked: true };
+}
+
+// CONFIDENCE CALIBRATION + same-subject grouping. The model's self-reported
+// confidence is unreliable, but the renderer's "Needs you" review split depends on
+// it, so we calibrate deterministically from what the destination actually IS:
+//   - _Unsorted               → capped low (≤0.3)
+//   - brand-new folder/project (neither an existing folder, a child of one, nor a
+//     route dest) → capped (≤0.5) — a guess, not a known match
+//   - existing project / route dest → trust the model's value (it was told to be high
+//     only for sure matches); fill a sensible default when it omitted one.
+// Then force clips that share a (non-empty) subject onto ONE destination — the one the
+// most-confident, most-grounded member got — so a subject is never split. Pure.
+function calibratePlacements(placements, clips, ctx) {
+  const folderSet = new Set(((ctx && ctx.folders) || []).map(pbCleanPath).filter(Boolean));
+  const routeDests = new Set(((ctx && ctx.routeRules) || []).map((r) => pbCleanPath(r && r.dest)).filter(Boolean));
+  const isUnsorted = (p) => /(^|\/)_unsorted(\/|$)/i.test(p);
+  const round2 = (n) => Math.round(n * 100) / 100;
+  const out = (placements || []).map((p) => {
+    const path = pbCleanPath(p.path);
+    const existing = folderSet.has(path);
+    const parent = path.split('/').slice(0, -1).join('/');
+    const underExisting = !!parent && folderSet.has(parent);
+    const known = existing || routeDests.has(path);
+    const unsorted = isUnsorted(path);
+    let conf = (p.confidence == null || !isFinite(p.confidence)) ? null : Math.max(0, Math.min(1, p.confidence));
+    if (conf == null) conf = unsorted ? 0.25 : (known ? 0.7 : (underExisting ? 0.6 : 0.4));
+    if (unsorted) conf = Math.min(conf, 0.3);
+    else if (!known && !underExisting) conf = Math.min(conf, 0.5);
+    return { i: p.i, path, why: p.why, confidence: round2(conf), _known: known ? 1 : 0, _unsorted: unsorted ? 1 : 0 };
+  });
+  // Same-subject grouping.
+  const subjOf = {}; (clips || []).forEach((c, idx) => { subjOf[idx] = pbNorm(c && c.subject); });
+  const groups = {};
+  for (const p of out) { const sj = subjOf[p.i]; if (!sj) continue; (groups[sj] = groups[sj] || []).push(p); }
+  for (const sj of Object.keys(groups)) {
+    const g = groups[sj]; if (g.length < 2) continue;
+    const winner = g.slice().sort((a, b) => (b._known - a._known) || (a._unsorted - b._unsorted) || (b.confidence - a.confidence))[0];
+    for (const p of g) { if (p.path !== winner.path) { p.path = winner.path; p.why = winner.why; p.confidence = Math.min(p.confidence, winner.confidence); } }
+  }
+  return out.map((p) => ({ i: p.i, path: p.path, why: p.why, confidence: p.confidence }));
+}
+
 // AI: given the real folder list + clip metadata, propose a destination folder
 // path per clip (existing or new), grouping related clips together.
 ipcMain.handle('ai:suggestProjects', async (_e, payload) => {
@@ -946,7 +1034,15 @@ ipcMain.handle('ai:suggestProjects', async (_e, payload) => {
   const routes = aiRoutes();
   if (!clips.length) return { ok: true, placements: [] };
   if (!aiTextModel()) return { ok: false, error: 'No model selected (set one in AI settings)' };
-  const folderList = folders.slice(0, 600).join('\n') || '(no existing folders)';
+  const routeRules = routes.filter((r) => r.kind !== 'descriptor');
+  // CANDIDATE SELECTION: rank the folder tree toward THIS batch so the genuinely
+  // relevant project is always visible and distractor folders that cause mis-placement
+  // are dropped (standing-route dests are always kept; small trees shown whole).
+  const cand = rankCandidateFolders(folders, clips, categories, routeRules, { max: 80 });
+  const folderList = cand.shown.join('\n') || '(no existing folders)';
+  const omittedLine = cand.hiddenCount
+    ? `\n(${cand.hiddenCount} less-relevant folder(s) are hidden — ranked unlikely for this batch. If NONE of the projects above genuinely fits a clip, file it to "<its category>/_Unsorted" rather than inventing or forcing a project.)`
+    : '';
   const clipList = clips.map((c, i) => {
     const saw = c.observation ? ` saw="${String(c.observation).replace(/"/g, "'").slice(0, 400)}"` : '';
     const ppl = (Array.isArray(c.people) && c.people.length) ? ` people="${c.people.join(', ')}"` : '';
@@ -959,11 +1055,10 @@ ipcMain.handle('ai:suggestProjects', async (_e, payload) => {
   const ledgerBlock = suggestLedgerMemory(clips);
   const ctxLine = context ? `\nWhat the videographer told us about this batch (use it to identify the subjects/people/shoot and group correctly): "${context}"\n` : '';
   const catLine = categories.length ? `EVERY clip MUST be filed under exactly one of these top-level categories (use the path that starts with it): ${categories.join(' | ')}.` : '';
-  const routeRules = routes.filter((r) => r.kind !== 'descriptor');
   const routeLine = routeRules.length ? `\nThe user has STANDING filing rules — obey them when a clip matches:\n${routeRules.map((r) => `- if it's about [${(r.match || []).join(', ')}] → "${r.dest}"${r.byDay ? ' (return just this project path; the app adds the day folder)' : ''}`).join('\n')}` : '';
   const fbLine = feedback ? `\nTHE USER REVIEWED YOUR LAST PLAN AND WANTS THESE CORRECTIONS — obey them above all other rules:\n"${feedback}"\n` : '';
   const structDigest = structureDigest(folders);
-  const prompt = `A videographer files video clips into this project-folder tree (relative paths):\n${folderList}\n${structDigest}${ledgerBlock}\nClips to place:\n${clipList}\n${ctxLine}${fbLine}\n${catLine}${routeLine}\n\nRULES for choosing each clip's destination folder PATH (relative, "/" separators):\n- USE PAST FILING MEMORY FIRST: if a clip's subject / people / place match a remembered project above, reuse that EXACT project path — this is the strongest signal, stronger than folder names alone.\n- Match by what the clip IS — its SUBJECT / description / content — NOT merely by sharing a date with other clips. A clip about something else must NOT be filed into a project just because it was shot the same day.\n- Strongly PREFER an EXISTING project folder when the clip's subject genuinely belongs there. Reuse the exact existing path.\n- DISCOVER each target project's existing internal structure (see the "organized inside" list above) and CONTINUE that same pattern — whatever it is: "Day 1/Day 2…" → the next "Day N"; dates → a date; "01 - desc" / "Shoot 03" → the next in that series. Do NOT impose dates on a project that uses a different scheme. ONLY when a project has no consistent pattern (its folders are messy/bad) should you fall back to the clip's date (YYYY-MM-DD).\n- Return the project path and (if you're confident) the matching subfolder; if unsure of the exact subfolder name, return just the project path and the app will continue the discovered pattern for you. NEVER nest one date folder inside another.\n- Group clips of the SAME subject/shoot under that one project. Clips that fit no project — or that would be alone in a new folder — go under "<their category>/_Unsorted". Do not force unrelated clips together.\nFor EACH clip also give a SHORT "why" (≤8 words, e.g. "matches your Lawn Mowing shoot", "new project", "unsorted — unclear") and a "confidence" 0-1 (how sure you are of the destination).\nReply STRICT JSON only: {"placements":[{"i":0,"path":"2026/2026 - Social Media/Calisthetics Journey","why":"existing project","confidence":0.9}]}.`;
+  const prompt = `A videographer files video clips into this project-folder tree (relative paths), ranked with the most relevant projects for this batch first:\n${folderList}${omittedLine}\n${structDigest}${ledgerBlock}\nClips to place:\n${clipList}\n${ctxLine}${fbLine}\n${catLine}${routeLine}\n\nRULES — choose each clip's destination folder PATH (relative, "/" separators):\n1. PAST FILING MEMORY WINS. If a clip's subject / people / place matches a remembered project above, reuse that EXACT path. This beats folder-name guessing.\n2. MATCH BY CONTENT, NOT DATE. Place a clip by what it IS (subject / description / people), never merely because it shares a date with other clips.\n3. PREFER AN EXISTING PROJECT when the clip genuinely belongs there — reuse the exact existing path shown above.\n4. GROUP SAME SUBJECT TOGETHER. Every clip with the same subject/shoot goes to the SAME project path. Never split one subject across folders.\n5. CONTINUE EACH PROJECT'S OWN INTERNAL PATTERN (see the "organized inside" list above): "Day 1/Day 2…" → the next "Day N"; dates → a date (YYYY-MM-DD); "01 - desc" / "Shoot 03" → the next in that series. Do NOT impose a different scheme; only fall back to the clip's date when a project has no consistent pattern. If unsure of the exact subfolder, return just the project path. NEVER nest one date folder inside another.\n6. WHEN GENUINELY UNSURE, DO NOT GUESS. File the clip to "<its category>/_Unsorted" with LOW confidence. A wrong existing-project guess is worse than _Unsorted.\n\nCONFIDENCE (0-1) — be honest; the app sends low-confidence clips to a human review queue:\n- 0.85-1.0 ONLY for an exact existing-project match, a past-filing-memory match, or a standing-rule match.\n- 0.5-0.8 for a plausible existing project you are not certain about.\n- 0.4 or less for a brand-new project or anything ambiguous; 0.3 or less for _Unsorted.\n\nFor EACH clip also give a SHORT "why" (≤8 words, e.g. "matches your Lawn Mowing shoot", "new project", "unsorted — unclear subject").\n\nWORKED EXAMPLE (shows format + grouping + an unsure clip; do not copy its values):\nClips 0 and 1 are both subject="lawn mowing" for an existing "2026/Clients/Gourgess Lawns" project; clip 2 is an unclear drone test.\n{"placements":[{"i":0,"path":"2026/Clients/Gourgess Lawns/2026-06-27","why":"matches Gourgess Lawns shoot","confidence":0.9},{"i":1,"path":"2026/Clients/Gourgess Lawns/2026-06-27","why":"same lawn mowing subject","confidence":0.9},{"i":2,"path":"2026/_Unsorted","why":"unsorted — unclear subject","confidence":0.25}]}\n\nReply STRICT JSON only, no prose: {"placements":[{"i":0,"path":"...","why":"...","confidence":0.9}]}.`;
   try {
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.2, timeout: 180000 }));
     const arr = Array.isArray(o.placements) ? o.placements : (Array.isArray(o) ? o : []);
@@ -976,7 +1071,9 @@ ipcMain.handle('ai:suggestProjects', async (_e, payload) => {
         confidence: isFinite(conf) ? Math.max(0, Math.min(1, conf)) : null
       };
     }).filter((p) => isFinite(p.i) && p.path);
-    return { ok: true, placements };
+    // Deterministically calibrate confidence + enforce same-subject grouping.
+    const calibrated = calibratePlacements(placements, clips, { folders, routeRules });
+    return { ok: true, placements: calibrated };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
 });
 
@@ -1024,14 +1121,14 @@ ipcMain.handle('ai:batchQuestions', async (_e, payload) => {
   const folders = (payload && payload.folders) || [];
   if (!aiTextModel()) return { ok: false, error: 'No model selected' };
   const folderList = folders.slice(0, 250).join('\n') || '(none)';
-  const prompt = `A videographer is about to file a batch of video clips. Here is what we know:\n${summary}\n\nTop-level categories: ${categories.join(' | ') || '(none)'}\n\nTheir EXISTING project folders (relative paths):\n${folderList}\n\nAsk as MANY short, specific clarifying questions as are genuinely useful — as few as 1, up to 12. Do NOT pad: only ask a question when its answer would actually change where clips get filed. Ask one per real ambiguity in THIS batch — e.g. whether a label like "vlog"/"timelapse" is a real project or just a descriptor, whether clips on different days are separate projects, who is in them, or which client/project a subject belongs to.\nFor "hints" (tap-able suggested answers): when a question is about WHICH client or project something belongs to, the hints MUST be the ACTUAL matching folder NAMES from the list above (e.g. the real client folder names) — never placeholders like "Client A". For yes/no or project-vs-descriptor questions, use the obvious short options. Keep each question under ~14 words.\nReply STRICT JSON only: {"questions":[{"q":"<question>","hints":["<real option>","<real option>"]}]}.`;
+  const prompt = `A videographer is about to file a batch of video clips. Here is what we know:\n${summary}\n\nTop-level categories: ${categories.join(' | ') || '(none)'}\n\nTheir EXISTING project folders (relative paths):\n${folderList}\n\nAsk ONLY the clarifying questions whose answer would actually CHANGE where a clip gets filed — as few as possible (0 to 6). Skip anything already determinable from the summary, the existing folders, or obvious context: do NOT ask about a subject that clearly matches an existing folder, and do NOT pad to hit a number. A question earns its place only by resolving a REAL filing ambiguity in THIS batch — e.g. whether a label like "vlog"/"timelapse" is a real project or just a descriptor, whether clips on different days are separate projects, who is in them, or which client/project an ambiguous subject belongs to. Merge near-duplicate ambiguities into one question.\nFor "hints" (tap-able suggested answers): when a question is about WHICH client or project something belongs to, the hints MUST be the ACTUAL matching folder NAMES from the list above — never placeholders like "Client A". For yes/no or project-vs-descriptor questions, use the obvious short options. Keep each question under ~14 words.\nReply STRICT JSON only: {"questions":[{"q":"<question>","hints":["<real option>","<real option>"]}]}.`;
   try {
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.3, timeout: 120000 }));
     const arr = Array.isArray(o.questions) ? o.questions : (Array.isArray(o) ? o : []);
     const questions = arr.map((x) => ({
       q: String((x && (x.q || x.question)) || '').trim(),
       hints: (Array.isArray(x && x.hints) ? x.hints : []).map((h) => String(h).trim()).filter(Boolean).slice(0, 5)
-    })).filter((x) => x.q).slice(0, 12);
+    })).filter((x) => x.q).slice(0, 6);
     if (!questions.length) return { ok: false, error: 'No questions' };
     return { ok: true, questions };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
@@ -1048,7 +1145,7 @@ ipcMain.handle('ai:answerSubjects', async (_e, payload) => {
   if (!aiTextModel()) return { ok: false, error: 'No model selected' };
   const folderList = folders.slice(0, 250).join('\n') || '(none)';
   const subjLines = subjects.map((s) => `- "${s.subject}" (${s.count} clips)`).join('\n');
-  const prompt = `A videographer is filing these subjects:\n${subjLines}\n\nTop-level categories: ${categories.join(' | ') || '(none)'}\n\nExisting project folders:\n${folderList}\n\nFor EACH subject, suggest the single best SHORT answer for where it goes:\n- If the subject is a TYPE OF SHOT rather than a project — vlog, pov, timelapse, b-roll, montage, cutaway, slow-mo, interview, talking-head — answer EXACTLY "descriptor".\n- Else an EXISTING project folder NAME from the list (the bare folder NAME, e.g. "Gourgess Lawns" — NOT a full path and NOT a dated/day subfolder), when it clearly belongs there,\n- or one of the category names,\n- or "delete" if it's clearly trash (named delete/junk),\n- or "unsorted" if it's unnamed/unclear.\nReply STRICT JSON only mapping each subject to its short answer: {"answers":{"<subject>":"<answer>"}}.`;
+  const prompt = `A videographer is filing these subjects:\n${subjLines}\n\nTop-level categories: ${categories.join(' | ') || '(none)'}\n\nExisting project folders:\n${folderList}\n\nFor EACH subject, suggest the single best SHORT answer for where it goes:\n- If the subject is a TYPE OF SHOT rather than a project — vlog, pov, timelapse, b-roll, montage, cutaway, slow-mo, interview, talking-head — answer EXACTLY "descriptor".\n- Else an EXISTING project folder NAME from the list (the bare folder NAME, e.g. "Gourgess Lawns" — NOT a full path and NOT a dated/day subfolder), when it clearly belongs there,\n- or one of the category names,\n- or "delete" if it's clearly trash (named delete/junk),\n- or "unsorted" if it's unnamed/unclear.\nOnly name an existing folder when the subject CLEARLY belongs there — a confident, specific match. When in doubt, answer "unsorted": a weak guess that mis-files footage is worse than leaving it for the user. Do not stretch to fit a folder.\nReply STRICT JSON only mapping each subject to its short answer: {"answers":{"<subject>":"<answer>"}}.`;
   try {
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.2, timeout: 120000 }));
     const raw = (o && o.answers && typeof o.answers === 'object') ? o.answers : (o && typeof o === 'object' ? o : {});

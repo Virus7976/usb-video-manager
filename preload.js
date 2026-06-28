@@ -52,7 +52,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // Phone backup (MTP — phones with no drive letter)
   listPhones: () => ipcRenderer.invoke('phone:list'),
-  scanPhone: (name) => ipcRenderer.invoke('phone:scan', name),
+  phoneAlbums: (device) => ipcRenderer.invoke('phone:albums', { device }),
+  scanPhone: (name, albums) => ipcRenderer.invoke('phone:scan', { name, albums }),
   pullFromPhone: (payload) => ipcRenderer.invoke('phone:pull', payload),
   copyPhoneVideos: (payload) => ipcRenderer.invoke('phone:copyVideos', payload),
   distributePhotos: (payload) => ipcRenderer.invoke('phone:distribute', payload),

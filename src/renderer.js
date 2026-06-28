@@ -8632,6 +8632,8 @@ async function openPhone(device) {
   $('driveBanner').classList.add('hidden');
   $('phone').classList.remove('hidden');
   $('phCopyWrap').classList.add('hidden');
+  $('phChooser').classList.add('hidden');
+  $('phBar').classList.add('hidden');
   await phoneDetect(device);
 }
 
@@ -8656,44 +8658,105 @@ async function phoneDetect(preferred) {
   phoneState.device = sel.name;
   phoneState.sim = !!sel.sim;
   $('phDeviceName').textContent = sel.name;
-  $('phDeviceSub').textContent = 'Reading camera roll…';
-  await phoneScan();
+  $('phDeviceSub').textContent = 'Choose what to back up';
+  await phoneEnterChooser();
 }
 
-async function phoneScan() {
+// --- Smart chooser: pick albums, see what's new, back it up without a full scan ---
+async function phoneEnterChooser() {
+  phoneState.reviewMode = false;
+  $('phChooser').classList.remove('hidden');
+  $('phBar').classList.add('hidden');
+  $('phGrid').innerHTML = '';
+  $('phCopyWrap').classList.add('hidden');
+  $('phAlbums').innerHTML = '<span class="muted small">Finding albums…</span>';
+  $('phNewSummary').textContent = 'Checking what’s new…';
+  $('phNewSub').textContent = '';
+  $('phBackupNew').disabled = true; $('phReview').disabled = true;
+  let ar = { ok: false, albums: [] };
+  try { ar = await window.api.phoneAlbums(phoneState.device); } catch (e) { ar = { ok: false, albums: [], reason: (e && e.message) }; }
+  if (ar && ar.ok === false) { phoneShowScanError(); $('phAlbums').innerHTML = ''; return; }
+  const albums = (ar.albums || []).filter((a) => a && a.album).sort((a, b) => (b.count || 0) - (a.count || 0));
+  phoneState.albums = albums;
+  // Default scope: Camera if it exists, else the biggest album. (Empty → scan all DCIM.)
+  const cam = albums.find((a) => /^camera$/i.test(a.album));
+  phoneState.selectedAlbums = cam ? [cam.album] : (albums[0] ? [albums[0].album] : []);
+  renderPhoneAlbums();
+  await phoneScanScoped();
+}
+
+function renderPhoneAlbums() {
+  const host = $('phAlbums'); if (!host) return;
+  const albums = phoneState.albums || [];
+  if (!albums.length) { host.innerHTML = '<span class="muted small">No albums found — will scan everything.</span>'; return; }
+  const sel = new Set(phoneState.selectedAlbums || []);
+  host.innerHTML = albums.map((a) => `<button type="button" class="ph-chip${sel.has(a.album) ? ' on' : ''}" data-album="${escapeAttr(a.album)}">${escapeHtml(a.album)}<span class="ph-chip-n">${a.count}</span></button>`).join('');
+  host.querySelectorAll('.ph-chip').forEach((b) => b.addEventListener('click', async () => {
+    if (phoneState.copying) return;
+    const name = b.dataset.album;
+    const s = new Set(phoneState.selectedAlbums || []);
+    if (s.has(name)) s.delete(name); else s.add(name);
+    if (!s.size) s.add(name);   // keep at least one album selected
+    phoneState.selectedAlbums = [...s];
+    renderPhoneAlbums();
+    await phoneScanScoped();
+  }));
+}
+
+async function phoneScanScoped() {
   if (!phoneState.device) return;
   const scanEl = $('phScanState');
+  const scope = (phoneState.selectedAlbums || []).join(', ') || 'your phone';
   scanEl.classList.remove('hidden');
-  // Ticking counter — a full camera roll can take ~40s over USB, so reassure that
-  // it's working rather than frozen.
   let secs = 0;
-  scanEl.innerHTML = `<div class="scan-busy"><span class="illo scan-illo">${ILLO_SCAN}</span><p class="scan-busy-tx" id="phScanTxt">Reading your phone’s camera roll…</p></div>`;
+  scanEl.innerHTML = `<div class="scan-busy"><span class="illo scan-illo">${ILLO_SCAN}</span><p class="scan-busy-tx" id="phScanTxt">Reading ${escapeHtml(scope)}…</p></div>`;
   const txtEl = scanEl.querySelector('#phScanTxt');
-  const tick = setInterval(() => { secs += 1; if (txtEl) txtEl.textContent = `Reading your phone’s camera roll… (${secs}s)`; }, 1000);
+  const tick = setInterval(() => { secs += 1; if (txtEl) txtEl.textContent = `Reading ${scope}… (${secs}s)`; }, 1000);
+  $('phBackupNew').disabled = true; $('phReview').disabled = true;
+  $('phNewSummary').textContent = 'Checking what’s new…'; $('phNewSub').textContent = '';
   let res = { ok: true, media: [] };
-  try { res = await window.api.scanPhone(phoneState.device); } catch (e) { res = { ok: false, media: [], reason: (e && e.message) || 'scan failed' }; }
+  try { res = await window.api.scanPhone(phoneState.device, phoneState.selectedAlbums || []); } catch (e) { res = { ok: false, media: [], reason: (e && e.message) }; }
   clearInterval(tick);
   scanEl.classList.add('hidden');
-  // Back-compat: a plain array (older shape) is treated as a successful scan.
   if (Array.isArray(res)) res = { ok: true, media: res };
-  if (res && res.ok === false) {
-    // The scan FAILED (phone locked / disconnected / timed out) — don't pretend the
-    // camera roll is empty; tell the user how to fix it and offer Rescan.
-    $('phDeviceSub').textContent = 'Couldn’t read the phone — unlock it, choose “File transfer / MTP”, then Rescan.';
-    $('phBar').classList.add('hidden');
-    $('phGrid').innerHTML = `<div class="ph-empty"><span class="illo">${ILLO_PHONE}</span>
-      <p class="ph-empty-tx">Couldn’t read your phone</p>
-      <p class="muted small">Make sure it's <b>unlocked</b> and set to <b>“File transfer / MTP”</b> (not “Charging only”), then press <b>Rescan</b>.</p></div>`;
-    phoneState.media = [];
-    phoneUpdateBar();
-    return;
+  if (res && res.ok === false) { phoneShowScanError(); return; }
+  // Default-select only what hasn't been backed up before (shared import memory).
+  phoneState.media = ((res && res.media) || []).map((m, i) => {
+    const isNew = !importedSet.has(importKey({ name: m.name, size: m.size }));
+    return { ...m, _i: i, _new: isNew, selected: isNew };
+  });
+  const total = phoneState.media.length;
+  const newOnes = phoneState.media.filter((m) => m._new);
+  const newN = newOnes.length;
+  const newPh = newOnes.filter((m) => m.kind === 'photo').length;
+  const newVid = newN - newPh;
+  if (!total) {
+    $('phNewSummary').textContent = 'Nothing here';
+    $('phNewSub').textContent = 'No photos or videos in the selected album(s).';
+  } else if (!newN) {
+    $('phNewSummary').textContent = 'All backed up ✓';
+    $('phNewSub').textContent = `${total} item${total !== 1 ? 's' : ''} here — all already backed up. Use Review to back any up again.`;
+  } else {
+    $('phNewSummary').textContent = `${newN} new to back up`;
+    $('phNewSub').textContent = `${newPh} photo${newPh !== 1 ? 's' : ''} · ${newVid} video${newVid !== 1 ? 's' : ''} · ${total} in selection`;
   }
-  phoneState.media = ((res && res.media) || []).map((m, i) => ({ ...m, _i: i, selected: true }));
-  const ph = phoneState.media.filter((m) => m.kind === 'photo').length;
-  const vid = phoneState.media.filter((m) => m.kind === 'video').length;
-  $('phDeviceSub').textContent = phoneState.media.length
-    ? `${ph} photo${ph !== 1 ? 's' : ''} · ${vid} video${vid !== 1 ? 's' : ''} in your camera roll`
-    : 'No photos or videos found in DCIM.';
+  $('phBackupNew').textContent = newN ? `Back up ${newN} new` : 'Nothing new';
+  $('phBackupNew').disabled = !newN || phoneState.copying;
+  $('phReview').textContent = total ? `Review all ${total}` : 'Review';
+  $('phReview').disabled = !total || phoneState.copying;
+}
+
+function phoneShowScanError() {
+  $('phNewSummary').textContent = 'Couldn’t read your phone';
+  $('phNewSub').textContent = 'Unlock it and choose “File transfer / MTP” (not “Charging only”), then press Rescan.';
+  $('phBackupNew').disabled = true; $('phReview').disabled = true;
+  phoneState.media = [];
+}
+
+// Manual-review mode: reveal the full grid for the current (scoped) scan.
+function phoneEnterReview() {
+  phoneState.reviewMode = true;
+  $('phChooser').classList.add('hidden');
   $('phBar').classList.toggle('hidden', !phoneState.media.length);
   phoneRenderGrid();
   phoneUpdateBar();
@@ -8766,21 +8829,26 @@ async function phoneCopy() {
   const nVid = sel.filter((m) => m.kind === 'video').length;
   const nPho = sel.length - nVid;
   phoneState.copying = true; phoneUpdateBar();
+  $('phChooser').classList.add('hidden');
   $('phCopyWrap').classList.remove('hidden');
   $('phCopyBar').style.width = '0%'; $('phCopyPct').textContent = '0%';
   $('phCopyLabel').textContent = nPho ? 'Copying photos → 04 - Photos Temp…' : 'Preparing videos…';
   $('phCopySub').textContent = nVid ? `${nVid} video${nVid !== 1 ? 's' : ''} stay on the device until you copy them out` : '';
   const items = sel.map((m) => ({ rel: m.rel, name: m.name, size: m.size, kind: m.kind, abs: m.abs }));
+  // Register a persistent task so leaving the window and coming back still shows it (tap to return).
+  setTask('phone', 'Backing up phone', 0, sel.length, 'preparing', '');
   const off = window.api.onPhoneCopyProgress((p) => {
     const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
     $('phCopyBar').style.width = `${pct}%`; $('phCopyPct').textContent = `${pct}%`;
     $('phCopyLabel').textContent = `Preparing… ${p.done}/${p.total}`;
     $('phCopySub').textContent = p.name || '';
+    setTask('phone', 'Backing up phone', p.done || 0, p.total || sel.length, 'preparing', p.name || '');
   });
   let res;
   try { res = await window.api.pullFromPhone({ device: phoneState.device, items, photoDest: dests.photo, sim: phoneState.sim }); }
   catch (e) { res = { ok: false, error: e.message || String(e) }; }
   off();
+  clearTask('phone');
   phoneState.copying = false;
   if (res && res.ok && Array.isArray(res.staged) && res.staged.length) {
     if (typeof pcNotify === 'function') pcNotify('Phone ready', `${nPho} photo${nPho !== 1 ? 's' : ''} in Photos Temp · ${nVid} video${nVid !== 1 ? 's' : ''} ready to name.`);
@@ -9081,11 +9149,13 @@ async function runPhoneCopy() {
   $('copyBar').style.width = '0%'; $('copyPct').textContent = '0%';
   $('copyLabel').textContent = vids.length ? 'Copying videos → 01 - Uncompressed…' : 'Finishing…';
   $('copySub').textContent = '';
+  setTask('phone-copy', 'Copying off phone', 0, jobs.length || 1, 'copying', '');
   const off = window.api.onPhoneCopyProgress((p) => {
     const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
     $('copyBar').style.width = `${pct}%`; $('copyPct').textContent = `${pct}%`;
     $('copyLabel').textContent = `Copying videos… ${p.done}/${p.total}`;
     $('copySub').textContent = p.name || '';
+    setTask('phone-copy', 'Copying off phone', p.done || 0, p.total || jobs.length || 1, 'copying', p.name || '');
   });
   let res = { ok: true, copied: 0 };
   if (jobs.length) { try { res = await window.api.copyPhoneVideos({ jobs }); } catch (e) { res = { ok: false, error: e.message }; } }
@@ -9097,7 +9167,14 @@ async function runPhoneCopy() {
     $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
     try { const r2 = await window.api.distributePhotos({ jobs: pjobs }); distributed = (r2 && r2.copied) || 0; } catch { /* non-fatal */ }
   }
-  off(); copyInProgress = false; hideCopyChip();
+  off(); clearTask('phone-copy'); copyInProgress = false; hideCopyChip();
+  // Remember what we just backed up (by original phone name+size) so next time the
+  // smart chooser knows it's no longer "new" — this is what makes "Back up new" work
+  // across sessions. Shared with the card import index.
+  try {
+    const keys = state.scannedFiles.map((c) => importKey({ name: c.name, size: c.size }));
+    if (keys.length) { window.api.importsAdd(keys); keys.forEach((k) => importedSet.add(k)); }
+  } catch { /* non-fatal */ }
   $('copyBar').style.width = '100%'; $('copyPct').textContent = '100%';
   const destNames = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ');
   const routedNote = routedN ? ` (${routedN} also filed into Projects)` : '';
@@ -10167,8 +10244,14 @@ document.querySelectorAll('.fin-home').forEach((b) => b.addEventListener('click'
 
 // --- Phone backup wiring (reached from the rename flow when a phone is the source) ---
 document.querySelectorAll('.ph-home').forEach((b) => b.addEventListener('click', goHome));
-$('phRescan').addEventListener('click', phoneDetect);
+$('phRescan').addEventListener('click', () => phoneDetect());
 $('phCopyBtn').addEventListener('click', phoneCopy);
+// Smart chooser actions
+$('phBackupNew').addEventListener('click', () => {
+  phoneState.media.forEach((m) => { m.selected = !!m._new; });   // back up only what's new
+  phoneCopy();
+});
+$('phReview').addEventListener('click', phoneEnterReview);
 $('phSelectAll').addEventListener('change', (e) => {
   // Toggle only the currently-visible (filtered) media, not hidden items.
   const vis = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);

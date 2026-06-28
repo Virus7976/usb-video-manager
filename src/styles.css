@@ -855,6 +855,31 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .ph-f.on { background: var(--accent); color: var(--accent-fg, #fff); font-weight: 600; }
 .ph-summary { flex: 1 1 auto; margin: 0; }
 .ph-dest { display: inline-flex; align-items: center; gap: 8px; }
+
+/* Smart phone chooser — pick albums, see what's new, back it up */
+.ph-chooser { display: flex; flex-direction: column; gap: 14px; margin: 4px 2px 10px; }
+.ph-chooser-albums { display: flex; flex-direction: column; gap: 7px; }
+.ph-chooser-lbl { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); font-weight: 600; }
+.ph-albums { display: flex; flex-wrap: wrap; gap: 7px; }
+.ph-chip {
+  font-family: inherit; font-size: 12.5px; padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--text-3) 26%, transparent);
+  background: color-mix(in srgb, var(--text-3) 7%, transparent); color: var(--text-2);
+  display: inline-flex; align-items: center; gap: 7px; transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.ph-chip:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.ph-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg, #fff); font-weight: 600; }
+.ph-chip-n { font-size: 11px; opacity: .7; }
+.ph-chip.on .ph-chip-n { opacity: .85; }
+.ph-chooser-action {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 14px 16px; border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--card, transparent));
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.ph-chooser-summary { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ph-new-tx { font-size: 15px; font-weight: 650; color: var(--text-1); }
+.ph-chooser-btns { display: inline-flex; gap: 8px; flex-wrap: wrap; }
 .ph-grid {
   flex: 1 1 auto; min-height: 120px; overflow-y: auto;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--ph-thumb, 150px), 1fr)); gap: 8px;

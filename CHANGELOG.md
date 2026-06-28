@@ -7,6 +7,23 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-28
+
+### Changed
+- **Phone backup, rebuilt around "what's new".** Connect your phone and it no longer scans
+  the entire device or dumps a giant grid. Instead it:
+  - **Asks what to back up from** — albums are shown as chips (Camera selected by default;
+    Screenshots/WhatsApp/Download/etc. with counts) and it only scans what you pick.
+  - **Shows just what's new** — it remembers what you've already backed up (per file) and
+    offers a one-tap **“Back up N new”**, so you stop re-copying the same photos.
+  - **Review / pick manually** is still one tap away for the full grid.
+- **Running backups survive leaving the app.** Pulling/copying off a phone now shows the
+  persistent task bubble — leave, come back, and tap it to see progress (no more "lost" task).
+
+### Fixed
+- "Select all" on the phone grid already respected the filter (0.2.1); the new chooser
+  avoids the giant grid entirely for the common case.
+
 ## [0.2.2] — 2026-06-28
 
 ### Fixed

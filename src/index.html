@@ -449,6 +449,25 @@
         <button type="button" id="phRescan" class="btn subtle">Rescan</button>
       </section>
 
+      <!-- Smart chooser: pick scope (albums) and back up just what's new, without a
+           full-phone scan or wading through a grid. "Review" opens the manual grid. -->
+      <div id="phChooser" class="ph-chooser hidden">
+        <div class="ph-chooser-albums">
+          <span class="ph-chooser-lbl">Back up from</span>
+          <div id="phAlbums" class="ph-albums"></div>
+        </div>
+        <div class="ph-chooser-action">
+          <div class="ph-chooser-summary">
+            <span id="phNewSummary" class="ph-new-tx">Checking what’s new…</span>
+            <span id="phNewSub" class="muted small"></span>
+          </div>
+          <div class="ph-chooser-btns">
+            <button type="button" id="phBackupNew" class="btn primary" disabled>Back up new</button>
+            <button type="button" id="phReview" class="btn subtle" disabled>Review / pick manually</button>
+          </div>
+        </div>
+      </div>
+
       <div id="phScanState" class="scan-state hidden">Reading your phone’s camera roll…</div>
 
       <div class="ph-bar hidden" id="phBar">

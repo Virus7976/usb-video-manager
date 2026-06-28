@@ -1686,26 +1686,81 @@ function Walk($folder, $rel, $depth) {
     }
   }
 }
+$albums = @()
+if ($env:MTP_ALBUMS) { try { $albums = @($env:MTP_ALBUMS | ConvertFrom-Json) } catch { $albums = @() } }
 $root = $dev.GetFolder
 foreach ($st in $root.Items()) {
   if (-not $st.IsFolder) { continue }
   $dcim = $st.GetFolder.Items() | Where-Object { $_.Name -eq 'DCIM' } | Select-Object -First 1
-  if ($dcim) { Walk $dcim.GetFolder "$($st.Name)/DCIM" 0 }
+  if (-not $dcim) { continue }
+  if ($albums.Count -gt 0) {
+    # Scoped scan: only the album folders the user chose (e.g. just "Camera").
+    foreach ($a in $albums) {
+      $af = $dcim.GetFolder.Items() | Where-Object { $_.Name -eq $a -and $_.IsFolder } | Select-Object -First 1
+      if ($af) { Walk $af.GetFolder "$($st.Name)/DCIM/$a" 0 }
+    }
+  } else {
+    Walk $dcim.GetFolder "$($st.Name)/DCIM" 0
+  }
 }
 $list | ConvertTo-Json -Compress
 `;
+// List the album folders under DCIM (Camera, Screenshots, …) with a quick item count,
+// so the user can choose what to back up BEFORE a full scan. Count is the folder's
+// total item count (fast; close enough for a chip label).
+const PS_PHONE_ALBUMS = `
+$ErrorActionPreference='SilentlyContinue'
+$ProgressPreference='SilentlyContinue'
+$name = $env:MTP_DEVICE
+$shell = New-Object -ComObject Shell.Application
+$dev = $shell.NameSpace(17).Items() | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+if (-not $dev) { 'NODEV'; exit }
+$acc = @{}
+foreach ($st in $dev.GetFolder.Items()) {
+  if (-not $st.IsFolder) { continue }
+  $dcim = $st.GetFolder.Items() | Where-Object { $_.Name -eq 'DCIM' } | Select-Object -First 1
+  if (-not $dcim) { continue }
+  foreach ($alb in $dcim.GetFolder.Items()) {
+    if (-not $alb.IsFolder) { continue }
+    $c = 0; try { $c = $alb.GetFolder.Items().Count } catch { $c = 0 }
+    if ($acc.ContainsKey($alb.Name)) { $acc[$alb.Name] += $c } else { $acc[$alb.Name] = $c }
+  }
+}
+$out = foreach ($k in $acc.Keys) { [pscustomobject]@{ album = $k; count = $acc[$k] } }
+$out | ConvertTo-Json -Compress
+`;
 // Returns { ok, media, reason } so the UI can tell "empty roll" from "scan failed"
 // (phone locked / disconnected / timed out) instead of falsely reporting no media.
-async function scanPhone(deviceName) {
+async function scanPhone(deviceName, albums) {
   if (deviceName === SIM_PHONE_NAME) return { ok: true, media: await scanSimPhone() };
-  const r = await runPwshScript(PS_PHONE_SCAN, { timeoutMs: 180000, env: { MTP_DEVICE: deviceName } });
+  const env = { MTP_DEVICE: deviceName };
+  if (Array.isArray(albums) && albums.length) env.MTP_ALBUMS = JSON.stringify(albums);
+  const r = await runPwshScript(PS_PHONE_SCAN, { timeoutMs: 180000, env });
   if (!r.ok) return { ok: false, media: [], reason: r.error || 'scan failed' };
   if (/\bNODEV\b/.test(r.stdout || '')) return { ok: false, media: [], reason: 'device not found' };
   return { ok: true, media: parsePsJson(r.stdout) };
 }
 
+// List DCIM album folders + counts (for the "choose what to back up" chips). Sim phone
+// reports its single folder so the chooser still works in testing.
+async function listPhoneAlbums(deviceName) {
+  if (deviceName === SIM_PHONE_NAME) {
+    const m = await scanSimPhone();
+    return { ok: true, albums: [{ album: 'Camera', count: m.length }] };
+  }
+  const r = await runPwshScript(PS_PHONE_ALBUMS, { timeoutMs: 60000, env: { MTP_DEVICE: deviceName } });
+  if (!r.ok) return { ok: false, albums: [], reason: r.error || 'failed' };
+  if (/\bNODEV\b/.test(r.stdout || '')) return { ok: false, albums: [], reason: 'device not found' };
+  return { ok: true, albums: parsePsJson(r.stdout).filter((a) => a && a.album) };
+}
+
 ipcMain.handle('phone:list', () => listPhones());
-ipcMain.handle('phone:scan', (_e, name) => scanPhone(name));
+ipcMain.handle('phone:albums', (_e, p) => listPhoneAlbums((p && p.device) || p));
+ipcMain.handle('phone:scan', (_e, p) => {
+  // Back-compat: accept either a bare device name or { name, albums }.
+  if (p && typeof p === 'object') return scanPhone(p.name, p.albums);
+  return scanPhone(p);
+});
 
 // GoPro-style pull: copy ONLY the PHOTOS off the phone (into "04 - Photos Temp") —
 // videos STAY on the device and are only copied to the Uncompressed intake later, at

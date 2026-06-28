@@ -166,7 +166,10 @@ async function main() {
   // ---- build + publish ----
   step(NO_PUBLISH ? 'Build Windows installer (no publish)' : 'Build + publish to GitHub');
   const publishArg = NO_PUBLISH ? 'never' : 'always';
-  shLive(`npx electron-builder --win --publish ${publishArg}`, { GH_TOKEN: TOKEN, GITHUB_TOKEN: TOKEN });
+  // CSC_IDENTITY_AUTO_DISCOVERY=false + signAndEditExecutable:false (package.json) keep
+  // electron-builder from unpacking winCodeSign, whose darwin symlinks fail to extract on
+  // Windows without Developer Mode / elevation (see AGENTS §8). We don't code-sign anyway.
+  shLive(`npx electron-builder --win --publish ${publishArg}`, { GH_TOKEN: TOKEN, GITHUB_TOKEN: TOKEN, CSC_IDENTITY_AUTO_DISCOVERY: 'false' });
   ok('electron-builder finished');
 
   // ---- verify ----

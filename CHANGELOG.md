@@ -7,6 +7,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-28
+
 ### Added
 - **Automatic updates** — the installed Windows app now updates itself: it checks the release
   feed in the background, downloads new versions silently, and installs them when you quit (or

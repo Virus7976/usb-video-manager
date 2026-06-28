@@ -255,6 +255,20 @@ A running log of non-obvious things we learned the hard way, so nobody (human or
 re-derive them. **Append new entries at the top; never delete.** Format: `### YYYY-MM-DD —
 title`, then what we learned and why it matters.
 
+### 2026-06-28 — winCodeSign symlink error: disable signing, don't fight it
+- The build fails at `winCodeSign` extraction with **"Cannot create symbolic link : A required
+  privilege is not held by the client"** (darwin `*.dylib` symlinks) unless the user has the
+  symlink-create privilege (Developer Mode / elevation). On a UAC-filtered admin account that
+  privilege isn't held, and pre-extracting the cache doesn't help (electron-builder re-downloads
+  winCodeSign to a *random* temp name each run).
+- **Fix without admin:** we don't code-sign, so skip the step that needs winCodeSign —
+  `signAndEditExecutable: false` (package.json `build.win`) **+** `CSC_IDENTITY_AUTO_DISCOVERY=false`
+  (release.mjs sets it). Verified: a clean 129 MB installer + blockmap + latest.yml, zero errors.
+  Tradeoff: the bundled exe's embedded version/icon isn't rcedit-stamped (the NSIS installer +
+  app icon are unaffected). If we ever code-sign (issue #5), enable Developer Mode instead.
+- The whole Windows build can be driven from WSL via `cmd.exe`/`powershell.exe` interop on a
+  Windows-path checkout (`C:\Users\...`), with Windows `node`/`npm`/`git` — no human on Windows.
+
 ### 2026-06-28 — Releases live on GitHub; Gitea can't host the installer
 - **Code, issues, PRs, wiki stay on Gitea. The installer + auto-update feed live on GitHub
   releases** (`Virus7976/usb-video-manager`). Why: this Gitea server **cannot** host the

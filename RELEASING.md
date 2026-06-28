@@ -121,7 +121,7 @@ config, and that the **GitHub release exists**. Red == the tagged commit is brok
 | GitHub `403`/`Resource not accessible` | Token lacks **Contents: write** on `Virus7976/usb-video-manager`. |
 | `missing build artifact …` | The build failed. Re-run; check the electron-builder output. |
 | Build fails on Linux/WSL | Expected — build on Windows. |
-| `winCodeSign` symlink permission error (Windows) | Enable Developer Mode, run the build elevated once, or pre-extract the winCodeSign cache. |
+| `winCodeSign` "Cannot create symbolic link" | Handled: we don't sign, so `signAndEditExecutable:false` + `CSC_IDENTITY_AUTO_DISCOVERY=false` skip winCodeSign. If you re-enable signing, turn on Windows Developer Mode (grants the symlink privilege). |
 | App never updates | Confirm it's the **packaged** Windows build; check the GitHub release is the latest, non-draft; look for `[update]` lines in the app console. |
 | Gitea push fails | Your git credential helper isn't set for Gitea — `git push` once manually to cache creds. |
 

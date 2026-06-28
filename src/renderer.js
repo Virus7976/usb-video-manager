@@ -656,7 +656,10 @@ async function startFlow() {
     const clip = {
       ...f,
       origBase: f.name.slice(0, f.name.length - f.ext.length),
-      date: toDateStr(f.mtimeMs),
+      // Prefer the capture date encoded in the filename (cameras name files this way)
+      // over the file's mtime, which is unreliable on cards (copies/reformats reset it).
+      // The per-clip preview can still refine this from ffprobe creation_time.
+      date: phoneDateOf(f.name) || toDateStr(f.mtimeMs),
       subject: '',
       description: '',
       version: 1,
@@ -8667,11 +8670,25 @@ async function phoneScan() {
   scanEl.innerHTML = `<div class="scan-busy"><span class="illo scan-illo">${ILLO_SCAN}</span><p class="scan-busy-tx" id="phScanTxt">Reading your phone’s camera roll…</p></div>`;
   const txtEl = scanEl.querySelector('#phScanTxt');
   const tick = setInterval(() => { secs += 1; if (txtEl) txtEl.textContent = `Reading your phone’s camera roll… (${secs}s)`; }, 1000);
-  let media = [];
-  try { media = await window.api.scanPhone(phoneState.device); } catch { media = []; }
+  let res = { ok: true, media: [] };
+  try { res = await window.api.scanPhone(phoneState.device); } catch (e) { res = { ok: false, media: [], reason: (e && e.message) || 'scan failed' }; }
   clearInterval(tick);
   scanEl.classList.add('hidden');
-  phoneState.media = (media || []).map((m, i) => ({ ...m, _i: i, selected: true }));
+  // Back-compat: a plain array (older shape) is treated as a successful scan.
+  if (Array.isArray(res)) res = { ok: true, media: res };
+  if (res && res.ok === false) {
+    // The scan FAILED (phone locked / disconnected / timed out) — don't pretend the
+    // camera roll is empty; tell the user how to fix it and offer Rescan.
+    $('phDeviceSub').textContent = 'Couldn’t read the phone — unlock it, choose “File transfer / MTP”, then Rescan.';
+    $('phBar').classList.add('hidden');
+    $('phGrid').innerHTML = `<div class="ph-empty"><span class="illo">${ILLO_PHONE}</span>
+      <p class="ph-empty-tx">Couldn’t read your phone</p>
+      <p class="muted small">Make sure it's <b>unlocked</b> and set to <b>“File transfer / MTP”</b> (not “Charging only”), then press <b>Rescan</b>.</p></div>`;
+    phoneState.media = [];
+    phoneUpdateBar();
+    return;
+  }
+  phoneState.media = ((res && res.media) || []).map((m, i) => ({ ...m, _i: i, selected: true }));
   const ph = phoneState.media.filter((m) => m.kind === 'photo').length;
   const vid = phoneState.media.filter((m) => m.kind === 'video').length;
   $('phDeviceSub').textContent = phoneState.media.length

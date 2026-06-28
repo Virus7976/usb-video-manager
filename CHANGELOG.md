@@ -7,6 +7,22 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-06-28
+
+### Fixed
+- **Phone reading tells "empty" from "couldn't read"** — if the phone is locked, on
+  "Charging only", or disconnects mid-scan, you now get a clear "Couldn't read your phone…
+  unlock and choose File transfer, then Rescan" message instead of a misleading "no photos".
+- **Compression won't clobber same-named clips** — two source files that share a name but
+  differ in format (e.g. `clip.mov` + `clip.mp4`) now produce two separate outputs instead
+  of one silently overwriting/skipping the other.
+- **NAS backup during Organize is verified** — files mirrored to the NAS at the Organize step
+  are now content-verified (with one retry), matching the import-step guarantee, so a
+  truncated/corrupt backup is never trusted.
+- **Card clips date from the filename** — capture date is taken from the filename (how cameras
+  name files) instead of the file's modified time, which is unreliable after card copies.
+- Minor hardening: drive-polling can't double-start; removed a dead quit-handshake code path.
+
 ## [0.2.1] — 2026-06-28
 
 ### Fixed

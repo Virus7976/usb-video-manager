@@ -1562,6 +1562,7 @@ async function pollDrives() {
 
 function startPolling() {
   if (!DETECTION_ENABLED) return;
+  if (pollTimer) return;   // don't stack intervals if called more than once
   pollDrives();
   pollTimer = setInterval(pollDrives, config.pollIntervalMs);
 }
@@ -1668,7 +1669,7 @@ $name = $env:MTP_DEVICE
 $shell = New-Object -ComObject Shell.Application
 $pc = $shell.NameSpace(17)
 $dev = $pc.Items() | Where-Object { $_.Name -eq $name } | Select-Object -First 1
-if (-not $dev) { '[]'; exit }
+if (-not $dev) { 'NODEV'; exit }
 $rx = '\\.(jpg|jpeg|png|heic|heif|dng|gif|webp|bmp|tif|tiff|mp4|mov|m4v|3gp|3g2|avi|mkv|webm|ts)$'
 $vrx = '\\.(mp4|mov|m4v|3gp|3g2|avi|mkv|webm|ts)$'
 $list = New-Object System.Collections.Generic.List[object]
@@ -1693,10 +1694,14 @@ foreach ($st in $root.Items()) {
 }
 $list | ConvertTo-Json -Compress
 `;
+// Returns { ok, media, reason } so the UI can tell "empty roll" from "scan failed"
+// (phone locked / disconnected / timed out) instead of falsely reporting no media.
 async function scanPhone(deviceName) {
-  if (deviceName === SIM_PHONE_NAME) return scanSimPhone();
+  if (deviceName === SIM_PHONE_NAME) return { ok: true, media: await scanSimPhone() };
   const r = await runPwshScript(PS_PHONE_SCAN, { timeoutMs: 180000, env: { MTP_DEVICE: deviceName } });
-  return parsePsJson(r.stdout);
+  if (!r.ok) return { ok: false, media: [], reason: r.error || 'scan failed' };
+  if (/\bNODEV\b/.test(r.stdout || '')) return { ok: false, media: [], reason: 'device not found' };
+  return { ok: true, media: parsePsJson(r.stdout) };
 }
 
 ipcMain.handle('phone:list', () => listPhones());
@@ -4183,6 +4188,7 @@ ipcMain.handle('compress:run', async (evt, payload) => {
   const s = compressSettings(payload && payload.settings);
   compressAborted = false;
   const results = [];
+  const produced = new Set();   // output paths created THIS run, to avoid collisions
   const send = (p) => { try { evt.sender.send('compress:progress', p); } catch { /* ignore */ } };
   for (let i = 0; i < files.length; i += 1) {
     if (compressAborted) break;
@@ -4192,6 +4198,11 @@ ipcMain.handle('compress:run', async (evt, payload) => {
     const base = path.basename(f.name || src).replace(/\.[^.]+$/, '');
     let outPath = path.join(out, `${base}.mp4`);
     if (path.resolve(outPath) === path.resolve(src)) outPath = path.join(out, `${base}_compressed.mp4`);
+    // Two source clips that share a stem but differ in container (clip.mov + clip.mp4)
+    // would map to the same output — disambiguate so neither is lost/overwritten.
+    let cn = 1;
+    while (produced.has(path.resolve(outPath))) { outPath = path.join(out, `${base} (${cn}).mp4`); cn += 1; }
+    produced.add(path.resolve(outPath));
     let inBytes = 0; try { inBytes = (await fsp.stat(src)).size; } catch { /* ignore */ }
     let durationSec = 0; try { durationSec = (await probeMeta(src)).durationSec || 0; } catch { /* ignore */ }
     if (s.skipExisting) { try { const st = await fsp.stat(outPath); if (st.size > 0) { results.push({ name: f.name, ok: true, skipped: true, outPath, inBytes, outBytes: st.size }); send({ index: i, total: files.length, name: f.name, pct: 100, phase: 'skipped' }); continue; } } catch { /* not there */ } }
@@ -4458,12 +4469,22 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         const nasDir = path.join(nasRoot, ...parts);
         await ensureDir(nasDir);
         const nasTarget = path.join(nasDir, finalFileName);
+        // Skip only if the NAS copy already matches by CONTENT (not just size), and
+        // VERIFY after copying with one retry — same integrity guarantee as the
+        // import-time NAS mirror, so a truncated/corrupt backup is never trusted.
         let need = true;
         try {
           const a = await fsp.stat(nasTarget); const b = await fsp.stat(curPath);
-          if (a.size === b.size) need = false;
+          if (a.size === b.size && await fingerprintsMatch(curPath, nasTarget)) need = false;
         } catch { /* not there */ }
-        if (need) { await fsp.copyFile(curPath, nasTarget); summary.backedUp += 1; }
+        if (need) {
+          await fsp.copyFile(curPath, nasTarget);
+          if (!await fingerprintsMatch(curPath, nasTarget)) {
+            await fsp.copyFile(curPath, nasTarget);   // one retry
+            if (!await fingerprintsMatch(curPath, nasTarget)) throw new Error('NAS verify failed after copy');
+          }
+          summary.backedUp += 1;
+        }
       } catch (err) { summary.errors.push(`Backup ${it.name}: ${err.message}`); }
     }
 

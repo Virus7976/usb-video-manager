@@ -220,13 +220,8 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('compress:progress', listener);
   },
 
-  // Quit confirmation (main asks the renderer when there's unsaved rename work)
-  onQuitConfirm: (cb) => {
-    const listener = () => cb();
-    ipcRenderer.on('quit:confirm', listener);
-    return () => ipcRenderer.removeListener('quit:confirm', listener);
-  },
-  sendQuitDecision: (decision) => ipcRenderer.send('quit:decision', decision),
+  // (Removed: quit:confirm/quit:decision handshake — rename work auto-saves
+  // continuously now, so quitting just quits; the main side has no such emitter.)
   debugInfo: () => ipcRenderer.invoke('debug:info'),
 
   // Pop-out preview window

@@ -75,7 +75,12 @@ let API; // set in main once remote is parsed
 
 async function gitea(method, path, { json, form, query } = {}) {
   const qs = query ? '?' + new URLSearchParams(query) : '';
-  const headers = { Authorization: `token ${TOKEN}` };
+  // This Gitea is behind Cloudflare, which 403s ("error code: 1010") requests with a
+  // bot-ish User-Agent (Node's default undici UA gets blocked). Send a browser UA.
+  const headers = {
+    Authorization: `token ${TOKEN}`,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  };
   let body;
   if (json) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
   if (form) body = form; // FormData sets its own content-type

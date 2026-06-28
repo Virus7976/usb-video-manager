@@ -253,6 +253,13 @@ A running log of non-obvious things we learned the hard way, so nobody (human or
 re-derive them. **Append new entries at the top; never delete.** Format: `### YYYY-MM-DD —
 title`, then what we learned and why it matters.
 
+### 2026-06-28 — Gitea is behind Cloudflare: use a browser User-Agent for API writes
+- POSTs to the Gitea API (create issue/PR/release) **403 with `error code: 1010`** when the
+  request has a bot-ish `User-Agent` — that's **Cloudflare**, not a Gitea token-scope problem.
+  `curl`'s default UA passes; `python-urllib` and Node's default `undici` UA get blocked. Fix:
+  send a normal browser `User-Agent` header (see `scripts/release.mjs` → `gitea()`). A token
+  that 403s on writes is very likely fine — check the UA before suspecting the scope.
+
 ### 2026-06-28 — Streamlined build/test/publish + auto-update
 - **`npm run release` is now the whole release.** One command bumps, syntax-checks, builds,
   verifies, tags/pushes, and publishes. Full runbook: [`RELEASING.md`](RELEASING.md). Don't

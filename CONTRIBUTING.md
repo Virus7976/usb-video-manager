@@ -17,10 +17,13 @@ Thanks for working on USB / SD Auto-Action! A few things to get you productive f
 ```bash
 npm install
 npm start          # run the app (Electron) in dev
-npm run dist       # build the Windows NSIS installer into dist/
+npm run check      # syntax-check all JS (do this before every build)
+npm run build:win  # build the Windows installer into dist/
+npm run release    # bump + build + verify + tag + publish (see AGENTS.md §3)
 ```
 
-- Electron 42, Node 20+. Windows only (uses MTP/COM, drive detection, ffmpeg).
+- Electron 42, Node 20+. Windows only (uses MTP/COM, drive detection, ffmpeg). The installer
+  must be built on Windows (or under wine); releasing is `npm run release` with `GITEA_TOKEN` set.
 - **ffmpeg + ffprobe** must be on your `PATH` (or set in Settings) — thumbnails and
   compression need them.
 - **Ollama** (optional) for AI features: `ollama pull qwen2.5vl`, then enable in Edit → AI.
@@ -30,7 +33,7 @@ npm run dist       # build the Windows NSIS installer into dist/
 - Renderer ↔ main process talk **only** through `window.api` (see `preload.js`). Adding a
   feature is usually: `ipcMain.handle('x', …)` in `main.js` → bridge in `preload.js` → UI in
   `src/renderer.js` + `src/index.html` + `src/styles.css`.
-- **Syntax-check before building:** `node --check src/renderer.js` (and `main.js`/`preload.js`).
+- **Syntax-check before building:** `npm run check` (covers main.js / preload.js / renderer.js / watch-drives.js).
 - Keep the **native dark Fluent** look; keep AI **offline**; keep faces **confirm-first**; keep
   the app **generic** (no personal data). See `AGENTS.md` §4.
 

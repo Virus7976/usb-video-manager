@@ -1,0 +1,59 @@
+name: Release check
+# Backstop for `npm run release`. The installer is built and published LOCALLY
+# (electron-builder --win needs Windows/wine, which this Linux runner doesn't
+# have), so CI doesn't build — it validates that whatever got tagged is
+# internally consistent and was actually published, catching a half-done or
+# hand-rolled tag before anyone relies on it.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax-check the JS
+        run: |
+          node --check main.js
+          node --check preload.js
+          node --check src/renderer.js
+          node --check watch-drives.js
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Validate config.json is valid JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('config.json','utf8')); console.log('config.json OK')"
+
+      - name: Tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG  package.json=$PKG"
+          test "$TAG" = "$PKG" || { echo "::error::tag v$TAG != package.json $PKG"; exit 1; }
+
+      - name: CHANGELOG has an entry for this version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          grep -q "^## \[$TAG\]" CHANGELOG.md || { echo "::error::no '## [$TAG]' section in CHANGELOG.md"; exit 1; }
+          echo "CHANGELOG entry for $TAG found"
+
+      - name: Auto-update publish feed is configured
+        run: |
+          node -e "const p=require('./package.json').build.publish; if(!Array.isArray(p)||p[0].provider!=='generic'||!/releases\/download\/latest/.test(p[0].url)){console.error('build.publish must be the generic latest feed');process.exit(1)} console.log('publish feed OK:',p[0].url)"
+
+      - name: Confirm the release was actually published to Gitea
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          API="${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}"
+          for REL in "$TAG" "latest"; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$API/releases/tags/$REL")
+            echo "release $REL -> HTTP $code"
+            test "$code" = "200" || { echo "::error::release '$REL' not found on Gitea — did 'npm run release' finish?"; exit 1; }
+          done
+          echo "Both the $TAG archive and the 'latest' auto-update feed exist."

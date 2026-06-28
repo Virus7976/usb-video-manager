@@ -103,15 +103,31 @@ git clone https://gitea-gour.jakegour.com/liamgour/USB-Video-Downloader.git
 cd USB-Video-Downloader
 npm install
 npm start          # run in dev
-npm run dist       # build the Windows NSIS installer into dist/
+npm run build:win  # build the Windows installer into dist/
 ```
 
 - Electron 42, Node 20+.
-- `npm run dist` produces `dist/USB SD Auto-Action Setup x.y.z.exe`.
+- `npm run build:win` produces `dist/USB-SD-Auto-Action-Setup-x.y.z.exe` (+ `latest.yml`).
 - ExifTool ships via `exiftool-vendored` and is auto-unpacked from the asar (see `build.asarUnpack` in `package.json`).
 - Face-recognition weights live in `src/face-models/` and are bundled by `build.files`.
 
-> **Heads-up:** `electron-builder`'s `winCodeSign` step can fail on a symlink permission error on some Windows setups — see the build notes in [`AGENTS.md`](AGENTS.md).
+> **Heads-up:** the Windows installer must be built on Windows (or under wine) — `electron-builder`'s `winCodeSign` step can also fail on a symlink permission error on some Windows setups; see the build notes in [`AGENTS.md`](AGENTS.md).
+
+## Releasing (one command)
+
+```powershell
+$env:GITEA_TOKEN = "<token with repo+release scope>"
+npm run release           # release the current package.json version
+npm run release patch     # …or bump patch/minor/major first
+npm run release:dry       # validate only — no build, no changes
+```
+
+`npm run release` bumps the version, updates `CHANGELOG.md`, syntax-checks, **builds the
+installer, verifies the artifacts, tags & pushes, and publishes two Gitea releases**: the
+permanent `vX.Y.Z` archive and a fixed **`latest`** release that the installed app's
+**auto-updater** polls. Installed copies then update themselves in the background and install
+on quit (or right away from the tray's *Restart to install update*). See [`AGENTS.md`](AGENTS.md)
+for the full build/release/verify loop.
 
 ---
 

@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Automatic updates** — the installed Windows app now updates itself: it checks the release
+  feed in the background, downloads new versions silently, and installs them when you quit (or
+  right away via the tray's **Restart to install update**). No more re-downloading the installer.
+- **One-command releases** — `npm run release` bumps the version, updates the changelog,
+  syntax-checks, builds the installer, verifies it, tags & pushes, and publishes the Gitea
+  release **and** the auto-update feed in a single step (`npm run release:dry` to preview).
 - **In-app compression** — ffmpeg transcode (H.264 / H.265 presets) with live per-file
   progress, skip-existing, cancel, and partial-file cleanup. Plus a **compression mode**
   setting: `external` (watch-folder tool like Tdarr — the default, zero local CPU) or `app`.

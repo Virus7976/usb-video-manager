@@ -439,6 +439,10 @@ function buildTrayMenu() {
       }
     },
     { type: 'separator' },
+    ...(updateReady
+      ? [{ label: 'Restart to install update', click: installUpdateNow }]
+      : [{ label: 'Check for updates…', click: () => setupAutoUpdates({ silent: false }) }]),
+    { type: 'separator' },
     { label: 'Quit', click: async () => {
       if (!(await confirmQuitIfCopying())) return;
       isQuitting = true;
@@ -469,7 +473,7 @@ function showWindow() {
 // creates — so toasts work in the packaged build. Honors the user's toggle.
 // ---------------------------------------------------------------------------
 let notifyIcon = null;
-function notify(title, body) {
+function notify(title, body, onClick) {
   if (config.ui && config.ui.notifications === false) return;
   try {
     if (!Notification.isSupported()) return;
@@ -477,12 +481,67 @@ function notify(title, body) {
       notifyIcon = nativeImage.createFromPath(path.join(__dirname, 'src', 'assets', 'tray.png'));
     }
     const n = new Notification({ title, body, icon: notifyIcon, silent: false });
-    n.on('click', () => showWindow());
+    n.on('click', () => { try { (onClick || showWindow)(); } catch { /* ignore */ } });
     n.show();
   } catch (err) {
     console.error('notify failed:', err.message);
   }
 }
+// ---------------------------------------------------------------------------
+// Auto-update (electron-updater) — packaged Windows builds self-update from the
+// generic publish feed in package.json (build.publish), which points at the
+// fixed "latest" Gitea release that `npm run release` keeps current. No-op in
+// dev / non-Windows so `npm start`, CI and tooling never touch the network or
+// the updater. The download runs in the background; the staged update installs
+// when the user quits via the tray (autoInstallOnAppQuit), or immediately if
+// they click the "ready" toast / pick "Restart to update" in the tray.
+// ---------------------------------------------------------------------------
+let autoUpdater = null;   // lazy electron-updater handle (packaged Windows only)
+let updateReady = false;  // a downloaded update is staged for install on quit
+
+function setupAutoUpdates({ silent = true } = {}) {
+  if (!app.isPackaged || process.platform !== 'win32') {
+    if (!silent) notify('Updates', 'Auto-update only runs in the installed Windows app.');
+    return;
+  }
+  if (!autoUpdater) {
+    try {
+      ({ autoUpdater } = require('electron-updater'));
+    } catch (err) {
+      console.error('[update] electron-updater unavailable:', err.message);
+      if (!silent) notify('Update check failed', 'The updater module is missing from this build.');
+      return;
+    }
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-available', (info) => {
+      console.log(`[update] downloading v${info.version}`);
+      notify('Update available', `Downloading v${info.version} in the background…`);
+    });
+    autoUpdater.on('update-not-available', () => {
+      console.log('[update] already up to date');
+      if (!silent) notify('Up to date', `You're on the latest version (v${app.getVersion()}).`);
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      console.log(`[update] ready to install v${info.version}`);
+      updateReady = true;
+      if (tray) tray.setContextMenu(buildTrayMenu());
+      notify('Update ready', `v${info.version} installs when you quit — click to restart now.`, installUpdateNow);
+    });
+    autoUpdater.on('error', (err) => {
+      console.error('[update] error:', err ? (err.stack || String(err)) : 'unknown');
+      if (!silent) notify('Update check failed', 'Could not reach the update server.');
+    });
+  }
+  autoUpdater.checkForUpdates().catch((err) => console.error('[update] check failed:', err.message));
+}
+
+function installUpdateNow() {
+  if (!autoUpdater || !updateReady) return;
+  isQuitting = true;
+  try { autoUpdater.quitAndInstall(); } catch { app.quit(); }
+}
+
 // Renderer-triggered native notification (AI done, faces tagged, etc.).
 ipcMain.handle('app:notify', (_e, payload) => {
   const title = String((payload && payload.title) || 'USB / SD Auto-Action');
@@ -4630,6 +4689,11 @@ if (!gotLock) {
     ingestMemoryInbox();   // fold any externally-dropped learnings into AI memory
     createWindow();
     createTray();
+
+    // Self-update from the Gitea "latest" feed (packaged Windows only). Check a
+    // few seconds after boot so it never delays the first paint, then every 6h.
+    setTimeout(() => setupAutoUpdates(), 8000);
+    setInterval(() => setupAutoUpdates(), 6 * 60 * 60 * 1000);
 
     // Global hotkey (low-overhead alternative to polling).
     if (config.hotkey) {

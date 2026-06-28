@@ -5,14 +5,22 @@
   "main": "main.js",
   "author": "Jake",
   "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "check": "node --check main.js && node --check preload.js && node --check src/renderer.js && node --check watch-drives.js",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win",
+    "build:win": "electron-builder --win --publish never",
+    "release": "node scripts/release.mjs",
+    "release:dry": "node scripts/release.mjs --dry-run"
   },
   "dependencies": {
     "@vladmandic/face-api": "^1.7.15",
+    "electron-updater": "^6.3.9",
     "exiftool-vendored": "^36.0.0",
     "gopro-telemetry": "^1.2.11"
   },
@@ -24,6 +32,7 @@
     "appId": "com.jakeg.usbautoaction",
     "productName": "USB SD Auto-Action",
     "asar": true,
+    "artifactName": "USB-SD-Auto-Action-Setup-${version}.${ext}",
     "files": [
       "main.js",
       "preload.js",
@@ -33,6 +42,13 @@
     "asarUnpack": [
       "node_modules/exiftool-vendored/**",
       "node_modules/exiftool-vendored.exe/**"
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://gitea-gour.jakegour.com/liamgour/USB-Video-Downloader/releases/download/latest",
+        "channel": "latest"
+      }
     ],
     "win": {
       "target": "nsis",

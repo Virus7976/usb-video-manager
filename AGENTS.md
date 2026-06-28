@@ -11,8 +11,11 @@
 > A stale AGENTS.md is worse than none — keep it true.
 
 This file is the equivalent of an `AGENTS.md`/`CLAUDE.md` convention file. The
-human-facing release notes live in [`CHANGELOG.md`](CHANGELOG.md); deep architecture
-notes can also go in the repo **Wiki**.
+human-facing release notes live in [`CHANGELOG.md`](CHANGELOG.md); the full
+build/test/publish runbook (incl. setting up a new machine) is in
+[`RELEASING.md`](RELEASING.md); deep architecture notes can also go in the repo **Wiki**.
+**Hard-won learnings and breakthroughs get logged in [§8](#8-lessons--breakthroughs-append-here)
+— append, don't overwrite.**
 
 ---
 
@@ -39,8 +42,9 @@ When the user brings ANY request or bug (one or many):
    without re-reading any chat (don't make others waste tokens). Include: Summary, Context/why,
    Where it shows up (screen + files/functions), Acceptance criteria checklist, Notes/constraints,
    and a label.
-3. **Fix one by one.** Each: implement -> `node --check` -> `npm run dist` -> verify the asar
-   marker -> close the issue (`Closes #N`) with a comment summarizing the fix + commit.
+3. **Fix one by one.** Each: implement -> `npm run check` -> `npm run build:win` -> verify the
+   asar marker -> close the issue (`Closes #N`) with a comment summarizing the fix + commit.
+   Cut a release with `npm run release` (see §3).
 
 Full details and a copy-paste issue template are in the Wiki -> **Issue Workflow** page.
 
@@ -80,18 +84,40 @@ All "AI" is local: Ollama vision models over HTTP + bundled face-api.js. No clou
 
 ## 3. Build / release / verify loop
 
-```
-node --check src/renderer.js        # and main.js / preload.js if touched — ALWAYS before build
-npm run dist                        # electron-builder → dist\USB SD Auto-Action Setup x.y.z.exe
-# silent install:  run the Setup .exe with /S
-# verify the build actually contains your change by substring-checking the asar:
-#   %LOCALAPPDATA%\Programs\USB SD Auto-Action\resources\app.asar
+**Cutting a release is one command** — `npm run release` (`scripts/release.mjs`) does the whole
+loop: bump → `npm run check` (syntax) → `npm run build:win` → verify the artifacts → commit →
+tag → push → publish to Gitea. Run it **on Windows** (or under wine — `electron-builder --win`
+can't stamp the `.exe` on bare Linux/WSL).
+
+```powershell
+$env:GITEA_TOKEN = "<repo+release scoped token>"   # one-time per shell
+npm run release            # release current version
+npm run release patch      # …or bump patch | minor | major | x.y.z first
+npm run release:dry        # fast validate: syntax + plan, no build, no mutations
+npm run release -- --skip-build   # publish an already-built dist/
+npm run release -- --no-publish   # build + tag + push, skip the Gitea upload
 ```
 
-- Releases are published to the Gitea **Releases** tab with the `.exe` attached. `dist/` is gitignored.
+It publishes **two** Gitea releases from one build:
+- **`vX.Y.Z`** — the permanent, human-facing archive of that version.
+- **`latest`** — a fixed-tag release that `release.mjs` recreates each time; the installed
+  app's **auto-updater** (electron-updater, `build.publish` generic feed in `package.json`)
+  polls `…/releases/download/latest/latest.yml`. So "publish" == users self-update; they don't
+  re-download. Updates download in the background and install on quit, or immediately via the
+  tray's **Restart to install update**. Auto-update is a **no-op in dev / non-Windows**
+  (`app.isPackaged && win32`), so `npm start` never touches the network.
+
+Manual build (no release): `npm run build:win` → `dist\USB-SD-Auto-Action-Setup-x.y.z.exe`.
+Verify a build contains your change by substring-checking the asar at
+`%LOCALAPPDATA%\Programs\USB SD Auto-Action\resources\app.asar` (silent install: run the
+Setup `.exe` with `/S`).
+
+- CI (`.gitea/workflows/release-check.yml`) is a **backstop, not a builder**: on a `v*` tag it
+  re-checks syntax + that the tag, `package.json`, and `CHANGELOG.md` agree and that both Gitea
+  releases actually exist. It does **not** build (the Linux runner has no wine).
 - **Gotcha:** `electron-builder`'s `winCodeSign` extraction can fail with a symlink permission
   error on some Windows setups. Workaround: enable Developer Mode / run the build elevated once,
-  or pre-extract the winCodeSign cache. The iconed build needs this resolved.
+  or pre-extract the winCodeSign cache.
 
 ## 4. Conventions (do not break these)
 
@@ -220,3 +246,32 @@ npm run dist                        # electron-builder → dist\USB SD Auto-Acti
 The app window grabs cleanly with PowerShell (no extra tools) — see `CONTRIBUTING.md`.
 Drop PNGs in `docs/screenshots/` and reference them. Avoid screens that expose real client
 folder names in a public repo.
+
+## 8. Lessons & breakthroughs (append here)
+
+A running log of non-obvious things we learned the hard way, so nobody (human or AI) has to
+re-derive them. **Append new entries at the top; never delete.** Format: `### YYYY-MM-DD —
+title`, then what we learned and why it matters.
+
+### 2026-06-28 — Streamlined build/test/publish + auto-update
+- **`npm run release` is now the whole release.** One command bumps, syntax-checks, builds,
+  verifies, tags/pushes, and publishes. Full runbook: [`RELEASING.md`](RELEASING.md). Don't
+  hand-roll releases — that's how the `latest` feed drifts out of sync.
+- **The installer must be built on Windows (or wine).** `electron-builder --win` stamps the
+  `.exe` via tools that don't exist on bare Linux/WSL — so CI (Linux runner, no wine)
+  **cannot** build it. That's *why* CI is only a publish-*check*, and why building is local.
+  This app has **no natively-compiled native modules** (face-api = JS/WASM, gopro-telemetry =
+  pure JS, exiftool ships a prebuilt `.exe`), so the *only* blocker to a Linux/CI cross-build
+  is wine — if we ever add wine to the runner, full CI builds become possible.
+- **Auto-update uses a fixed-tag `latest` release, not a moving URL.** This Gitea (1.26) has
+  no GitHub-style `/releases/latest/download/<asset>` alias, so electron-updater points at a
+  **generic** feed `…/releases/download/latest` and `release.mjs` recreates the `latest`
+  release each time. If auto-update breaks, first check the `latest` release's assets are the
+  current build's `.exe` + `.blockmap` + `latest.yml`.
+- **Auto-update is gated to `app.isPackaged && win32`** so `npm start`, tooling, and CI never
+  reach for the network or the updater.
+- **Publishing needs a token with `write:repository`** in `GITEA_TOKEN` (read scope 403s on
+  release create). The release script reads it from the env and never stores/prints it.
+
+<!-- ### YYYY-MM-DD — next lesson goes above this line -->
+

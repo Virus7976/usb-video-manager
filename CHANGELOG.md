@@ -7,6 +7,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-06-28
+
+### Fixed
+- **Phones now open the device you actually tap** — selecting a real phone (e.g. an S23
+  Ultra) no longer jumps to the "Simulated phone (testing)" entry. The simulated phone is
+  also now off unless you explicitly turn it on (it was a dev/testing leftover).
+- **Slow-to-wake phones are detected** — the phone-detection timeout was raised so a freshly
+  plugged-in phone that takes a while to hand-shake over USB still shows up.
+- **"Select all" on a phone respects the Photos/Videos filter** — it no longer secretly
+  selects hidden items, and the checkbox reflects what's actually visible.
+- **Card import is safer** — clips are marked "imported" and their saved names are cleared
+  only **after** the copy is verified, so a bad copy is never skipped (or its name lost) on
+  the next insert.
+- **Photos-only cards can be backed up** — the Copy button is no longer greyed out when a
+  card has only photos and no video.
+- **"Undo last organize" works from the main Organize screen** — that run now records its
+  moves, so you can reverse it (previously only the destination-map flow could be undone).
+- **"Check for updates…" always reports back** — a manual check now shows "up to date" / an
+  error instead of silently doing nothing.
+
 ## [0.2.0] — 2026-06-28
 
 ### Added

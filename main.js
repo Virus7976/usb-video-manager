@@ -498,12 +498,18 @@ function notify(title, body, onClick) {
 // ---------------------------------------------------------------------------
 let autoUpdater = null;   // lazy electron-updater handle (packaged Windows only)
 let updateReady = false;  // a downloaded update is staged for install on quit
+let updateCheckSilent = true;  // whether the in-flight check should stay quiet (startup) or toast (manual)
 
 function setupAutoUpdates({ silent = true } = {}) {
   if (!app.isPackaged || process.platform !== 'win32') {
     if (!silent) notify('Updates', 'Auto-update only runs in the installed Windows app.');
     return;
   }
+  // Track the CURRENT check's intent at module scope — the event handlers below are
+  // registered once but fire for every check, so they must NOT capture `silent` (a
+  // manual "Check for updates…" after the silent startup check would otherwise be
+  // mute). Updated on each call before the check is kicked off.
+  updateCheckSilent = silent;
   if (!autoUpdater) {
     try {
       ({ autoUpdater } = require('electron-updater'));
@@ -520,7 +526,7 @@ function setupAutoUpdates({ silent = true } = {}) {
     });
     autoUpdater.on('update-not-available', () => {
       console.log('[update] already up to date');
-      if (!silent) notify('Up to date', `You're on the latest version (v${app.getVersion()}).`);
+      if (!updateCheckSilent) notify('Up to date', `You're on the latest version (v${app.getVersion()}).`);
     });
     autoUpdater.on('update-downloaded', (info) => {
       console.log(`[update] ready to install v${info.version}`);
@@ -530,7 +536,7 @@ function setupAutoUpdates({ silent = true } = {}) {
     });
     autoUpdater.on('error', (err) => {
       console.error('[update] error:', err ? (err.stack || String(err)) : 'unknown');
-      if (!silent) notify('Update check failed', 'Could not reach the update server.');
+      if (!updateCheckSilent) notify('Update check failed', 'Could not reach the update server.');
     });
   }
   autoUpdater.checkForUpdates().catch((err) => console.error('[update] check failed:', err.message));
@@ -1618,12 +1624,14 @@ function parsePsJson(stdout) {
 // without a physical device. Same shape as a real MTP device, just `sim:true`.
 const SIM_PHONE_NAME = 'Simulated phone (testing)';
 function simPhoneRoot() { return path.join(os.homedir(), 'USB-AutoAction-SimPhone'); }
-function simPhoneOn() { return config.simulatePhone !== false && fs.existsSync(path.join(simPhoneRoot(), 'Internal storage', 'DCIM')); }
+function simPhoneOn() { return config.simulatePhone === true && fs.existsSync(path.join(simPhoneRoot(), 'Internal storage', 'DCIM')); }
 
 async function listPhones() {
   const phones = [];
   if (simPhoneOn()) phones.push({ name: SIM_PHONE_NAME, kind: 'phone', sim: true });
-  const r = await runPwshScript(PS_PHONE_LIST, { timeoutMs: 25000 });
+  // Cold MTP/COM enumeration of a freshly-attached phone can take >25s on the first
+  // probe (device handshake), so give it room — otherwise a real phone is dropped.
+  const r = await runPwshScript(PS_PHONE_LIST, { timeoutMs: 60000 });
   for (const d of parsePsJson(r.stdout).filter((x) => x && x.kind === 'phone')) phones.push(d);
   return phones;
 }
@@ -2051,7 +2059,7 @@ ipcMain.handle('config:get', () => ({
   phoneComputerFolder: config.phoneComputerFolder,
   phoneDestComputer: !!config.phoneDestComputer,
   phoneDestNas: config.phoneDestNas !== false,
-  simulatePhone: config.simulatePhone !== false,
+  simulatePhone: config.simulatePhone === true,
   ffmpegPath: config.ffmpegPath,
   hotkey: config.hotkey,
   autoPoll: !!config.autoPoll,
@@ -4399,6 +4407,7 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
   }
 
   const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
+  const undoable = [];   // {from,to} per relocated clip → enables "Undo last organize"
   const csvRows = [];
   const et = opts.embed ? getExifTool() : null;
   const emit = (index, name, phase) => sender.send('finalize:progress', { index, total: list.length, name, phase });
@@ -4434,8 +4443,9 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     if (opts.organize && dest) {
       emit(i, it.name, 'moving');
       try {
+        const before = curPath;   // capture origin BEFORE reassigning, for undo
         const r = await organizeMove(curPath, path.join(dest, ...parts), it.name);
-        if (r.action === 'moved') summary.moved += 1; else summary.skipped += 1;
+        if (r.action === 'moved') { summary.moved += 1; undoable.push({ from: before, to: r.path }); } else summary.skipped += 1;
         curPath = r.path;
         finalFileName = path.basename(r.path);
       } catch (err) { summary.errors.push(`Move ${it.name}: ${err.message}`); }
@@ -4484,6 +4494,9 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       summary.csvPath = csvPath;
     } catch (err) { summary.errors.push(`CSV: ${err.message}`); }
   }
+
+  // Record this run's relocations so "Undo last organize" can move them back.
+  if (undoable.length) { config.lastOrganize = { ts: Date.now(), moves: undoable }; saveConfig(); }
 
   return summary;
 });

@@ -233,7 +233,7 @@ function renderDevices() {
   }).join('');
   host.innerHTML = `<p class="section-label">Devices · ${drives.length + phones.length}</p>${phoneCards}${driveCards}`;
   host.querySelectorAll('.dl-card').forEach((b) => b.addEventListener('click', () => {
-    if (b.dataset.kind === 'phone') openPhone();
+    if (b.dataset.kind === 'phone') openPhone(phones[Number(b.dataset.i)]);
     else onDrive(drives[Number(b.dataset.i)]);
   }));
 }
@@ -8621,7 +8621,7 @@ async function goHome() {
 // ---------------------------------------------------------------------------
 const phoneState = { device: null, media: [], filter: 'all', dest: '', copying: false };
 
-async function openPhone() {
+async function openPhone(device) {
   closePopover();
   $('flow').classList.add('hidden');
   $('finalize').classList.add('hidden');
@@ -8629,10 +8629,10 @@ async function openPhone() {
   $('driveBanner').classList.add('hidden');
   $('phone').classList.remove('hidden');
   $('phCopyWrap').classList.add('hidden');
-  await phoneDetect();
+  await phoneDetect(device);
 }
 
-async function phoneDetect() {
+async function phoneDetect(preferred) {
   $('phDeviceName').textContent = 'Looking for a phone…';
   $('phDeviceSub').textContent = 'Plug your phone in and choose “File transfer / MTP” on it.';
   $('phBar').classList.add('hidden');
@@ -8648,9 +8648,11 @@ async function phoneDetect() {
       <p class="muted small">USB cable in → tap <b>“File transfer / MTP”</b> on your phone → it shows up here. Then press <b>Rescan</b>.</p></div>`;
     return;
   }
-  phoneState.device = phones[0].name;
-  phoneState.sim = !!phones[0].sim;
-  $('phDeviceName').textContent = phones[0].name;
+  // Honor the device the user actually clicked; fall back to the first phone.
+  const sel = (preferred && phones.find((p) => p.name === preferred.name && !!p.sim === !!preferred.sim)) || phones[0];
+  phoneState.device = sel.name;
+  phoneState.sim = !!sel.sim;
+  $('phDeviceName').textContent = sel.name;
   $('phDeviceSub').textContent = 'Reading camera roll…';
   await phoneScan();
 }
@@ -8725,7 +8727,8 @@ function phoneUpdateBar() {
   $('phSummary').textContent = sel.length ? `${sel.length} selected · ${fmtBytes(bytes)}` : 'Nothing selected';
   $('phCopyBtn').disabled = !sel.length || phoneState.copying;
   $('phCopyBtn').textContent = sel.length ? `Pull ${sel.length} off phone & rename` : 'Pull off phone & rename';
-  const all = $('phSelectAll'); if (all) all.checked = phoneState.media.length > 0 && sel.length === phoneState.media.length;
+  const vis = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);
+  const all = $('phSelectAll'); if (all) all.checked = vis.length > 0 && vis.every((m) => m.selected);
 }
 
 // Where phone media stages locally before the rename flow. Photos go to "04 - Photos
@@ -8937,8 +8940,15 @@ function renderUploadList() {
     listEl.appendChild(li);
   }
   const n = files.length;
-  $('copyStartBtn').textContent = `Copy ${n} file${n !== 1 ? 's' : ''} (${fmtBytes(total)}) to intake`;
-  $('copyStartBtn').disabled = n === 0;
+  const photoN = clipPhotos().length;
+  if (n === 0 && photoN > 0) {
+    // Photos-only card: no videos to copy, but the stills can still be backed up.
+    $('copyStartBtn').textContent = `Back up ${photoN} photo${photoN !== 1 ? 's' : ''}`;
+    $('copyStartBtn').disabled = false;
+  } else {
+    $('copyStartBtn').textContent = `Copy ${n} file${n !== 1 ? 's' : ''} (${fmtBytes(total)}) to intake`;
+    $('copyStartBtn').disabled = n === 0;
+  }
 }
 
 $('onlyRenamed').addEventListener('change', () => { renderUploadList(); refreshUploadFreeSpace(); });
@@ -9135,11 +9145,6 @@ async function runCopy() {
   }
   if (res.nas && res.nas.failed) logIssue('NAS backup', `${res.nas.failed} file(s) failed to back up to NAS`);
   state.copied = res.copied;
-  // Remember these as imported (name+size) so re-inserting the card flags them.
-  try { const keys = clips.map(importKey); window.api.importsAdd(keys); keys.forEach((k) => importedSet.add(k)); } catch { /* non-fatal */ }
-  // These clips are now imported → drop their drafts so the next scan of this
-  // card won't re-offer to restore names for footage you've already copied.
-  window.api.clearDrafts(files.map((f) => `${f.name}__${f.size}`));
   // Persist a metadata record keyed by the FINAL filename so the Finalize step can
   // match the re-encoded compressed file and write its metadata (incl. observation/
   // people, which is what lets Organize place footage correctly).
@@ -9148,6 +9153,16 @@ async function runCopy() {
   // the originals (the delete step only verified what you were about to delete).
   $('copyLabel').textContent = 'Verifying copies…';
   const vres = await verifyFlowCopies();
+  // ONLY AFTER verification: mark the verified copies as imported (name+size) and drop
+  // their drafts. A clip that failed verification stays un-imported and keeps its draft,
+  // so re-inserting the card re-offers it — never trust (or forget the name of) a bad copy.
+  try {
+    const okSrc = new Set((state.copied || []).filter((c) => c._verified).map((c) => c.sourcePath));
+    const verifiedClips = clips.filter((c) => okSrc.has(c.sourcePath));
+    const keys = verifiedClips.map(importKey);
+    if (keys.length) { window.api.importsAdd(keys); keys.forEach((k) => importedSet.add(k)); }
+    window.api.clearDrafts(verifiedClips.map((f) => `${f.name}__${f.size}`));
+  } catch { /* non-fatal */ }
   // Back up any photos on the card alongside the videos.
   const photoSummary = await distributeFlowPhotos();
   const vnote = vres.fail ? ` · ⚠ ${vres.fail} failed verification` : ' · all verified ✓';
@@ -10138,7 +10153,9 @@ document.querySelectorAll('.ph-home').forEach((b) => b.addEventListener('click',
 $('phRescan').addEventListener('click', phoneDetect);
 $('phCopyBtn').addEventListener('click', phoneCopy);
 $('phSelectAll').addEventListener('change', (e) => {
-  phoneState.media.forEach((m) => { m.selected = e.target.checked; });
+  // Toggle only the currently-visible (filtered) media, not hidden items.
+  const vis = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);
+  vis.forEach((m) => { m.selected = e.target.checked; });
   phoneRenderGrid(); phoneUpdateBar();
 });
 document.querySelectorAll('.ph-f').forEach((b) => b.addEventListener('click', () => {

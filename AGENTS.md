@@ -84,28 +84,29 @@ All "AI" is local: Ollama vision models over HTTP + bundled face-api.js. No clou
 
 ## 3. Build / release / verify loop
 
-**Cutting a release is one command** — `npm run release` (`scripts/release.mjs`) does the whole
-loop: bump → `npm run check` (syntax) → `npm run build:win` → verify the artifacts → commit →
-tag → push → publish to Gitea. Run it **on Windows** (or under wine — `electron-builder --win`
-can't stamp the `.exe` on bare Linux/WSL).
+**Code on Gitea, releases on GitHub.** Gitea's server can't host the ~130 MB installer (see
+§8), so the installer + auto-update feed live on **GitHub releases**
+(`Virus7976/usb-video-manager`); Gitea stays the home for code/issues/PRs/wiki.
+
+**Cutting a release is one command** — `npm run release` (`scripts/release.mjs`): bump →
+`npm run check` (syntax) → commit → tag → **push code to both Gitea and GitHub** → build +
+**publish the GitHub release** (`electron-builder --win --publish always`) → verify. Run it
+**on Windows** (`electron-builder --win` can't stamp the `.exe` on bare Linux/WSL); it can be
+driven from WSL via `powershell.exe`/Windows-`node` interop so no human touches Windows.
 
 ```powershell
-$env:GITEA_TOKEN = "<repo+release scoped token>"   # one-time per shell
+$env:GH_TOKEN = "<github token, contents:write>"   # or ~/.github-token; Gitea push uses git creds
 npm run release            # release current version
 npm run release patch      # …or bump patch | minor | major | x.y.z first
 npm run release:dry        # fast validate: syntax + plan, no build, no mutations
-npm run release -- --skip-build   # publish an already-built dist/
-npm run release -- --no-publish   # build + tag + push, skip the Gitea upload
+npm run release -- --no-publish   # build + push code/tag, skip the GitHub release
 ```
 
-It publishes **two** Gitea releases from one build:
-- **`vX.Y.Z`** — the permanent, human-facing archive of that version.
-- **`latest`** — a fixed-tag release that `release.mjs` recreates each time; the installed
-  app's **auto-updater** (electron-updater, `build.publish` generic feed in `package.json`)
-  polls `…/releases/download/latest/latest.yml`. So "publish" == users self-update; they don't
-  re-download. Updates download in the background and install on quit, or immediately via the
-  tray's **Restart to install update**. Auto-update is a **no-op in dev / non-Windows**
-  (`app.isPackaged && win32`), so `npm start` never touches the network.
+electron-updater reads the **latest GitHub release** (`build.publish` github provider in
+`package.json`). So "publish" == users self-update; they don't re-download. Updates download
+in the background and install on quit, or immediately via the tray's **Restart to install
+update**. Auto-update is a **no-op in dev / non-Windows** (`app.isPackaged && win32`), so
+`npm start` never touches the network.
 
 Manual build (no release): `npm run build:win` → `dist\USB-SD-Auto-Action-Setup-x.y.z.exe`.
 Verify a build contains your change by substring-checking the asar at
@@ -113,8 +114,9 @@ Verify a build contains your change by substring-checking the asar at
 Setup `.exe` with `/S`).
 
 - CI (`.gitea/workflows/release-check.yml`) is a **backstop, not a builder**: on a `v*` tag it
-  re-checks syntax + that the tag, `package.json`, and `CHANGELOG.md` agree and that both Gitea
-  releases actually exist. It does **not** build (the Linux runner has no wine).
+  re-checks syntax + that the tag, `package.json`, and `CHANGELOG.md` agree and that the GitHub
+  release exists. It does **not** build (the Linux runner has no wine), and **needs a registered
+  act_runner to run at all** (none is registered yet).
 - **Gotcha:** `electron-builder`'s `winCodeSign` extraction can fail with a symlink permission
   error on some Windows setups. Workaround: enable Developer Mode / run the build elevated once,
   or pre-extract the winCodeSign cache.
@@ -252,6 +254,23 @@ folder names in a public repo.
 A running log of non-obvious things we learned the hard way, so nobody (human or AI) has to
 re-derive them. **Append new entries at the top; never delete.** Format: `### YYYY-MM-DD —
 title`, then what we learned and why it matters.
+
+### 2026-06-28 — Releases live on GitHub; Gitea can't host the installer
+- **Code, issues, PRs, wiki stay on Gitea. The installer + auto-update feed live on GitHub
+  releases** (`Virus7976/usb-video-manager`). Why: this Gitea server **cannot** host the
+  ~130 MB installer — three independent server-side limits, none fixable via API or from the
+  build machine: (1) release-asset `allowed_types` has no `.exe`/`.yml`/`.blockmap`;
+  (2) `[attachment] MAX_SIZE` is **100 MB**; (3) the **reverse proxy 413s** bodies > ~100 MB
+  (confirmed: a 130 MB PUT to the generic package registry also 413'd). That's why `v0.1.0`
+  had zero assets and no release ever shipped (Gitea issue #6).
+- **GitHub makes it simpler, not harder:** native electron-updater `github` provider + a real
+  "latest release", so no fixed-tag hack. `build.publish` in `package.json` is the github
+  provider with `releaseType: "release"`; `release.mjs` builds with `electron-builder --win
+  --publish always` (GitHub does the upload) and mirrors the code commit+tag to GitHub first
+  (so the release attaches to a real commit). Two tokens: Gitea push via the git credential
+  helper; GitHub via `GH_TOKEN`/`~/.github-token`.
+- **Build still must be native Windows** (no wine) — but it can be driven from WSL via
+  `powershell.exe`/Windows-`node` interop, so a release needs no human on Windows.
 
 ### 2026-06-28 — Gitea is behind Cloudflare: use a browser User-Agent for API writes
 - POSTs to the Gitea API (create issue/PR/release) **403 with `error code: 1010`** when the

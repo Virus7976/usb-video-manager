@@ -43,17 +43,15 @@ jobs:
           grep -q "^## \[$TAG\]" CHANGELOG.md || { echo "::error::no '## [$TAG]' section in CHANGELOG.md"; exit 1; }
           echo "CHANGELOG entry for $TAG found"
 
-      - name: Auto-update publish feed is configured
+      - name: Auto-update publish feed is configured (GitHub)
         run: |
-          node -e "const p=require('./package.json').build.publish; if(!Array.isArray(p)||p[0].provider!=='generic'||!/releases\/download\/latest/.test(p[0].url)){console.error('build.publish must be the generic latest feed');process.exit(1)} console.log('publish feed OK:',p[0].url)"
+          node -e "const p=require('./package.json').build.publish; const g=Array.isArray(p)&&p.find(x=>x.provider==='github'); if(!g||!g.owner||!g.repo){console.error('build.publish must include a github provider with owner/repo');process.exit(1)} console.log('publish feed OK: github',g.owner+'/'+g.repo)"
 
-      - name: Confirm the release was actually published to Gitea
+      - name: Confirm the release was actually published to GitHub
         run: |
           TAG="$GITHUB_REF_NAME"
-          API="${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}"
-          for REL in "$TAG" "latest"; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" "$API/releases/tags/$REL")
-            echo "release $REL -> HTTP $code"
-            test "$code" = "200" || { echo "::error::release '$REL' not found on Gitea — did 'npm run release' finish?"; exit 1; }
-          done
-          echo "Both the $TAG archive and the 'latest' auto-update feed exist."
+          REPO="$(node -p "const g=require('./package.json').build.publish.find(x=>x.provider==='github'); g.owner+'/'+g.repo")"
+          code=$(curl -s -o /dev/null -w "%{http_code}" "https://api.github.com/repos/$REPO/releases/tags/$TAG")
+          echo "github release $TAG -> HTTP $code"
+          test "$code" = "200" || { echo "::error::release '$TAG' not found on github.com/$REPO — did 'npm run release' finish?"; exit 1; }
+          echo "GitHub release $TAG exists."

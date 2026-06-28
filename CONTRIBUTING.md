@@ -23,7 +23,8 @@ npm run release    # bump + build + verify + tag + publish (see AGENTS.md §3)
 ```
 
 - Electron 42, Node 20+. Windows only (uses MTP/COM, drive detection, ffmpeg). The installer
-  must be built on Windows (or under wine); releasing is `npm run release` with `GITEA_TOKEN` set.
+  must be built on Windows; releasing is `npm run release` with `GH_TOKEN` set (code mirrors to
+  Gitea + GitHub; the installer + auto-update feed publish to GitHub releases). See `RELEASING.md`.
 - **ffmpeg + ffprobe** must be on your `PATH` (or set in Settings) — thumbnails and
   compression need them.
 - **Ollama** (optional) for AI features: `ollama pull qwen2.5vl`, then enable in Edit → AI.

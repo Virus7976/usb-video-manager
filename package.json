@@ -45,9 +45,10 @@
     ],
     "publish": [
       {
-        "provider": "generic",
-        "url": "https://gitea-gour.jakegour.com/liamgour/USB-Video-Downloader/releases/download/latest",
-        "channel": "latest"
+        "provider": "github",
+        "owner": "Virus7976",
+        "repo": "usb-video-manager",
+        "releaseType": "release"
       }
     ],
     "win": {

@@ -115,19 +115,22 @@ npm run build:win  # build the Windows installer into dist/
 
 ## Releasing (one command)
 
+Code lives on **Gitea**; the installer + auto-update feed are published to **GitHub releases**
+(`Virus7976/usb-video-manager`) — Gitea's server can't host the ~130 MB installer. The installed
+app self-updates from the latest GitHub release.
+
 ```powershell
-$env:GITEA_TOKEN = "<token with repo+release scope>"
+$env:GH_TOKEN = "<github token with contents:write>"
 npm run release           # release the current package.json version
 npm run release patch     # …or bump patch/minor/major first
 npm run release:dry       # validate only — no build, no changes
 ```
 
-`npm run release` bumps the version, updates `CHANGELOG.md`, syntax-checks, **builds the
-installer, verifies the artifacts, tags & pushes, and publishes two Gitea releases**: the
-permanent `vX.Y.Z` archive and a fixed **`latest`** release that the installed app's
-**auto-updater** polls. Installed copies then update themselves in the background and install
-on quit (or right away from the tray's *Restart to install update*). See [`AGENTS.md`](AGENTS.md)
-for the full build/release/verify loop.
+`npm run release` bumps the version, updates `CHANGELOG.md`, syntax-checks, commits, tags,
+**pushes the code to both Gitea and GitHub, builds the installer, and publishes the GitHub
+release**. Installed copies then update themselves in the background and install on quit (or
+right away from the tray's *Restart to install update*). Full runbook (incl. new-machine
+setup): [`RELEASING.md`](RELEASING.md).
 
 ---
 

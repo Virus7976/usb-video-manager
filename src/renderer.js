@@ -4901,14 +4901,16 @@ function clipContextItems(i) {
   const srcDir = (c.sourcePath || '').replace(/[\\/][^\\/]+$/, '');
   return [
     { label: 'Play / preview', action: () => playClip(i) },
-    { label: 'AI', disabled: !aiOn, submenu: () => [
-      { label: 'Run AI on this clip', action: () => runAiOnClip(i) },
-      { label: 'Analyze selected clips', action: aiAnalyzeSelected },
-      { label: 'Improve descriptions (use all data)', action: aiImproveSelected },
-      { sep: true },
-      { label: 'AI settings…', action: showAiSettings },
-      { label: 'People & faces…', action: showPeopleManager }
-    ] },
+    aiOn
+      ? { label: 'AI', submenu: () => [
+        { label: 'Run AI on this clip', action: () => runAiOnClip(i) },
+        { label: 'Analyze selected clips', action: aiAnalyzeSelected },
+        { label: 'Improve descriptions (use all data)', action: aiImproveSelected },
+        { sep: true },
+        { label: 'AI settings…', action: showAiSettings },
+        { label: 'People & faces…', action: showPeopleManager }
+      ] }
+      : { label: 'Turn on AI…', action: () => requireAi() },   // was a dead, greyed-out submenu
     { label: 'People', submenu: () => {
       const ppl = (c.people || []).filter(Boolean);
       const items = ppl.map((n) => ({ label: `Remove "${n}"`, danger: true, action: () => removePersonFromClip(i, n) }));

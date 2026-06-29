@@ -9169,10 +9169,12 @@ async function runPhoneCopy() {
   }
   off(); clearTask('phone-copy'); copyInProgress = false; hideCopyChip();
   // Remember what we just backed up (by original phone name+size) so next time the
-  // smart chooser knows it's no longer "new" — this is what makes "Back up new" work
-  // across sessions. Shared with the card import index.
+  // smart chooser knows it's no longer "new". Photos were already pulled to Photos Temp
+  // (failed ones never reach scannedFiles); videos only count if NONE failed to copy —
+  // a failed video stays "new" so it's re-offered, never silently marked backed-up.
   try {
-    const keys = state.scannedFiles.map((c) => importKey({ name: c.name, size: c.size }));
+    const okVids = (res && res.failed) ? [] : vids;
+    const keys = [...photos, ...okVids].map((c) => importKey({ name: c.name, size: c.size }));
     if (keys.length) { window.api.importsAdd(keys); keys.forEach((k) => importedSet.add(k)); }
   } catch { /* non-fatal */ }
   $('copyBar').style.width = '100%'; $('copyPct').textContent = '100%';

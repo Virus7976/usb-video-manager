@@ -340,6 +340,13 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
 
+  // Lock navigation down: this app only ever shows its own local file:// UI. With
+  // webSecurity off, refuse to open new windows or navigate anywhere else, so no stray
+  // link / window.open / future bug can load remote content into a context that has the
+  // preload bridge. (External links should go through shell.openExternal explicitly.)
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => { try { if (/^https?:/i.test(url)) shell.openExternal(url); } catch { /* ignore */ } return { action: 'deny' }; });
+  mainWindow.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file://')) e.preventDefault(); });
+
   // Right-click in a field → spelling suggestions + standard edit actions.
   // (Electron spell-checks editable fields by default; we just supply the menu.)
   mainWindow.webContents.on('context-menu', (_evt, params) => {
@@ -922,6 +929,12 @@ ipcMain.handle('ledger:record', (_e, payload) => {
     }
     touched.add(key);
   }
+  // Cap the ledger so config.json can't grow without bound — keep the most recently
+  // seen projects (every other store in config is capped; this was the one that wasn't).
+  if (config.projectLedger.length > 4000) {
+    config.projectLedger.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
+    config.projectLedger = config.projectLedger.slice(0, 4000);
+  }
   if (touched.size) saveConfig();
   return { ok: true, projects: [...touched] };
 });
@@ -1429,6 +1442,8 @@ function createPreviewWindow() {
     }
   });
   previewWindow.removeMenu();
+  previewWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  previewWindow.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file://')) e.preventDefault(); });
   previewWindow.loadFile(path.join(__dirname, 'src', 'preview.html'));
   previewWindow.webContents.on('did-finish-load', () => {
     if (lastPreview && previewWindow) previewWindow.webContents.send('preview:update', lastPreview);
@@ -1493,11 +1508,11 @@ function mapDrive(d) {
 function listRemovableDrives() {
   if (!DETECTION_ENABLED) return Promise.resolve([]);
   return new Promise((resolve) => {
-    const ps = spawn(
+    const ps = killAfter(spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', PS_DRIVE_QUERY],
       { windowsHide: true }
-    );
+    ), 20000);   // this runs on the 2.5s poll — don't let a WMI stall leak a process each tick
     let out = '';
     ps.stdout.on('data', (d) => { out += d.toString(); });
     ps.on('error', (err) => {
@@ -2014,8 +2029,8 @@ function copyFileWithProgress(src, dest, onBytes, token) {
     const ws = fs.createWriteStream(dest);
     if (token) token.destroy = () => { rs.destroy(); ws.destroy(); };
     rs.on('data', (chunk) => { onBytes(chunk.length); if (token && token.aborted) rs.destroy(); });
-    rs.on('error', (e) => reject(token && token.aborted ? new Error('aborted') : e));
-    ws.on('error', (e) => reject(token && token.aborted ? new Error('aborted') : e));
+    rs.on('error', (e) => { try { ws.destroy(); } catch { /* ignore */ } reject(token && token.aborted ? new Error('aborted') : e); });
+    ws.on('error', (e) => { try { rs.destroy(); } catch { /* ignore */ } reject(token && token.aborted ? new Error('aborted') : e); });
     ws.on('finish', resolve);
     rs.pipe(ws);
   });
@@ -2027,13 +2042,23 @@ function copyFileWithProgress(src, dest, onBytes, token) {
 // ---------------------------------------------------------------------------
 const metaCache = new Map(); // sourcePath -> { durationSec, dateISO }
 
+// Kill a spawned ffmpeg/ffprobe child if it hangs (corrupt/odd-codec clips can stall
+// forever), so the bounded poster/face pipeline can't deadlock and zombies don't pile
+// up. The existing 'close'/'error' handlers fire on the kill and settle the Promise.
+function killAfter(proc, ms) {
+  const t = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } }, ms);
+  const clear = () => clearTimeout(t);
+  try { proc.on('close', clear); proc.on('error', clear); } catch { /* ignore */ }
+  return proc;
+}
+
 function runFfprobeJson(srcPath) {
   return new Promise((resolve) => {
-    const proc = spawn(config.ffprobePath, [
+    const proc = killAfter(spawn(config.ffprobePath, [
       '-v', 'error',
       '-show_entries', 'format=duration:format_tags=creation_time',
       '-of', 'json', srcPath
-    ], { windowsHide: true });
+    ], { windowsHide: true }), 30000);
     let out = '';
     proc.stdout.on('data', (d) => { out += d.toString(); });
     proc.on('error', () => resolve(null));
@@ -2082,10 +2107,10 @@ const faceFrameCache = new Map(); // srcPath -> file path (960px single frame fo
 let posterCounter = 0;
 function ffmpegFrame(srcPath, ss, outPath) {
   return new Promise((resolve) => {
-    const proc = spawn(config.ffmpegPath, [
+    const proc = killAfter(spawn(config.ffmpegPath, [
       '-y', '-ss', String(ss), '-i', srcPath,
       '-frames:v', '1', '-vf', 'scale=400:-2', outPath
-    ], { windowsHide: true });
+    ], { windowsHide: true }), 60000);
     proc.on('error', () => resolve(false));
     proc.on('close', (code) => resolve(code === 0));
   });
@@ -2340,6 +2365,9 @@ ipcMain.handle('copy:cancel', () => {
 
 // Copy the given files to the intake folder, reporting progress events.
 ipcMain.handle('copy:start', async (evt, payload) => {
+  // Refuse a second copy while one is running — a concurrent copy would overwrite the
+  // shared copyTask, breaking cancel/status/progress for the first one.
+  if (copyTask && copyTask.active) return { ok: false, error: 'A copy is already running' };
   const { files, intakeFolder } = payload;
   const dest = intakeFolder || config.intakeFolder;
   const sender = evt.sender;
@@ -2353,7 +2381,7 @@ ipcMain.handle('copy:start', async (evt, payload) => {
   // Optional second copy to a NAS / backup location during intake. Failures are
   // reported but never abort the main copy (the card import is what matters).
   let nasRoot = '';
-  const nasSummary = { ok: 0, failed: 0, setupError: '' };
+  const nasSummary = { ok: 0, failed: 0, verified: 0, skipped: 0, setupError: '' };
   if (config.nasBackup && config.nasBackup.enabled && config.nasBackup.path) {
     nasRoot = config.nasBackup.path;
     try { await ensureDir(nasRoot); }
@@ -2662,7 +2690,7 @@ function aiExtractRules(val) {
 // cleanly into a contact sheet grid).
 function ffmpegFrameH(srcPath, ss, outPath) {
   return new Promise((resolve) => {
-    const proc = spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=-2:240', outPath], { windowsHide: true });
+    const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=-2:240', outPath], { windowsHide: true }), 60000);
     proc.on('error', () => resolve(false));
     proc.on('close', (code) => resolve(code === 0));
   });
@@ -2671,7 +2699,7 @@ function ffmpegFrameH(srcPath, ss, outPath) {
 // cols×rows grid. Verified ffmpeg pads the final partial row with `color`.
 function ffmpegTileSeq(pattern, cols, rows, outPath) {
   return new Promise((resolve) => {
-    const proc = spawn(config.ffmpegPath, ['-y', '-i', pattern, '-frames:v', '1', '-vf', `tile=${cols}x${rows}:padding=6:margin=6:color=black`, outPath], { windowsHide: true });
+    const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-i', pattern, '-frames:v', '1', '-vf', `tile=${cols}x${rows}:padding=6:margin=6:color=black`, outPath], { windowsHide: true }), 60000);
     proc.on('error', () => resolve(false));
     proc.on('close', (code) => resolve(code === 0));
   });
@@ -2762,7 +2790,7 @@ async function detectMotionGoPro(srcPath) {
   const binPath = path.join(THUMB_DIR, `gpmf_${motionCounter}.bin`);
   // Stream-copy ONLY the telemetry track — fast even on multi-GB 4K (no decode).
   const ok = await new Promise((resolve) => {
-    const p = spawn(config.ffmpegPath, ['-y', '-i', srcPath, '-codec', 'copy', '-map', `0:${idx}`, '-f', 'rawvideo', binPath], { windowsHide: true });
+    const p = killAfter(spawn(config.ffmpegPath, ['-y', '-i', srcPath, '-codec', 'copy', '-map', `0:${idx}`, '-f', 'rawvideo', binPath], { windowsHide: true }), 90000);
     p.on('error', () => resolve(false));
     p.on('close', (c) => resolve(c === 0));
   });
@@ -2803,12 +2831,12 @@ async function detectMotionFrames(srcPath) {
       const ss = Math.max(0, durationSec * ((i + 0.5) / N));
       const fp = path.join(THUMB_DIR, `${tag}_${String(k + 1).padStart(3, '0')}.jpg`);
       // eslint-disable-next-line no-await-in-loop
-      const ok = await new Promise((r) => { const p = spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=160:-2', fp], { windowsHide: true }); p.on('error', () => r(false)); p.on('close', (c) => r(c === 0)); });
+      const ok = await new Promise((r) => { const p = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=160:-2', fp], { windowsHide: true }), 60000); p.on('error', () => r(false)); p.on('close', (c) => r(c === 0)); });
       if (ok) k += 1;
     }
     if (k < 3) return '';
     const metaFile = path.join(THUMB_DIR, `${tag}_meta.txt`);
-    await new Promise((r) => { const p = spawn(config.ffmpegPath, ['-y', '-i', path.join(THUMB_DIR, `${tag}_%03d.jpg`), '-vf', `scdet=s=1,metadata=print:file=${metaFile}`, '-f', 'null', '-'], { windowsHide: true }); p.on('error', () => r()); p.on('close', () => r()); });
+    await new Promise((r) => { const p = killAfter(spawn(config.ffmpegPath, ['-y', '-i', path.join(THUMB_DIR, `${tag}_%03d.jpg`), '-vf', `scdet=s=1,metadata=print:file=${metaFile}`, '-f', 'null', '-'], { windowsHide: true }), 90000); p.on('error', () => r()); p.on('close', () => r()); });
     let mafds = [];
     try { mafds = (await fsp.readFile(metaFile, 'utf8')).split(/\r?\n/).map((l) => { const m = l.match(/lavfi\.scd\.mafd=([\d.]+)/); return m ? Number(m[1]) : null; }).filter((x) => x != null); } catch { /* ignore */ }
     for (let i = 1; i <= k; i += 1) { try { fs.rmSync(path.join(THUMB_DIR, `${tag}_${String(i).padStart(3, '0')}.jpg`), { force: true }); } catch { /* ignore */ } }
@@ -3512,6 +3540,7 @@ function ingestMemoryInbox() {
     catch { text = l.trim(); }
     if (text && !have.has(text.toLowerCase())) { have.add(text.toLowerCase()); ai.memories.push({ id: newMemId(), text, example, ts: Date.now() }); added += 1; }
   }
+  if (ai.memories.length > 300) ai.memories = ai.memories.slice(-300);   // cap (a huge inbox can't bloat config)
   if (added) saveConfig();
   try { fs.renameSync(inbox, `${inbox}.${Date.now()}.done`); } catch { try { fs.writeFileSync(inbox, ''); } catch { /* ignore */ } }
   if (added) setTimeout(() => { maybeAutoConsolidate(); }, 2000);
@@ -3706,7 +3735,7 @@ async function getFaceFrame(srcPath) {
       faceFrameCache.set(srcPath, outPath); return outPath;
     }
     const extract = (ss) => new Promise((resolve) => {
-      const proc = spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=960:-2', outPath], { windowsHide: true });
+      const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=960:-2', outPath], { windowsHide: true }), 60000);
       proc.on('error', () => resolve(false));
       proc.on('close', (code) => resolve(code === 0));
     });
@@ -3752,7 +3781,7 @@ async function getFaceFrames(srcPath, interval, maxFrames) {
       await acquirePoster();
       try {
         const ok = await new Promise((res) => {
-          const p = spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=1100:-2', out], { windowsHide: true });
+          const p = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=1100:-2', out], { windowsHide: true }), 60000);
           p.on('error', () => res(false)); p.on('close', (c) => res(c === 0));
         });
         return ok ? out : null;
@@ -4778,6 +4807,8 @@ if (!gotLock) {
     console.log(`[startup] launchAtLogin = ${config.launchAtLogin}`);
 
     ingestMemoryInbox();   // fold any externally-dropped learnings into AI memory
+    // Purge last session's thumbnail/poster scratch so temp can't grow without bound.
+    try { fs.rmSync(THUMB_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
     createWindow();
     createTray();
 

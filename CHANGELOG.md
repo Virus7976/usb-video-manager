@@ -7,6 +7,21 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed / hardened (from a reliability + security audit)
+- **Hung video tools can't wedge the app.** ffmpeg/ffprobe calls (posters, thumbnails, face
+  frames, metadata, drive detection) now self-kill if they stall on a corrupt/odd clip,
+  instead of deadlocking the preview pipeline or leaking processes.
+- **Temp files don't pile up.** The thumbnail/poster scratch folder is cleared on startup.
+- **config.json can't bloat unbounded** — the project "memory" ledger (and the AI-memory
+  inbox) are now capped like every other store, so saves stay fast over time.
+- **No accidental double-copy.** Starting a copy while one is already running is refused
+  (it could have corrupted progress/cancel for the first).
+- **Phone "what's new" is more accurate** — a video that failed to copy stays marked "new"
+  (re-offered) instead of being recorded as backed-up.
+- **Security hardening** — locked down window navigation/new-windows (defense-in-depth for the
+  local-file viewer); fixed a file-handle leak on copy errors. (Audit found no command
+  injection or XSS — the static-PowerShell + escaping patterns hold.)
+
 ## [0.3.1] — 2026-06-28
 
 ### Fixed

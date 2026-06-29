@@ -582,6 +582,7 @@ function installUpdateNow() {
 }
 
 // Renderer-triggered native notification (AI done, faces tagged, etc.).
+ipcMain.handle('app:version', () => { try { return app.getVersion(); } catch { return ''; } });
 ipcMain.handle('app:notify', (_e, payload) => {
   const title = String((payload && payload.title) || 'USB / SD Auto-Action');
   const body = String((payload && payload.body) || '');

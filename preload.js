@@ -146,6 +146,7 @@ contextBridge.exposeInMainWorld('api', {
   clearDrafts: (keys) => ipcRenderer.invoke('drafts:clear', keys),
 
   // Version history / save points (full naming snapshots to roll back to)
+  appVersion: () => ipcRenderer.invoke('app:version'),
   getVersions: () => ipcRenderer.invoke('versions:get'),
   saveVersion: (entry) => ipcRenderer.invoke('versions:save', entry),
   deleteVersion: (id) => ipcRenderer.invoke('versions:delete', id),

@@ -159,6 +159,7 @@ let cfg = null;
     memories: Array.isArray(cfg.ai.memories) ? cfg.ai.memories : []
   };
   applyAiPref();
+  try { appVersionStr = (await window.api.appVersion()) || ''; } catch { appVersionStr = ''; }
   try { versionsCache = (await window.api.getVersions()) || []; } catch { versionsCache = []; }
   try { routesCache = (await window.api.getRoutes()) || []; } catch { routesCache = []; }
   try { clipObsCache = (await window.api.getClipObs()) || {}; } catch { clipObsCache = {}; }
@@ -926,6 +927,7 @@ async function restoreDraftsNow() {
 // Edit → "Save point now". Roll back from Edit → "Version history…".
 // ---------------------------------------------------------------------------
 let versionsCache = [];
+let appVersionStr = '';   // real app version (from main) for the About box
 let routesCache = [];      // standing filing rules (subject → folder, by-day)
 let clipObsCache = {};     // clipKey → { obs, ts } prior AI observations
 function newVersionId() { return `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`; }
@@ -2931,9 +2933,9 @@ async function aiAnalyzeSelected() {
 function showAnalyzeDialog({ count, hasContent, cachedCount }) {
   return new Promise((resolve) => {
     const modeOpts = [
-      { v: 'refine', t: 'Refine what I wrote', d: 'use my subject/description/location as context' },
-      { v: 'empty', t: 'Only fill empty fields', d: 'leave anything I already typed' },
-      { v: 'all', t: 'Overwrite from scratch', d: 'ignore what\'s there and start fresh' }
+      { v: 'refine', t: 'Improve my notes', d: 'use my subject/description/location as context' },
+      { v: 'empty', t: 'Only name blank clips', d: 'leave anything I already typed' },
+      { v: 'all', t: 'Start over', d: 'ignore what\'s there and name from scratch' }
     ];
     let mode = hasContent ? 'refine' : 'all';
     const ov = document.createElement('div');
@@ -3581,7 +3583,7 @@ function showPoster(i, posterUrl) {
   } else {
     const ph = document.createElement('span');
     ph.className = 'placeholder';
-    ph.textContent = 'No preview';
+    ph.textContent = 'No preview (the file is fine — it’ll still copy)';
     wrap.appendChild(ph);
   }
   const play = document.createElement('button');
@@ -3648,7 +3650,7 @@ async function playClip(i, mode) {
   video.addEventListener('loadedmetadata', () => { video.playbackRate = currentSpeed; });
   video.addEventListener('play', () => { video.playbackRate = currentSpeed; });
   video.addEventListener('error', () => {
-    wrap.innerHTML = '<span class="placeholder">Preview unavailable</span>';
+    wrap.innerHTML = '<span class="placeholder">Can’t preview this format — the file is fine and will still copy</span>';
   });
   wrap.appendChild(video);
   video.play().catch(() => { /* autoplay race */ });
@@ -5650,7 +5652,7 @@ function showAbout() {
   ov.innerHTML = `<div class="modal-card">
     <img src="assets/tray.png" class="modal-icon" alt="" />
     <h3>USB / SD Auto-Action</h3>
-    <p class="muted small">Version 0.1.0 · Fluent</p>
+    <p class="muted small">Version ${escapeHtml(appVersionStr || '—')}</p>
     <p class="muted small">Auto-import, rename and clear your camera cards.</p>
     <button type="button" class="btn primary modal-ok">OK</button></div>`;
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) ov.remove(); });
@@ -7277,7 +7279,7 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
       <div class="re-nl-row"><input type="text" class="ai-input re-nl" placeholder="e.g. vlog is just a label not its own project; timelapses go in the project they were taken in" /><button type="button" class="btn re-interpret">Interpret</button></div>
       <div class="re-kind">
         <button type="button" class="re-kindbtn ${kind === 'route' ? 'sel' : ''}" data-k="route">Files into a folder</button>
-        <button type="button" class="re-kindbtn ${kind === 'descriptor' ? 'sel' : ''}" data-k="descriptor">Is a descriptor (vlog, timelapse…)</button>
+        <button type="button" class="re-kindbtn ${kind === 'descriptor' ? 'sel' : ''}" data-k="descriptor">It's just a label (vlog, timelapse…) — not its own folder</button>
       </div>
       <label class="dpk-flabel muted small">When the clip is about (keywords, comma-separated)</label>
       <input type="text" class="ai-input re-match" value="${escapeAttr((r.match || []).join(', '))}" placeholder="vlog, timelapse" />
@@ -8394,7 +8396,7 @@ function showAiSettings() {
       ? `✓ Ollama running · ${vis.length} vision model${vis.length !== 1 ? 's' : ''} available`
       : '✓ Ollama running, but no vision model yet. Add one below (e.g. <code>qwen2.5vl:7b</code>).';
     statusEl.classList.add('ok');
-    modelSel.setOptions(list.map((n) => ({ value: n, label: n + (vis.includes(n) ? '' : ' (text only?)') })));
+    modelSel.setOptions(list.map((n) => ({ value: n, label: n + (vis.includes(n) ? '' : ' (may not see images)') })));
     if (!c.model && list.length) c.model = list[0];
     modelSel.value = c.model || '';
     fillTextModelSel(s.models || list);   // reasoning model can be ANY installed model

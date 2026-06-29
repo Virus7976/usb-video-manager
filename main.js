@@ -255,7 +255,16 @@ try {
 if (!config.renameDrafts || typeof config.renameDrafts !== 'object') config.renameDrafts = {};
 
 // Read the on-disk config fresh (for draft ops), or null if unreadable.
+// We are the only writer (single-instance lock), so the in-memory `config` is
+// authoritative. Skip the expensive whole-file re-read unless the file was actually
+// changed by something ELSE since our last save — turning a ~600KB sync read+parse on
+// every draft/pref save into a cheap stat. Returns null when in-memory should be used.
+let lastSelfWriteMtimeMs = 0;
 function readConfigFresh() {
+  try {
+    const st = fs.statSync(USER_CONFIG);
+    if (lastSelfWriteMtimeMs && st.mtimeMs <= lastSelfWriteMtimeMs) return null;   // nothing external changed it
+  } catch { /* no file / stat failed → fall through and try a real read */ }
   const j = readJsonRetry(USER_CONFIG);
   return (j && typeof j === 'object') ? j : null;
 }
@@ -274,6 +283,7 @@ function saveConfig() {
   try {
     fs.mkdirSync(path.dirname(USER_CONFIG), { recursive: true });
     writeJsonAtomic(USER_CONFIG, config);
+    try { lastSelfWriteMtimeMs = fs.statSync(USER_CONFIG).mtimeMs; } catch { /* ignore */ }
   } catch (err) {
     console.error('Could not save config:', err.message);
   }

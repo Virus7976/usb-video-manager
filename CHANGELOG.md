@@ -7,6 +7,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-06-29
+
+### Added
+- **Pick up where you left off.** When you reconnect your phone, photos you'd already pulled
+  to your computer earlier are recognized — they're no longer re-offered as "new," so you only
+  back up what's genuinely new. The summary shows "N new · M already pulled," and Review still
+  lets you re-do any of them.
+
 ## [0.3.2] — 2026-06-29
 
 ### Clearer / more intuitive

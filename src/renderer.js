@@ -8739,25 +8739,36 @@ async function phoneScanScoped() {
   scanEl.classList.add('hidden');
   if (Array.isArray(res)) res = { ok: true, media: res };
   if (res && res.ok === false) { phoneShowScanError(); return; }
-  // Default-select only what hasn't been backed up before (shared import memory).
+  // "Pick up from anywhere": photos already sitting in Photos Temp from an earlier,
+  // unfinished session are recognized so they're not re-offered as new.
+  let pulledNames = new Set();
+  try { pulledNames = new Set((await window.api.phonePulledNames()) || []); } catch { /* ignore */ }
+  // Default-select only what's genuinely NEW: not backed up before (shared import memory)
+  // AND not already pulled to Photos Temp.
   phoneState.media = ((res && res.media) || []).map((m, i) => {
-    const isNew = !importedSet.has(importKey({ name: m.name, size: m.size }));
-    return { ...m, _i: i, _new: isNew, selected: isNew };
+    const imported = importedSet.has(importKey({ name: m.name, size: m.size }));
+    const pulled = m.kind === 'photo' && pulledNames.has(String(m.name || '').toLowerCase());
+    const isNew = !imported && !pulled;
+    return { ...m, _i: i, _new: isNew, _pulled: pulled, selected: isNew };
   });
   const total = phoneState.media.length;
   const newOnes = phoneState.media.filter((m) => m._new);
   const newN = newOnes.length;
   const newPh = newOnes.filter((m) => m.kind === 'photo').length;
   const newVid = newN - newPh;
+  const pulledN = phoneState.media.filter((m) => m._pulled).length;
+  const pulledNote = pulledN ? ` · ${pulledN} already pulled` : '';
   if (!total) {
     $('phNewSummary').textContent = 'Nothing here';
     $('phNewSub').textContent = 'No photos or videos in the selected album(s).';
   } else if (!newN) {
-    $('phNewSummary').textContent = 'All backed up ✓';
-    $('phNewSub').textContent = `${total} item${total !== 1 ? 's' : ''} here — all already backed up. Use Review to back any up again.`;
+    $('phNewSummary').textContent = pulledN ? 'Caught up ✓' : 'All backed up ✓';
+    $('phNewSub').textContent = pulledN
+      ? `${pulledN} already pulled to your computer${pulledN !== total ? ` · ${total - pulledN} backed up` : ''}. Use Review to re-do any.`
+      : `${total} item${total !== 1 ? 's' : ''} here — all already backed up. Use Review to back any up again.`;
   } else {
     $('phNewSummary').textContent = `${newN} new to back up`;
-    $('phNewSub').textContent = `${newPh} photo${newPh !== 1 ? 's' : ''} · ${newVid} video${newVid !== 1 ? 's' : ''} · ${total} in selection`;
+    $('phNewSub').textContent = `${newPh} photo${newPh !== 1 ? 's' : ''} · ${newVid} video${newVid !== 1 ? 's' : ''}${pulledNote} · ${total} in selection`;
   }
   $('phBackupNew').textContent = newN ? `Back up ${newN} new` : 'Nothing new';
   $('phBackupNew').disabled = !newN || phoneState.copying;

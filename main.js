@@ -1806,6 +1806,18 @@ ipcMain.handle('phone:scan', (_e, p) => {
   return scanPhone(p);
 });
 
+// "Pick up from anywhere": which photos are ALREADY pulled to Photos Temp (by filename),
+// so a re-scan can recognize them instead of re-offering them. Just a directory listing
+// (no per-file stat) so it's fast even over the NAS. Returns lowercased filenames.
+ipcMain.handle('phone:pulledNames', async () => {
+  const dir = config.photosTempFolder;
+  if (!dir) return [];
+  try {
+    const ents = await fsp.readdir(dir, { withFileTypes: true });
+    return ents.filter((e) => e.isFile()).map((e) => e.name.toLowerCase());
+  } catch { return []; }
+});
+
 // GoPro-style pull: copy ONLY the PHOTOS off the phone (into "04 - Photos Temp") —
 // videos STAY on the device and are only copied to the Uncompressed intake later, at
 // the copy step. Returns staged clips: photos with a local sourcePath; videos as

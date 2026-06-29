@@ -3060,7 +3060,7 @@ function showFeedbackReportDialog(section) {
     if (!text && !images.length) { close(); return; }
     close();
     const r = await window.api.feedbackAdd({ text, section: section || 'General', images });
-    showToast(r && r.ok ? 'Feedback saved ✓' : `Couldn’t save: ${r ? r.error : 'unknown'}`);
+    showToast(r && r.ok ? 'Feedback saved ✓' : `Couldn’t save: ${r ? r.error : 'please try again'}`);
   });
 }
 
@@ -3100,7 +3100,7 @@ function showFeedbackExportDialog() {
   ov.querySelector('.fbx-csv').addEventListener('click', async () => {
     const r = await window.api.feedbackExport({ refine: false });
     if (r && r.ok) { status.textContent = `Saved: ${r.path}`; window.api.openFolder(r.path.replace(/[\\/][^\\/]+$/, '')); }
-    else status.textContent = `Couldn't save: ${r ? r.error : 'unknown'}`;
+    else status.textContent = `Couldn't save: ${r ? r.error : 'please try again'}`;
   });
   load(false);
 }
@@ -3274,7 +3274,7 @@ function showMemoryEditor(initial, onSave) {
     const r = await window.api.aiRefineMemory(text);
     btn.disabled = false;
     if (r && r.ok) { q('.me-text').value = r.text; if (r.example) q('.me-eg').value = r.example; q('.me-status').textContent = 'Refined ✓'; q('.me-revert').classList.remove('hidden'); }
-    else { q('.me-status').textContent = `Couldn’t refine: ${r ? r.error : 'unknown'}`; }
+    else { q('.me-status').textContent = `Couldn’t refine: ${r ? r.error : 'please try again'}`; }
   });
   q('.me-revert').addEventListener('click', () => {
     if (original) { q('.me-text').value = original.text; q('.me-eg').value = original.example; q('.me-status').textContent = 'Reverted'; q('.me-revert').classList.add('hidden'); }
@@ -3316,7 +3316,7 @@ function showProposedRulesDialog(title, subtitle, proposed, onApplied, opts = {}
     if (!picked.length) { showToast('Tick at least one'); return; }
     const r = replace ? await window.api.aiReplaceMemories(picked) : await window.api.aiAddMemories(picked);
     if (r && r.ok) { if (Array.isArray(r.memories)) aiCfg.memories = r.memories; onApplied(r.memories || []); showToast(replace ? 'Memories grouped ✓' : `Added ${picked.length} ✓`); close(); }
-    else showToast(`Couldn't apply: ${r ? r.error : 'unknown'}`);
+    else showToast(`Couldn't apply: ${r ? r.error : 'please try again'}`);
   });
 }
 
@@ -3355,7 +3355,7 @@ function showImportDialog(onAdd) {
     const btn = q('.imp-extract'); btn.disabled = true; q('.imp-status').textContent = 'Reading & extracting…';
     const r = await window.api.aiImportDoc(text ? { text } : { path });
     btn.disabled = false;
-    if (!r || !r.ok) { q('.imp-status').textContent = `Couldn’t extract: ${r ? r.error : 'unknown'}`; return; }
+    if (!r || !r.ok) { q('.imp-status').textContent = `Couldn’t extract: ${r ? r.error : 'please try again'}`; return; }
     proposed = r.proposed || [];
     q('.imp-status').textContent = `Found ${proposed.length} rule${proposed.length !== 1 ? 's' : ''}`;
     const res = q('.imp-results'); res.innerHTML = '';
@@ -3371,7 +3371,7 @@ function showImportDialog(onAdd) {
     if (!picked.length) { showToast('Tick at least one'); return; }
     const r = await window.api.aiAddMemories(picked);
     if (r && r.ok) { if (Array.isArray(r.memories)) aiCfg.memories = r.memories; onAdd(picked); showToast(`Added ${picked.length} memor${picked.length !== 1 ? 'ies' : 'y'} ✓`); close(); }
-    else showToast(`Couldn't add: ${r ? r.error : 'unknown'}`);
+    else showToast(`Couldn't add: ${r ? r.error : 'please try again'}`);
   });
   q('.imp-cancel').addEventListener('click', close);
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
@@ -3414,7 +3414,7 @@ function showAiFeedbackDialog(example) {
       if (Array.isArray(r.memories)) aiCfg.memories = r.memories;
       const added = (r.added && r.added.length) ? `: ${r.added.join(' · ')}` : '';
       showToast(`AI memory updated ✓${added}`);
-    } else showToast(`Couldn't save feedback: ${r ? r.error : 'unknown'}`);
+    } else showToast(`Couldn't save feedback: ${r ? r.error : 'please try again'}`);
   });
 }
 // Run the AI on a single clip by index (shared by the right-click menu + AI submenu).
@@ -4720,7 +4720,7 @@ function openMenu(trigger) {
   let activeSub = null;
   let subTimer = null;
   const closeSub = () => { if (activeSub) { activeSub.remove(); activeSub = null; } };
-  const scheduleCloseSub = () => { clearTimeout(subTimer); subTimer = setTimeout(closeSub, 260); };
+  const scheduleCloseSub = () => { clearTimeout(subTimer); subTimer = setTimeout(closeSub, 600); };
   const cancelCloseSub = () => clearTimeout(subTimer);
 
   function openSubmenu(anchorBtn, item) {
@@ -4832,7 +4832,7 @@ function showContextMenu(x, y, items) {
   const hasChecks = items.some((it) => it.type === 'check');
   let activeSub = null; let subTimer = null;
   const closeSub = () => { if (activeSub) { activeSub.remove(); activeSub = null; } };
-  const scheduleCloseSub = () => { clearTimeout(subTimer); subTimer = setTimeout(closeSub, 260); };
+  const scheduleCloseSub = () => { clearTimeout(subTimer); subTimer = setTimeout(closeSub, 600); };
   const cancelCloseSub = () => clearTimeout(subTimer);
   const val = (v) => (typeof v === 'function' ? v() : v);
   function openSub(anchorBtn, item) {
@@ -7029,14 +7029,15 @@ async function showDestinationMap(rawClips, opts = {}) {
         <datalist id="sc2-opts">${allPaths.map((p) => `<option value="${escapeAttr(p)}"></option>`).join('')}</datalist>
         <input type="text" class="ai-input sc2-input" list="sc2-opts" placeholder="…or type a folder (new or existing), e.g. 2026/2026 - Personal/Kakwa Trip" />
         <label class="sc2-remember"><input type="checkbox" class="sc2-rem" checked /> <span>Remember this — auto-file “${escapeHtml(String(g.label).replace(/[-_]+/g, ' '))}” next time</span></label>
-        <div class="sc2-actions"><button type="button" class="btn sc2-back" ${idx === 0 ? 'disabled' : ''}>Back</button><button type="button" class="btn sc2-skip">Skip</button><button type="button" class="btn primary sc2-file" disabled>File here →</button></div>`;
+        <div class="sc2-actions"><button type="button" class="btn sc2-back" ${idx === 0 ? 'disabled' : ''}>Back</button><button type="button" class="btn sc2-skip">Skip</button><button type="button" class="btn primary sc2-file" disabled>Pick or type a folder</button></div>`;
       const inp = body.querySelector('.sc2-input'); const fileBtn = body.querySelector('.sc2-file');
-      const sync = (d) => { body.querySelectorAll('.sc2-chip').forEach((b) => b.classList.toggle('on', b.dataset.dest === d.trim())); fileBtn.disabled = !d.trim(); };
+      const sync = (d) => { const has = !!d.trim(); body.querySelectorAll('.sc2-chip').forEach((b) => b.classList.toggle('on', b.dataset.dest === d.trim())); fileBtn.disabled = !has; fileBtn.textContent = has ? 'File here →' : 'Pick or type a folder'; };
       const doFile = async () => { await fileGroup(g, inp.value, body.querySelector('.sc2-rem').checked); idx += 1; show(); };
       body.querySelectorAll('.sc2-chip').forEach((b) => b.addEventListener('click', () => { inp.value = b.dataset.dest; sync(inp.value); }));
       inp.addEventListener('input', () => sync(inp.value));
       inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && inp.value.trim()) { e.preventDefault(); doFile(); } });
       fileBtn.addEventListener('click', doFile);
+      sync(inp.value);   // reflect any prefilled value in the button state/label on open
       body.querySelector('.sc2-skip').addEventListener('click', () => { idx += 1; show(); });
       body.querySelector('.sc2-back').addEventListener('click', () => { if (idx > 0) { idx -= 1; show(); } });
     }
@@ -8020,7 +8021,7 @@ function showModelStore(opts = {}) {
           if (ch !== 'rm') return;
           const r = await window.api.aiDelete(m.name);
           if (r && r.ok) { if (opts.onChanged) opts.onChanged(); load(); showToast(`${m.name} removed`); }
-          else showToast(`Couldn't remove: ${r ? r.error : 'unknown'}`);
+          else showToast(`Couldn't remove: ${r ? r.error : 'please try again'}`);
         });
       } else {
         act.innerHTML = `<button type="button" class="btn ms-dl">${kind === 'reason' ? 'Download & use' : 'Download'}</button><div class="ms-dl-status muted small hidden"></div>`;
@@ -8076,7 +8077,7 @@ function showAiSettings() {
       <div class="ai-nav-group">${navHtml}</div>
     </nav>
     <div class="ai-main">
-      <button type="button" class="ai-close" title="Close">✕</button>
+      <button type="button" class="ai-close" title="Close — your changes are already saved">✕</button>
       <div class="ai-status" id="aiStatus">Checking Ollama…</div>
       <div class="ai-panes">
         <section class="ai-pane" data-pane="engine">
@@ -8365,7 +8366,7 @@ function showAiSettings() {
     btn.disabled = true; st.classList.remove('hidden'); st.textContent = 'Reading your names and learning your style…';
     const r = await window.api.aiLearnNames(learnDir ? { dir: learnDir } : {});
     btn.disabled = false;
-    if (!r || !r.ok) { st.textContent = `Couldn't learn: ${r ? r.error : 'unknown'}`; return; }
+    if (!r || !r.ok) { st.textContent = `Couldn't learn: ${r ? r.error : 'please try again'}`; return; }
     st.textContent = `Read ${r.examples} of your names.`;
     if (!(r.proposed && r.proposed.length)) { st.textContent += ' No new rules to add — your style is already captured.'; return; }
     showProposedRulesDialog('Rules learned from your style', `From ${r.examples} of your own names. Tick the ones to remember.`, r.proposed, (mems) => { c.memories = mems.map((m) => ({ ...m })); renderMems(); });
@@ -8375,7 +8376,7 @@ function showAiSettings() {
     const btn = $$('.ai-mem-tidy'); const old = btn.textContent; btn.disabled = true; btn.textContent = 'Grouping…';
     const r = await window.api.aiConsolidateMemories();
     btn.disabled = false; btn.textContent = old;
-    if (!r || !r.ok) { showToast(`Couldn't group: ${r ? r.error : 'unknown'}`); return; }
+    if (!r || !r.ok) { showToast(`Couldn't group: ${r ? r.error : 'please try again'}`); return; }
     showProposedRulesDialog('Tidy & group memories', `This replaces your ${r.before} memories with these ${r.proposed.length} grouped ones. Tick to keep, then Apply.`,
       r.proposed, (mems) => { c.memories = mems.map((m) => ({ ...m })); renderMems(); }, { replace: true });
   });

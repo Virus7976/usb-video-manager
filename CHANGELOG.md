@@ -7,6 +7,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Clearer / more intuitive
+- Error messages now say "please try again" instead of the scary literal "unknown".
+- The destination-map's primary button reads "Pick or type a folder" until you've chosen one
+  (instead of a dead-looking "File here →").
+- Menus stay open a bit longer so they don't vanish if your pointer drifts.
+- The AI-settings close button now reassures that your changes are already saved.
+
 ### Fixed
 - **Day grouping in the rename grid now shows every clip.** Previously each day header
   showed a count (e.g. "34 clips") but only one clip appeared under it, because the list

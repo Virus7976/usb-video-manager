@@ -7,6 +7,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-06-29
+
 ### Clearer / more intuitive
 - **AI actions no longer dead-end when AI is off.** Clicking "✨ Suggest with AI", Analyze,
   summarize, etc. without AI set up now opens the "turn on AI / pick a model" helper instead

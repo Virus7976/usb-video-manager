@@ -10230,11 +10230,12 @@ async function openCompress() {
     cmpOff = window.api.onCompressProgress((p) => {
       const masterI = idxMap[p.index];
       const stat = ov.querySelector(`[data-stat="${masterI}"]`); const fill = ov.querySelector(`[data-fill="${masterI}"]`);
-      if (fill) fill.style.width = `${p.pct || 0}%`;
+      if (fill && typeof p.pct === 'number') fill.style.width = `${p.pct}%`;   // don't reset to 0 on indeterminate ticks
       if (stat) {
         if (p.phase === 'done') stat.innerHTML = `<span class="cmp-ok">✓ ${p.inBytes && p.outBytes ? `−${Math.max(0, Math.round((1 - p.outBytes / p.inBytes) * 100))}%` : 'done'}</span>`;
         else if (p.phase === 'skipped') stat.innerHTML = '<span class="muted small">already done</span>';
         else if (p.phase === 'error') stat.innerHTML = `<span class="cmp-err" title="${escapeHtml(p.error || '')}">failed</span>`;
+        else if (p.indeterminate) stat.textContent = 'Compressing…';   // no duration → no %, show activity
         else stat.textContent = `${p.pct || 0}%`;
       }
       setTask('compress', 'Compressing', (p.index || 0) + 1, files.length, p.phase || 'compressing', p.name || '');

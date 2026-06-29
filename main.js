@@ -4317,9 +4317,13 @@ ipcMain.handle('compress:run', async (evt, payload) => {
       compressProc = proc;
       proc.stdout.on('data', (d) => {
         const m = String(d).match(/out_time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
-        if (m && durationSec) {
+        if (!m) return;
+        if (durationSec) {
           const sec = (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]);
           send({ index: i, total: files.length, name: f.name, pct: Math.max(1, Math.min(99, Math.round((sec / durationSec) * 100))), phase: 'compressing', inBytes });
+        } else {
+          // ffprobe couldn't read a duration → no %; show that it's working, not stuck at 0%.
+          send({ index: i, total: files.length, name: f.name, phase: 'compressing', indeterminate: true, inBytes });
         }
       });
       proc.stderr.on('data', (d) => { errBuf += String(d); if (errBuf.length > 6000) errBuf = errBuf.slice(-6000); });

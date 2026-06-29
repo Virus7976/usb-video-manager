@@ -7,6 +7,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Performance
+- **Faster to open + lighter saves.** `config.json` had grown to ~1.6 MB (thousands of stale
+  rename drafts + oversized save-points) and was parsed at launch and rewritten in full on
+  every setting change. It's now slimmed and capped, roughly halving what the app loads at
+  startup and writes on each save — so it opens quicker and feels snappier.
+
 ### Fixed / hardened (from a reliability + security audit)
 - **Hung video tools can't wedge the app.** ffmpeg/ffprobe calls (posters, thumbnails, face
   frames, metadata, drive detection) now self-kill if they stall on a corrupt/odd clip,

@@ -7997,7 +7997,7 @@ function showModelStore(opts = {}) {
   async function load() {
     q('.ms-status').textContent = 'Loading…';
     let res; try { res = await window.api.aiCatalog(); } catch { res = null; }
-    if (!res || !res.ok) { q('.ms-status').textContent = 'Could not reach Ollama — is it installed and running?'; return; }
+    if (!res || !res.ok) { q('.ms-status').innerHTML = 'Ollama isn’t running. Install it from <code>ollama.com</code> — it’s a small free app that runs in the background — then reopen this. (AI is optional; everything else works without it.)'; return; }
     const inst = res.catalog.filter((m) => m.installed).length;
     q('.ms-status').textContent = `${res.catalog.length} vision models · ${inst} installed${res.live ? '' : ' · built-in list'}`;
     renderRows(q('.ms-list'), res.catalog, 'vision');

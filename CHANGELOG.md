@@ -7,6 +7,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- **Day grouping in the rename grid now shows every clip.** Previously each day header
+  showed a count (e.g. "34 clips") but only one clip appeared under it, because the list
+  wasn't sorted by day — so the same day repeated all over the list. Clips are now grouped
+  by day (newest first), so "34 clips" actually shows all 34 together.
+
 ### Performance
 - **Faster to open + lighter saves.** `config.json` had grown to ~1.6 MB (thousands of stale
   rename drafts + oversized save-points) and was parsed at launch and rewritten in full on

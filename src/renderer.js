@@ -1391,8 +1391,22 @@ function buildRenameStep() {
 
   const dayCounts = {};
   state.scannedFiles.forEach((c) => { const dk = c.date || ''; dayCounts[dk] = (dayCounts[dk] || 0) + 1; });
+  // Display ORDER: when grouping by day, lay out every clip of the same day together
+  // (newest day first) so the "N clips" header actually shows all N. Phone/card scans
+  // aren't date-sorted, so the old "divider when the day changes between consecutive
+  // clips" scattered each day across the list (header said 34 but showed 1). Indices stay
+  // the ORIGINAL positions (data-i), so all the per-row editing/handlers are unaffected.
+  const order = [];
+  if (uiPrefs.dayDividers !== false) {
+    const byDay = new Map();
+    for (let i = 0; i < n; i += 1) { const d = state.scannedFiles[i].date || ''; if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(i); }
+    const days = [...byDay.keys()].sort((a, b) => String(b).localeCompare(String(a)));   // newest day first; '' (No date) sorts last
+    for (const d of days) for (const idx of byDay.get(d)) order.push(idx);
+  } else {
+    for (let i = 0; i < n; i += 1) order.push(i);
+  }
   let lastDay = null;
-  for (let i = 0; i < n; i += 1) {
+  for (const i of order) {
     const clip = state.scannedFiles[i];
     // Day dividers: a labelled split between clips shot on different days, so a
     // card's worth of footage is easy to batch-select. (Setting: View → Group by day.)

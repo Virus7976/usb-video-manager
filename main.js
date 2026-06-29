@@ -228,6 +228,22 @@ config.ai.memories = config.ai.memories.filter((m) => m && typeof m.text === 'st
 if (!Array.isArray(config.ai.feedbackLog)) config.ai.feedbackLog = [];
 if (!Array.isArray(config.ai.styleExamples)) config.ai.styleExamples = [];
 
+// One-time SLIM of accumulated bloat. config.json is loaded at boot and rewritten
+// whole on every trivial save, so oversized append-mostly stores make the app slow to
+// open and every save heavy. Trim to sane caps in memory (newest kept); the next normal
+// save persists it. No write here — avoids a second-instance race before the lock check.
+try {
+  if (config.renameDrafts && typeof config.renameDrafts === 'object') {
+    const ents = Object.entries(config.renameDrafts);
+    if (ents.length > 1000) {
+      ents.sort((a, b) => ((b[1] && b[1].ts) || 0) - ((a[1] && a[1].ts) || 0));
+      config.renameDrafts = Object.fromEntries(ents.slice(0, 1000));
+    }
+  }
+  if (Array.isArray(config.renameVersions) && config.renameVersions.length > 12) config.renameVersions = config.renameVersions.slice(0, 12);
+  if (Array.isArray(config.ai.memories) && config.ai.memories.length > 300) config.ai.memories = config.ai.memories.slice(-300);
+} catch { /* ignore */ }
+
 // ---------------------------------------------------------------------------
 // Rename drafts — stored in config.json (the proven-stable store). The handlers
 // below re-read the config FRESH from disk before each draft op (so a second
@@ -4113,9 +4129,9 @@ ipcMain.handle('drafts:save', (_evt, map) => {
   // Prune: drop entries older than 60 days, then cap to the 4000 most recent.
   const MAX_AGE = 60 * 24 * 3600 * 1000;
   let entries = Object.entries(drafts).filter(([, v]) => v && (now - (v.ts || 0)) < MAX_AGE);
-  if (entries.length > 4000) {
+  if (entries.length > 1000) {   // each draft is ~230B; 1000 is plenty and keeps config small
     entries.sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
-    entries = entries.slice(0, 4000);
+    entries = entries.slice(0, 1000);
   }
   config.renameDrafts = Object.fromEntries(entries);
   saveConfig();
@@ -4156,7 +4172,7 @@ ipcMain.handle('versions:save', (_evt, entry) => {
     count: Number(entry.count) || 0,
     map: entry.map
   });
-  if (list.length > 60) list.length = 60;   // keep the 60 most recent
+  if (list.length > 12) list.length = 12;   // each save-point's map is ~60KB — keep few
   config.renameVersions = list;
   saveConfig();
   return list;

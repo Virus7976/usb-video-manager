@@ -1687,7 +1687,9 @@ function Walk($folder, $rel, $depth) {
   }
 }
 $albums = @()
-if ($env:MTP_ALBUMS) { try { $albums = @($env:MTP_ALBUMS | ConvertFrom-Json) } catch { $albums = @() } }
+# Assign first, THEN wrap with @(): @(pipeline | ConvertFrom-Json) collapses a JSON
+# array into ONE element, so $albums[0] would be the whole array and match no folder.
+if ($env:MTP_ALBUMS) { try { $parsed = ($env:MTP_ALBUMS | ConvertFrom-Json); $albums = @($parsed) } catch { $albums = @() } }
 $root = $dev.GetFolder
 foreach ($st in $root.Items()) {
   if (-not $st.IsFolder) { continue }

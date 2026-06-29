@@ -7,6 +7,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-28
+
+### Fixed
+- **Phone scan now actually returns your photos.** The new album-scoped scan was passing the
+  chosen albums in a way PowerShell collapsed into a single bogus name, so it matched no folder
+  and showed “Nothing here” even for a 2,936-item Camera roll. Fixed the parsing — selecting
+  Camera (and any other albums) now scans them correctly.
+
 ## [0.3.0] — 2026-06-28
 
 ### Changed

@@ -3268,7 +3268,7 @@ function showMemoryEditor(initial, onSave) {
   q('.me-refine').addEventListener('click', async () => {
     const text = q('.me-text').value.trim();
     if (!text) { showToast('Write something first'); return; }
-    if (!aiReady()) { showToast('Turn on AI first'); return; }
+    if (!requireAi()) return;
     original = { text: q('.me-text').value, example: q('.me-eg').value };
     const btn = q('.me-refine'); btn.disabled = true; q('.me-status').textContent = 'Refining…';
     const r = await window.api.aiRefineMemory(text);
@@ -3348,7 +3348,7 @@ function showImportDialog(onAdd) {
     if (p) { q('.imp-status').textContent = p.split(/[\\/]/).pop(); ov.dataset.path = p; }
   });
   q('.imp-extract').addEventListener('click', async () => {
-    if (!aiReady()) { showToast('Turn on AI first'); return; }
+    if (!requireAi()) return;
     const text = q('.imp-text').value.trim();
     const path = ov.dataset.path || '';
     if (!text && !path) { showToast('Paste notes or choose a file'); return; }
@@ -6480,7 +6480,7 @@ async function showDestinationMap(rawClips, opts = {}) {
   // its destinations, carrying each clip's AI "why"/confidence into placeMeta so the
   // plan view shows it. Used by the primary Suggest button, Refine, and auto-plan.
   async function runAiPlan(feedback, opts = {}) {
-    if (!aiReady()) { if (!opts.silent) showToast('Turn on AI to plan placement'); return 0; }
+    if (!aiReady()) { if (!opts.silent) requireAi(); return 0; }
     const auto = clips.filter((c) => autoKeys.has(c.key));
     const pool = opts.pool || (auto.length ? auto : clips);   // default: everything still on auto
     if (!pool.length) { if (!opts.silent) showToast('Nothing left to plan'); return 0; }
@@ -6665,7 +6665,7 @@ async function showDestinationMap(rawClips, opts = {}) {
     });
   }
   async function openSuggestWizard() {
-    if (!aiReady()) { showToast('Turn on AI first'); return; }
+    if (!requireAi()) return;
     // Clips matched by a filing RULE (route or descriptor) are already placed
     // correctly by the rules engine — incl. per-day folders. The wizard's AI only
     // handles the truly UNROUTED clips, so it never overrides your rules/by-day.
@@ -7047,7 +7047,7 @@ async function showDestinationMap(rawClips, opts = {}) {
   // Primary action: analyze anything unseen (so the AI isn't guessing from a bare
   // label), then run the placement pass inline — no separate wizard to wade through.
   async function aiPlanFlow() {
-    if (!aiReady()) { showToast('Turn on AI in settings to auto-plan placement'); return; }
+    if (!requireAi()) return;
     const targets = clips.filter((c) => autoKeys.has(c.key));
     const g = await ensureAnalyzedFirst(targets.length ? targets : clips);
     if (g === 'cancel' || g === 'analyze') return;   // the analyze path re-plans itself
@@ -7123,7 +7123,7 @@ async function showProjectsIndex() {
       card.querySelector('.pidx-open').addEventListener('click', () => { if (root) window.api.openFolder(`${root.replace(/[\\/]+$/, '')}/${m.rel}`); else showToast('Set a Projects folder first'); });
       const rb = card.querySelector('.pidx-refresh');
       rb.addEventListener('click', async () => {
-        if (!aiReady()) { showToast('Turn on AI to generate summaries'); return; }
+        if (!requireAi()) return;
         rb.disabled = true; rb.textContent = 'Summarizing…';
         try { const s = await window.api.ledgerSummarize(m.rel); if (s && s.ok) { m.summary = s.summary; m.keywords = s.keywords || m.keywords; draw(); } else { showToast(s && s.error ? s.error : 'Could not summarize'); rb.disabled = false; rb.textContent = 'Generate summary'; } }
         catch { showToast('Could not summarize'); rb.disabled = false; rb.textContent = 'Generate summary'; }
@@ -7336,7 +7336,7 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
     destInput.addEventListener('input', renderDest);
     pq('.re-interpret').addEventListener('click', async () => {
       const text = pq('.re-nl').value.trim(); if (!text) { showToast('Type a description first'); return; }
-      if (!aiReady()) { showToast('Turn on AI first'); return; }
+      if (!requireAi()) return;
       const btn = pq('.re-interpret'); btn.disabled = true; btn.textContent = '…';
       const res = await window.api.aiParseRules({ text, folders: folderPaths });
       btn.disabled = false; btn.textContent = 'Interpret';

@@ -8,6 +8,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Clearer / more intuitive
+- **AI actions no longer dead-end when AI is off.** Clicking "✨ Suggest with AI", Analyze,
+  summarize, etc. without AI set up now opens the "turn on AI / pick a model" helper instead
+  of flashing a toast that does nothing.
 - Error messages now say "please try again" instead of the scary literal "unknown".
 - The destination-map's primary button reads "Pick or type a folder" until you've chosen one
   (instead of a dead-looking "File here →").

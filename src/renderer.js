@@ -9145,6 +9145,20 @@ async function runPhoneCopy() {
   const photos = state.scannedFiles.filter((c) => c.kind === 'photo');
   const intake = (state.intakeFolder || '').replace(/[\\/]+$/, '');
   const jobs = vids.map((v) => ({ phoneRef: v.phoneRef || { sim: false, device: phoneState.device, rel: '', name: v.name, size: v.size }, dest: `${intake}\\${finalName(v)}` }));
+  // Free-space pre-flight on the intake (mirrors the card flow) so a big phone backup
+  // never fails or corrupts halfway from a full disk.
+  const totalBytes = state.scannedFiles.reduce((s, c) => s + (c.size || 0), 0);
+  if (totalBytes && intake) {
+    try {
+      const fsr = await window.api.freeSpace(intake);
+      if (fsr && fsr.ok && fsr.free < totalBytes + 250 * 1024 * 1024) {
+        const proceed = await confirmDialog('Low space',
+          `This backup is about ${fmtBytes(totalBytes)}, but only ${fmtBytes(fsr.free)} is free on ${fsr.path}. Copy anyway?`,
+          'Copy anyway', 'Cancel');
+        if (!proceed) return;
+      }
+    } catch { /* never block the backup on a failed probe */ }
+  }
   copyInProgress = true; showCopyingUI();
   $('copyBar').style.width = '0%'; $('copyPct').textContent = '0%';
   $('copyLabel').textContent = vids.length ? 'Copying videos → 01 - Uncompressed…' : 'Finishing…';

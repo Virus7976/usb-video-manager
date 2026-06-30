@@ -7,6 +7,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-29
+
+### Added
+- **Fast phone transfer (ADB).** Phone backups used Windows' MTP, which copies one file at a
+  time and can take *hours to days* for a big camera roll. You can now switch on **fast
+  transfer**, which uses ADB (`adb pull`) — typically many times faster. In the phone screen,
+  tap **"⚡ Turn on fast transfer"**: it downloads the small ADB tool for you (one time); then
+  enable **USB debugging** on the phone once (Settings → Developer options) and tap Allow. If
+  ADB isn't set up or the phone isn't authorized, it automatically falls back to the old MTP
+  method, so nothing breaks.
+
 ## [0.3.3] — 2026-06-29
 
 ### Added

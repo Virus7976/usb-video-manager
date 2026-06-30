@@ -8701,7 +8701,35 @@ async function phoneEnterChooser() {
   const cam = albums.find((a) => /^camera$/i.test(a.album));
   phoneState.selectedAlbums = cam ? [cam.album] : (albums[0] ? [albums[0].album] : []);
   renderPhoneAlbums();
+  renderPhFast();
   await phoneScanScoped();
+}
+
+// Fast-transfer (ADB) status + one-tap enable, shown under the chooser. ADB is far
+// faster than MTP for big Android rolls; enabling downloads ADB once and guides the
+// phone's "USB debugging" toggle. Transfers fall back to MTP if it's not ready.
+async function renderPhFast() {
+  const el = $('phFast'); if (!el) return;
+  let st = {}; try { st = await window.api.adbStatus(); } catch { st = {}; }
+  if (st.useAdb) {
+    el.innerHTML = st.device
+      ? '⚡ Fast transfer on (ADB).'
+      : (st.unauthorized
+        ? '⚡ Fast transfer on — unlock your phone and tap <b>Allow</b> for USB debugging.'
+        : '⚡ Fast transfer on — connect your phone with <b>USB debugging</b> enabled (Settings → Developer options).');
+    return;
+  }
+  el.innerHTML = 'Transfers use MTP (slow for big camera rolls). <button type="button" class="btn ghost" id="phFastOn">⚡ Turn on fast transfer</button>';
+  const b = el.querySelector('#phFastOn');
+  if (b) b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'Setting up…';
+    let r = {}; try { r = await window.api.adbEnable(); } catch (e) { r = { ok: false, error: (e && e.message) }; }
+    if (!r.ok) { showToast(`Couldn’t set up fast transfer: ${r.error || 'failed'}`, 6000); renderPhFast(); return; }
+    if (r.unauthorized) showToast('Almost there — on your phone tap “Allow” for USB debugging, then back up.', 8000);
+    else if (!r.device) showToast('Fast transfer ready. Enable USB debugging on the phone (Settings → Developer options), then reconnect.', 9000);
+    else showToast('⚡ Fast transfer on — your phone will back up much faster now.', 5000);
+    renderPhFast();
+  });
 }
 
 function renderPhoneAlbums() {

@@ -880,6 +880,8 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .ph-chooser-summary { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ph-new-tx { font-size: 15px; font-weight: 650; color: var(--text-1); }
 .ph-chooser-btns { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.ph-fast { margin-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ph-fast .btn { padding: 3px 10px; font-size: 12px; }
 .ph-grid {
   flex: 1 1 auto; min-height: 120px; overflow-y: auto;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--ph-thumb, 150px), 1fr)); gap: 8px;

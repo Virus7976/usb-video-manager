@@ -100,6 +100,8 @@ function loadConfig() {
     phoneDestComputer: false,  // remembered "send to computer" toggle
     phoneDestNas: true,        // remembered "send to NAS" toggle
     simulatePhone: false,      // dev-only: surface a fake phone backed by a local folder
+    useAdb: false,             // fast Android transfer via ADB (opt-in; falls back to MTP)
+    adbPath: '',               // optional explicit path to adb.exe
     ffmpegPath: 'ffmpeg',
     ffprobePath: 'ffprobe',
     hotkey: 'CommandOrControl+Alt+U',
@@ -1860,7 +1862,116 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
 
 // MTP-copy a list of items (same rel-folder navigation) to ONE local dest, streaming
 // progress. Used for pulling real-phone photos now, and videos at the copy step.
-function mtpCopyToDest(device, items, dest, onName) {
+// ---------------------------------------------------------------------------
+// ADB fast transfer (Android) — `adb pull` is dramatically faster + more reliable
+// than Windows MTP CopyHere for bulk camera-roll transfers. Opt-in (config.useAdb);
+// auto-fetches platform-tools to userData so there's no manual install. Falls back
+// to MTP automatically if ADB isn't set up or no authorized device is connected.
+// ---------------------------------------------------------------------------
+let _adbPath = null;
+function probeAdb(p) {
+  if (!p) return false;
+  try { return require('node:child_process').spawnSync(p, ['version'], { windowsHide: true, timeout: 8000 }).status === 0; } catch { return false; }
+}
+async function ensureAdb(allowDownload = false) {
+  if (_adbPath && probeAdb(_adbPath)) return _adbPath;
+  const ud = app.getPath('userData');
+  const cands = [config.adbPath, path.join(ud, 'platform-tools', 'adb.exe'), 'adb',
+    path.join(process.env.LOCALAPPDATA || '', 'Android', 'Sdk', 'platform-tools', 'adb.exe')].filter(Boolean);
+  for (const c of cands) { if (probeAdb(c)) { _adbPath = c; return c; } }
+  if (!allowDownload) return null;
+  try {   // one-time: download Google's official platform-tools and unzip it
+    const zip = path.join(ud, 'platform-tools.zip');
+    const res = await fetch('https://dl.google.com/android/repository/platform-tools-latest-windows.zip');
+    if (!res.ok) throw new Error('http ' + res.status);
+    fs.writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
+    await new Promise((resolve, reject) => {
+      const ps = spawn('powershell.exe', ['-NoProfile', '-Command', `Expand-Archive -Force -LiteralPath '${zip}' -DestinationPath '${ud}'`], { windowsHide: true });
+      ps.on('close', (c) => (c === 0 ? resolve() : reject(new Error('unzip ' + c)))); ps.on('error', reject);
+    });
+    try { fs.rmSync(zip, { force: true }); } catch { /* ignore */ }
+    const adb = path.join(ud, 'platform-tools', 'adb.exe');
+    if (probeAdb(adb)) { _adbPath = adb; return adb; }
+  } catch (e) { console.error('[adb] setup failed:', e.message); }
+  return null;
+}
+function runAdb(args, { timeoutMs = 600000 } = {}) {
+  return new Promise((resolve) => {
+    if (!_adbPath) { resolve({ code: -1, out: '', err: 'no adb' }); return; }
+    const ps = spawn(_adbPath, args, { windowsHide: true });
+    let out = ''; let err = '';
+    const t = setTimeout(() => { try { ps.kill('SIGKILL'); } catch { /* ignore */ } }, timeoutMs);
+    ps.stdout.on('data', (d) => { out += d.toString(); });
+    ps.stderr.on('data', (d) => { err += d.toString(); });
+    ps.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out, err: e.message }); });
+    ps.on('close', (code) => { clearTimeout(t); resolve({ code, out, err }); });
+  });
+}
+function adbParseDevices(out) {
+  let device = null; let unauthorized = false;
+  for (const l of String(out || '').split(/\r?\n/).slice(1)) {
+    let m; if ((m = l.match(/^(\S+)\t+device\b/))) device = m[1]; else if (/\bunauthorized\b/.test(l)) unauthorized = true;
+  }
+  return { device, unauthorized };
+}
+async function adbReadyDevice() {
+  if (!config.useAdb) return null;
+  if (!await ensureAdb(false)) return null;
+  return adbParseDevices((await runAdb(['devices'], { timeoutMs: 10000 })).out).device;
+}
+// Map an MTP-scan rel ("Internal storage/DCIM/Camera") to the on-device path
+// (/sdcard/DCIM/Camera) — internal storage is /sdcard on Android.
+function adbRemotePath(rel, name) {
+  const parts = String(rel || '').split('/').filter(Boolean).slice(1);   // drop the storage label
+  return '/sdcard/' + [...parts, name].join('/');
+}
+async function adbPullToDest(serial, items, dest, onName) {
+  try { fs.mkdirSync(dest, { recursive: true }); } catch { /* ignore */ }
+  const results = [];
+  for (const it of items) {
+    const destFile = path.join(dest, it.name);
+    let status = 'FAIL';
+    try {
+      let have = null; try { have = fs.statSync(destFile); } catch { /* not there */ }
+      if (have && it.size && have.size === Number(it.size)) status = 'SKIP';   // resume
+      else {
+        const r = await runAdb(['-s', serial, 'pull', '-a', adbRemotePath(it.rel, it.name), destFile]);
+        let ok = false; try { ok = fs.statSync(destFile).size > 0; } catch { /* */ }
+        status = (r.code === 0 && ok) ? 'OK' : 'FAIL';
+      }
+    } catch { status = 'FAIL'; }
+    results.push({ status, name: it.name });
+    if (onName) { try { onName(it.name); } catch { /* ignore */ } }
+  }
+  return { ok: true, results };
+}
+ipcMain.handle('adb:status', async () => {
+  const adb = await ensureAdb(false);
+  if (!adb) return { ok: false, installed: false, useAdb: !!config.useAdb };
+  const d = adbParseDevices((await runAdb(['devices'], { timeoutMs: 10000 })).out);
+  return { ok: true, installed: true, device: d.device, unauthorized: d.unauthorized, useAdb: !!config.useAdb };
+});
+ipcMain.handle('adb:enable', async () => {
+  const adb = await ensureAdb(true);   // download if missing
+  if (!adb) return { ok: false, error: 'Could not download/find ADB (check your internet).' };
+  const d = adbParseDevices((await runAdb(['devices'], { timeoutMs: 12000 })).out);
+  config.useAdb = true; saveConfig();
+  return { ok: true, device: d.device, unauthorized: d.unauthorized };
+});
+ipcMain.handle('adb:disable', () => { config.useAdb = false; saveConfig(); return { ok: true }; });
+
+// Transfer dispatcher: use the fast ADB path when enabled + an authorized device is
+// present, otherwise the original MTP copy. ADB failure falls back to MTP per call.
+async function mtpCopyToDest(device, items, dest, onName) {
+  const serial = await adbReadyDevice().catch(() => null);
+  if (serial) {
+    try { const r = await adbPullToDest(serial, items, dest, onName); if (r && r.ok) return r; }
+    catch (e) { console.error('[adb] pull failed, falling back to MTP:', e.message); }
+  }
+  return mtpCopyViaMtp(device, items, dest, onName);
+}
+
+function mtpCopyViaMtp(device, items, dest, onName) {
   return new Promise((resolve) => {
     fs.mkdirSync(dest, { recursive: true });
     const listFile = path.join(app.getPath('temp'), `mtp_pull_${Date.now()}.json`);

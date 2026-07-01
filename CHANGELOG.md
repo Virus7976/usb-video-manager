@@ -7,7 +7,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.14] — 2026-07-01
+## [0.4.15] — 2026-07-01
+
+### Changed (internal / maintainability)
+- **`main.js` (5.2k lines) is now split into modules** under `main-mod/` (core, media,
+  ai-ollama, routes-ledger, windows-phone, copy-transfer, naming-organize,
+  finalize-feedback, ipc-boot), bundled back into `main.js` by the same `npm run bundle`.
+  Verified byte-identical to the pre-split file. Both processes are now modular.
+- **Design control panel:** one `:root` block now governs corners (`--radius-sm/…/-xl`)
+  and motion (`--motion-fast/-/-slow`, `--ease`). ~180 hardcoded corner radii and the
+  transition durations were routed through these tokens — so "round every corner" or
+  "make the whole app snappier/slower" is now a **one-line change**. (Pills/circles left
+  as-is.)
 
 ### Changed (internal / maintainability — no behavior change)
 - **`renderer.js` is now split into modules** under `src/mod/` (`01-core`, `02-combo`,

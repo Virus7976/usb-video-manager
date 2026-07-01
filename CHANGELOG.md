@@ -7,6 +7,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-06-30
+
+### Added
+- **Wireless phone backup (no tethering).** Set a **Phone backup folder** (File → "Phone backup
+  folder (wireless)…", or the link on the home screen) — point it at the NAS folder your phone
+  auto-uploads to (e.g. QNAP QuMagie/Qfile). It then appears under **Devices** as a one-tap
+  source, so wirelessly-uploaded photos/videos flow straight into rename → organize with no
+  cable and no phone tied up.
+
 ## [0.4.0] — 2026-06-29
 
 ### Added

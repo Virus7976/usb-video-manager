@@ -102,6 +102,7 @@ function loadConfig() {
     simulatePhone: false,      // dev-only: surface a fake phone backed by a local folder
     useAdb: false,             // fast Android transfer via ADB (opt-in; falls back to MTP)
     adbPath: '',               // optional explicit path to adb.exe
+    phoneBackupSource: '',     // wireless: the NAS folder a phone app (QuMagie) auto-uploads to
     ffmpegPath: 'ffmpeg',
     ffprobePath: 'ffprobe',
     hotkey: 'CommandOrControl+Alt+U',
@@ -2294,6 +2295,7 @@ ipcMain.handle('config:get', () => ({
   photosTempFolder: config.photosTempFolder,
   phoneNasFolder: config.phoneNasFolder,
   phoneComputerFolder: config.phoneComputerFolder,
+  phoneBackupSource: config.phoneBackupSource || '',   // wireless: NAS folder the phone auto-uploads to
   phoneDestComputer: !!config.phoneDestComputer,
   phoneDestNas: config.phoneDestNas !== false,
   simulatePhone: config.simulatePhone === true,
@@ -2476,6 +2478,20 @@ ipcMain.handle('drive:pick', async () => {
   if (res.canceled || res.filePaths.length === 0) return null;
   return { mountpoint: res.filePaths[0], description: 'Manually selected drive', size: 0, isCard: false, isUSB: false };
 });
+
+// Wireless workflow: remember the NAS folder a phone app auto-uploads the camera roll
+// into, so it's a one-tap source on the home screen (no re-navigating each time).
+ipcMain.handle('phoneBackup:pick', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose the NAS folder your phone uploads to (e.g. QNAP QuMagie upload folder)',
+    defaultPath: config.phoneBackupSource || undefined,
+    properties: ['openDirectory']
+  });
+  if (res.canceled || res.filePaths.length === 0) return { ok: false };
+  config.phoneBackupSource = res.filePaths[0]; saveConfig();
+  return { ok: true, path: config.phoneBackupSource };
+});
+ipcMain.handle('phoneBackup:clear', () => { config.phoneBackupSource = ''; saveConfig(); return { ok: true }; });
 
 ipcMain.handle('scan:videos', async (_evt, mountpoint) => {
   if (!mountpoint) return { ok: false, error: 'No mountpoint provided' };

@@ -214,10 +214,19 @@ function renderDriveList(drives) { if (Array.isArray(drives)) lastDriveList = dr
 function renderDevices() {
   const host = $('driveList'); if (!host) return;
   const drives = lastDriveList || []; const phones = lastPhoneList || [];
-  if (!drives.length && !phones.length) {
-    host.innerHTML = `<p class="section-label">Devices</p><div class="dl-empty"><span class="dl-empty-dot"></span><span class="muted small">No card or phone detected. Plug one in — it shows up here automatically — or use “Choose drive…” to pick a folder.</span></div>`;
+  const pbSrc = (cfg && cfg.phoneBackupSource) || '';   // wireless NAS backup folder
+  if (!drives.length && !phones.length && !pbSrc) {
+    host.innerHTML = `<p class="section-label">Devices</p><div class="dl-empty"><span class="dl-empty-dot"></span><span class="muted small">No card or phone detected. Plug one in — it shows up here automatically — or use “Choose drive…” to pick a folder.</span>
+      <button type="button" class="btn ghost" id="pbSetup" style="margin-top:8px">☁ Set up wireless phone backup</button></div>`;
+    const su = host.querySelector('#pbSetup');
+    if (su) su.addEventListener('click', pickPhoneBackupFolder);
     return;
   }
+  const pbCard = pbSrc ? `<button type="button" class="settings-card action dl-card" data-kind="pbfolder">
+      <span class="sc-icon accent">${DL_ICON_PHONE}</span>
+      <span class="sc-text"><span class="sc-title">Phone backup folder</span><span class="sc-sub">${escapeHtml(pbSrc)} · wireless upload</span></span>
+      <span class="sc-chevron">›</span>
+    </button>` : '';
   const phoneCards = phones.map((p, i) => `<button type="button" class="settings-card action dl-card" data-kind="phone" data-i="${i}">
       <span class="sc-icon accent">${DL_ICON_PHONE}</span>
       <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : 'Phone · photos + videos (MTP)'}</span></span>
@@ -232,11 +241,22 @@ function renderDevices() {
       <span class="sc-chevron">${active ? '✓ selected' : '›'}</span>
     </button>`;
   }).join('');
-  host.innerHTML = `<p class="section-label">Devices · ${drives.length + phones.length}</p>${phoneCards}${driveCards}`;
+  host.innerHTML = `<p class="section-label">Devices · ${drives.length + phones.length + (pbSrc ? 1 : 0)}</p>${phoneCards}${pbCard}${driveCards}`;
   host.querySelectorAll('.dl-card').forEach((b) => b.addEventListener('click', () => {
     if (b.dataset.kind === 'phone') openPhone(phones[Number(b.dataset.i)]);
+    else if (b.dataset.kind === 'pbfolder') onDrive({ mountpoint: pbSrc, description: 'Phone backup folder' });
     else onDrive(drives[Number(b.dataset.i)]);
   }));
+}
+// Wireless workflow: remember the NAS folder a phone app (QNAP QuMagie/Qfile) uploads
+// the camera roll into, so it's a one-tap source under Devices — no phone tethering.
+async function pickPhoneBackupFolder() {
+  let r = {}; try { r = await window.api.pickPhoneBackupFolder(); } catch { r = {}; }
+  if (r && r.ok && r.path) {
+    cfg.phoneBackupSource = r.path;
+    showToast('Phone backup folder set — it now shows under Devices. Point QuMagie/Qfile at it on your phone.', 6000);
+    refreshDriveList();
+  }
 }
 function refreshDriveList() {
   Promise.all([window.api.listRemovable().catch(() => []), window.api.listPhones().catch(() => [])])
@@ -4610,6 +4630,7 @@ const MENUS = {
     { label: 'Organize & back up…', action: openFinalize },
     { sep: true },
     { label: 'Choose drive…', action: () => $('manualPickBtn').click() },
+    { label: 'Phone backup folder (wireless)…', action: () => pickPhoneBackupFolder() },
     { label: 'Open intake folder', action: () => window.api.openFolder(state.intakeFolder) },
     { label: 'Open Projects folder', action: async () => { try { const r = await window.api.getProjectsRoot(); if (r) window.api.openFolder(r); } catch { /* ignore */ } } },
     { sep: true },

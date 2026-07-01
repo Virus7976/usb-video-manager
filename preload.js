@@ -54,6 +54,8 @@ contextBridge.exposeInMainWorld('api', {
   listPhones: () => ipcRenderer.invoke('phone:list'),
   phoneAlbums: (device) => ipcRenderer.invoke('phone:albums', { device }),
   phonePulledNames: () => ipcRenderer.invoke('phone:pulledNames'),
+  pickPhoneBackupFolder: () => ipcRenderer.invoke('phoneBackup:pick'),
+  clearPhoneBackupFolder: () => ipcRenderer.invoke('phoneBackup:clear'),
   adbStatus: () => ipcRenderer.invoke('adb:status'),
   adbEnable: () => ipcRenderer.invoke('adb:enable'),
   adbDisable: () => ipcRenderer.invoke('adb:disable'),

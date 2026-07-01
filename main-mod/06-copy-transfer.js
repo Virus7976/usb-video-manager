@@ -13,6 +13,18 @@ function killAfter(proc, ms) {
   try { proc.on('close', clear); proc.on('error', clear); } catch { /* ignore */ }
   return proc;
 }
+// Single source for "extract ONE frame at timestamp ss to outPath, scaled per `scale`
+// (an ffmpeg -vf scale= value)". Replaces 5 near-identical copies that differed only in
+// the scale string. Resolves true on success.
+function extractFrame(srcPath, ss, outPath, scale, timeout = 60000) {
+  return new Promise((resolve) => {
+    const proc = killAfter(spawn(config.ffmpegPath, [
+      '-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', `scale=${scale}`, outPath
+    ], { windowsHide: true }), timeout);
+    proc.on('error', () => resolve(false));
+    proc.on('close', (code) => resolve(code === 0));
+  });
+}
 
 function runFfprobeJson(srcPath) {
   return new Promise((resolve) => {
@@ -68,14 +80,7 @@ const posterCache = new Map(); // srcPath -> file:// url
 const faceFrameCache = new Map(); // srcPath -> file path (960px single frame for face detection)
 let posterCounter = 0;
 function ffmpegFrame(srcPath, ss, outPath) {
-  return new Promise((resolve) => {
-    const proc = killAfter(spawn(config.ffmpegPath, [
-      '-y', '-ss', String(ss), '-i', srcPath,
-      '-frames:v', '1', '-vf', 'scale=400:-2', outPath
-    ], { windowsHide: true }), 60000);
-    proc.on('error', () => resolve(false));
-    proc.on('close', (code) => resolve(code === 0));
-  });
+  return extractFrame(srcPath, ss, outPath, '400:-2');
 }
 async function getPoster(srcPath) {
   if (posterCache.has(srcPath)) return posterCache.get(srcPath);
@@ -684,11 +689,7 @@ function aiExtractRules(val) {
 // Extract one frame at a timestamp, scaled to a fixed HEIGHT (so frames tile
 // cleanly into a contact sheet grid).
 function ffmpegFrameH(srcPath, ss, outPath) {
-  return new Promise((resolve) => {
-    const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=-2:240', outPath], { windowsHide: true }), 60000);
-    proc.on('error', () => resolve(false));
-    proc.on('close', (code) => resolve(code === 0));
-  });
+  return extractFrame(srcPath, ss, outPath, '-2:240');
 }
 // Tile a contiguous numbered frame sequence (pattern e.g. cs7_%03d.jpg) into a
 // cols×rows grid. Verified ffmpeg pads the final partial row with `color`.

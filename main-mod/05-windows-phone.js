@@ -335,9 +335,11 @@ function adbRemotePath(rel, name) {
   const parts = String(rel || '').split('/').filter(Boolean).slice(1);   // drop the storage label
   return '/sdcard/' + [...parts, name].join('/');
 }
-// Media extensions we care about, as a toybox-`find` predicate group.
-const ADB_MEDIA_EXTS = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'dng', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'mp4', 'mov', 'm4v', '3gp', '3g2', 'avi', 'mkv', 'webm', 'ts'];
-const ADB_VIDEO_RX = /\.(mp4|mov|m4v|3gp|3g2|avi|mkv|webm|ts)$/i;
+// Media extensions we care about, as a toybox-`find` predicate group. Video portion is
+// single-sourced from VIDEO_EXT_LIST (main-mod/01-core.js) so it can't drift from VIDEO_EXTS.
+const ADB_IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'dng', 'gif', 'webp', 'bmp', 'tif', 'tiff'];
+const ADB_MEDIA_EXTS = [...ADB_IMAGE_EXTS, ...VIDEO_EXT_LIST];
+const ADB_VIDEO_RX = new RegExp(`\\.(${VIDEO_EXT_LIST.join('|')})$`, 'i');
 function adbInamePredicate() {
   return '\\( ' + ADB_MEDIA_EXTS.map((e) => `-iname '*.${e}'`).join(' -o ') + ' \\)';
 }

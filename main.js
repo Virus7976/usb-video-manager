@@ -15,6 +15,12 @@ const crypto = require('node:crypto');
 // (no native modules — packages cleanly, nothing to compile).
 const DETECTION_ENABLED = process.platform === 'win32';
 
+// SINGLE canonical video-extension list for the whole main process. Everything that
+// decides "is this a video" (config default, VIDEO_EXTS, the ADB scan predicate + regex)
+// derives from THIS — so the sets can never disagree again (they used to: some paths
+// treated .webm/.ts/.3gp as video, others didn't). Extensions without the leading dot.
+const VIDEO_EXT_LIST = ['mp4', 'mov', 'm4v', 'avi', 'mkv', 'mts', 'm2ts', '3gp', '3g2', 'webm', 'ts'];
+
 // Explicit identity so the userData path and the login-item registry key are
 // unique to this app (the packaged exe isn't rcedit-stamped, so without this it
 // would fall back to the generic "Electron" name). Must run before getPath().
@@ -159,7 +165,7 @@ function loadConfig() {
       feedbackLog: []       // raw feedback entries the user left
     },
     ui: { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false },
-    videoExtensions: ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.mts', '.m2ts']
+    videoExtensions: VIDEO_EXT_LIST.map((e) => `.${e}`)
   };
   let bundled = {};
   let user = {};
@@ -1951,9 +1957,11 @@ function adbRemotePath(rel, name) {
   const parts = String(rel || '').split('/').filter(Boolean).slice(1);   // drop the storage label
   return '/sdcard/' + [...parts, name].join('/');
 }
-// Media extensions we care about, as a toybox-`find` predicate group.
-const ADB_MEDIA_EXTS = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'dng', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'mp4', 'mov', 'm4v', '3gp', '3g2', 'avi', 'mkv', 'webm', 'ts'];
-const ADB_VIDEO_RX = /\.(mp4|mov|m4v|3gp|3g2|avi|mkv|webm|ts)$/i;
+// Media extensions we care about, as a toybox-`find` predicate group. Video portion is
+// single-sourced from VIDEO_EXT_LIST (main-mod/01-core.js) so it can't drift from VIDEO_EXTS.
+const ADB_IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'dng', 'gif', 'webp', 'bmp', 'tif', 'tiff'];
+const ADB_MEDIA_EXTS = [...ADB_IMAGE_EXTS, ...VIDEO_EXT_LIST];
+const ADB_VIDEO_RX = new RegExp(`\\.(${VIDEO_EXT_LIST.join('|')})$`, 'i');
 function adbInamePredicate() {
   return '\\( ' + ADB_MEDIA_EXTS.map((e) => `-iname '*.${e}'`).join(' -o ') + ' \\)';
 }
@@ -2311,6 +2319,18 @@ function killAfter(proc, ms) {
   try { proc.on('close', clear); proc.on('error', clear); } catch { /* ignore */ }
   return proc;
 }
+// Single source for "extract ONE frame at timestamp ss to outPath, scaled per `scale`
+// (an ffmpeg -vf scale= value)". Replaces 5 near-identical copies that differed only in
+// the scale string. Resolves true on success.
+function extractFrame(srcPath, ss, outPath, scale, timeout = 60000) {
+  return new Promise((resolve) => {
+    const proc = killAfter(spawn(config.ffmpegPath, [
+      '-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', `scale=${scale}`, outPath
+    ], { windowsHide: true }), timeout);
+    proc.on('error', () => resolve(false));
+    proc.on('close', (code) => resolve(code === 0));
+  });
+}
 
 function runFfprobeJson(srcPath) {
   return new Promise((resolve) => {
@@ -2366,14 +2386,7 @@ const posterCache = new Map(); // srcPath -> file:// url
 const faceFrameCache = new Map(); // srcPath -> file path (960px single frame for face detection)
 let posterCounter = 0;
 function ffmpegFrame(srcPath, ss, outPath) {
-  return new Promise((resolve) => {
-    const proc = killAfter(spawn(config.ffmpegPath, [
-      '-y', '-ss', String(ss), '-i', srcPath,
-      '-frames:v', '1', '-vf', 'scale=400:-2', outPath
-    ], { windowsHide: true }), 60000);
-    proc.on('error', () => resolve(false));
-    proc.on('close', (code) => resolve(code === 0));
-  });
+  return extractFrame(srcPath, ss, outPath, '400:-2');
 }
 async function getPoster(srcPath) {
   if (posterCache.has(srcPath)) return posterCache.get(srcPath);
@@ -2982,11 +2995,7 @@ function aiExtractRules(val) {
 // Extract one frame at a timestamp, scaled to a fixed HEIGHT (so frames tile
 // cleanly into a contact sheet grid).
 function ffmpegFrameH(srcPath, ss, outPath) {
-  return new Promise((resolve) => {
-    const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=-2:240', outPath], { windowsHide: true }), 60000);
-    proc.on('error', () => resolve(false));
-    proc.on('close', (code) => resolve(code === 0));
-  });
+  return extractFrame(srcPath, ss, outPath, '-2:240');
 }
 // Tile a contiguous numbered frame sequence (pattern e.g. cs7_%03d.jpg) into a
 // cols×rows grid. Verified ffmpeg pads the final partial row with `color`.
@@ -3124,7 +3133,7 @@ async function detectMotionFrames(srcPath) {
       const ss = Math.max(0, durationSec * ((i + 0.5) / N));
       const fp = path.join(THUMB_DIR, `${tag}_${String(k + 1).padStart(3, '0')}.jpg`);
       // eslint-disable-next-line no-await-in-loop
-      const ok = await new Promise((r) => { const p = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=160:-2', fp], { windowsHide: true }), 60000); p.on('error', () => r(false)); p.on('close', (c) => r(c === 0)); });
+      const ok = await extractFrame(srcPath, ss, fp, '160:-2');
       if (ok) k += 1;
     }
     if (k < 3) return '';
@@ -4027,11 +4036,7 @@ async function getFaceFrame(srcPath) {
     if (await fsp.access(outPath).then(() => true).catch(() => false)) {
       faceFrameCache.set(srcPath, outPath); return outPath;
     }
-    const extract = (ss) => new Promise((resolve) => {
-      const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=960:-2', outPath], { windowsHide: true }), 60000);
-      proc.on('error', () => resolve(false));
-      proc.on('close', (code) => resolve(code === 0));
-    });
+    const extract = (ss) => extractFrame(srcPath, ss, outPath, '960:-2');
     let ok = await extract(1);
     if (!ok) ok = await extract(0);
     if (!ok) return null;
@@ -4073,10 +4078,7 @@ async function getFaceFrames(srcPath, interval, maxFrames) {
     jobs.push((async () => {
       await acquirePoster();
       try {
-        const ok = await new Promise((res) => {
-          const p = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=1100:-2', out], { windowsHide: true }), 60000);
-          p.on('error', () => res(false)); p.on('close', (c) => res(c === 0));
-        });
+        const ok = await extractFrame(srcPath, ss, out, '1100:-2');
         return ok ? out : null;
       } finally { releasePoster(); }
     })());

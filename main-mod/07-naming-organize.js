@@ -81,7 +81,7 @@ async function detectMotionFrames(srcPath) {
       const ss = Math.max(0, durationSec * ((i + 0.5) / N));
       const fp = path.join(THUMB_DIR, `${tag}_${String(k + 1).padStart(3, '0')}.jpg`);
       // eslint-disable-next-line no-await-in-loop
-      const ok = await new Promise((r) => { const p = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=160:-2', fp], { windowsHide: true }), 60000); p.on('error', () => r(false)); p.on('close', (c) => r(c === 0)); });
+      const ok = await extractFrame(srcPath, ss, fp, '160:-2');
       if (ok) k += 1;
     }
     if (k < 3) return '';

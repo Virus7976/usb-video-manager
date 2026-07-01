@@ -13,6 +13,12 @@ const crypto = require('node:crypto');
 // (no native modules — packages cleanly, nothing to compile).
 const DETECTION_ENABLED = process.platform === 'win32';
 
+// SINGLE canonical video-extension list for the whole main process. Everything that
+// decides "is this a video" (config default, VIDEO_EXTS, the ADB scan predicate + regex)
+// derives from THIS — so the sets can never disagree again (they used to: some paths
+// treated .webm/.ts/.3gp as video, others didn't). Extensions without the leading dot.
+const VIDEO_EXT_LIST = ['mp4', 'mov', 'm4v', 'avi', 'mkv', 'mts', 'm2ts', '3gp', '3g2', 'webm', 'ts'];
+
 // Explicit identity so the userData path and the login-item registry key are
 // unique to this app (the packaged exe isn't rcedit-stamped, so without this it
 // would fall back to the generic "Electron" name). Must run before getPath().
@@ -157,7 +163,7 @@ function loadConfig() {
       feedbackLog: []       // raw feedback entries the user left
     },
     ui: { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false },
-    videoExtensions: ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.mts', '.m2ts']
+    videoExtensions: VIDEO_EXT_LIST.map((e) => `.${e}`)
   };
   let bundled = {};
   let user = {};

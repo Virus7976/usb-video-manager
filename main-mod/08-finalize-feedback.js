@@ -157,11 +157,7 @@ async function getFaceFrame(srcPath) {
     if (await fsp.access(outPath).then(() => true).catch(() => false)) {
       faceFrameCache.set(srcPath, outPath); return outPath;
     }
-    const extract = (ss) => new Promise((resolve) => {
-      const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=960:-2', outPath], { windowsHide: true }), 60000);
-      proc.on('error', () => resolve(false));
-      proc.on('close', (code) => resolve(code === 0));
-    });
+    const extract = (ss) => extractFrame(srcPath, ss, outPath, '960:-2');
     let ok = await extract(1);
     if (!ok) ok = await extract(0);
     if (!ok) return null;
@@ -203,10 +199,7 @@ async function getFaceFrames(srcPath, interval, maxFrames) {
     jobs.push((async () => {
       await acquirePoster();
       try {
-        const ok = await new Promise((res) => {
-          const p = killAfter(spawn(config.ffmpegPath, ['-y', '-ss', String(ss), '-i', srcPath, '-frames:v', '1', '-vf', 'scale=1100:-2', out], { windowsHide: true }), 60000);
-          p.on('error', () => res(false)); p.on('close', (c) => res(c === 0));
-        });
+        const ok = await extractFrame(srcPath, ss, out, '1100:-2');
         return ok ? out : null;
       } finally { releasePoster(); }
     })());

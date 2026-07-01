@@ -19,6 +19,20 @@ function fmtBytes(n) {
   return `${(n / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${u[i]}`;
 }
 
+// --- Shared primitives (single source of truth; used across modules) ---
+// Append values to an array, de-duplicated, returning a NEW array. Replaces the
+// `[...new Set([...(arr||[]), ...vals])]` idiom that was copy-pasted ~14 times.
+function addUnique(arr, ...vals) { return [...new Set([...(Array.isArray(arr) ? arr : []), ...vals.flat()])]; }
+// The system default Ollama endpoint — was hardcoded in ~5 renderer spots.
+const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
+// Canonical "is this a video" regex (renderer copy of main's VIDEO_EXT_LIST — kept the
+// same superset so both processes agree on .webm/.ts/.3gp/.mts etc.).
+const VIDEO_RX = /\.(mp4|mov|m4v|avi|mkv|mts|m2ts|3gp|3g2|webm|ts)$/i;
+// A person's avatar chip (thumb image or a neutral face glyph) — was inlined 6×.
+function personThumbHTML(thumb) {
+  return thumb ? `<img src="${escapeAttr(thumb)}"/>` : '<span class="face-ph-icon">🙂</span>';
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
@@ -812,9 +826,9 @@ async function applyPeopleFromDrafts() {
   for (const clip of state.scannedFiles) {
     const d = drafts[clipKey(clip)];
     if (!d) continue;
-    if (Array.isArray(d.people) && d.people.length) clip.people = [...new Set([...(clip.people || []), ...d.people])];
-    if (Array.isArray(d.peopleAuto) && d.peopleAuto.length) clip.peopleAuto = [...new Set([...(clip.peopleAuto || []), ...d.peopleAuto])];
-    if (Array.isArray(d.tags) && d.tags.length) clip.tags = [...new Set([...(clip.tags || []), ...d.tags])];
+    if (Array.isArray(d.people) && d.people.length) clip.people = addUnique(clip.people, d.people);
+    if (Array.isArray(d.peopleAuto) && d.peopleAuto.length) clip.peopleAuto = addUnique(clip.peopleAuto, d.peopleAuto);
+    if (Array.isArray(d.tags) && d.tags.length) clip.tags = addUnique(clip.tags, d.tags);
     if (d.facesScanned) clip._facesScanned = true;
   }
 }
@@ -1002,9 +1016,9 @@ function applyDraftsToClips(drafts) {
     if (d.context) clip.context = d.context;
     if (d.shotType) clip.shotType = d.shotType;
     if (d.observation) clip.observation = d.observation;
-    if (Array.isArray(d.people) && d.people.length) clip.people = [...new Set([...(clip.people || []), ...d.people])];
-    if (Array.isArray(d.peopleAuto) && d.peopleAuto.length) clip.peopleAuto = [...new Set([...(clip.peopleAuto || []), ...d.peopleAuto])];
-    if (Array.isArray(d.tags) && d.tags.length) clip.tags = [...new Set([...(clip.tags || []), ...d.tags])];
+    if (Array.isArray(d.people) && d.people.length) clip.people = addUnique(clip.people, d.people);
+    if (Array.isArray(d.peopleAuto) && d.peopleAuto.length) clip.peopleAuto = addUnique(clip.peopleAuto, d.peopleAuto);
+    if (Array.isArray(d.tags) && d.tags.length) clip.tags = addUnique(clip.tags, d.tags);
     if (d.facesScanned) clip._facesScanned = true;
     if (d.ledgerRel) clip._ledgerRel = d.ledgerRel;
     for (const fld of organizeFields) if (d[fld.id]) clip[fld.id] = d[fld.id];

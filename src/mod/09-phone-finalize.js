@@ -292,7 +292,7 @@ async function phoneCopy() {
   setTask('phone', 'Backing up phone', 0, sel.length, 'pulling', '');
   clearActivity();
   pushActivity(`Pulling ${sel.length} item${sel.length !== 1 ? 's' : ''} off ${phoneState.device || 'your phone'}…`, 'step');
-  const isVid = (n) => /\.(mp4|mov|m4v|mkv|webm|avi|3gp|3g2|ts)$/i.test(n || '');
+  const isVid = (n) => VIDEO_RX.test(n || '');
   const off = window.api.onPhoneCopyProgress((p) => {
     const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
     $('phCopyBar').style.width = `${pct}%`; $('phCopyPct').textContent = `${pct}%`;

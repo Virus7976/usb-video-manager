@@ -7,7 +7,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.11] — 2026-07-01
+## [0.4.12] — 2026-07-01
+
+### Fixed
+- **Phone renames now survive a re-pull / crash.** The phone flow now restores your saved
+  subject/description/date/tags from drafts (keyed by filename+size), like the card flow
+  already did — so re-pulling the same phone brings back everything you'd named.
+- **Pop-out preview / jump-to-clip work again on big rolls.** After windowing, clicking a
+  clip (or a thumbnail in the selected strip, or "jump to next unnamed") for a clip past
+  the first chunk did nothing — the card wasn't rendered yet. `focusClip` now renders
+  ahead to that clip first. (The preview IPC chain itself was verified sound.)
+- **"Invert selection" no longer freezes** on big rolls (was O(n²) like Select-all was).
+- Videos whose rename fails keep a valid path for analysis/preview (repoint only the ones
+  that actually moved).
+- The windowed-grid "load more" observer no longer leaks across re-renders.
 
 ### Fixed
 - **The rename screen no longer crashes or lags on big rolls.** It was building AND wiring

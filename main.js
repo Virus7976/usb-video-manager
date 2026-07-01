@@ -2143,6 +2143,7 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
   phoneAbort = false;
   const sender = evt.sender;
   let done = 0; let failed = 0; const total = jobs.length;
+  const okDests = [];   // dests that actually ended up in place (so the renderer only repoints those)
   const prog = (name) => { try { sender.send('phone:copy-progress', { done: done + failed, total, name }); } catch { /* ignore */ } };
   const realByDevice = new Map();
   // Videos were already pulled off the phone into _Phone Video Temp during the pull step,
@@ -2151,13 +2152,13 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
     if (phoneAbort) break;
     try {
       let already = null; try { already = await fsp.stat(j.dest); } catch { /* not there */ }
-      if (already && Number(j.size) && already.size === Number(j.size)) { done += 1; prog(path.basename(j.dest)); continue; }   // resume
+      if (already && Number(j.size) && already.size === Number(j.size)) { done += 1; okDests.push(j.dest); prog(path.basename(j.dest)); continue; }   // resume
       const src = j.src || (j.phoneRef && j.phoneRef.abs) || '';
       let hasSrc = false; try { hasSrc = !!(src && (await fsp.stat(src)).size > 0); } catch { /* not local */ }
       if (hasSrc) {
         await fsp.mkdir(path.dirname(j.dest), { recursive: true });
-        try { await fsp.rename(src, j.dest); done += 1; }
-        catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; } catch { failed += 1; } }   // cross-drive
+        try { await fsp.rename(src, j.dest); done += 1; okDests.push(j.dest); }
+        catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; okDests.push(j.dest); } catch { failed += 1; } }   // cross-drive
         prog(path.basename(j.dest));
       } else if (j.phoneRef && !j.phoneRef.sim && j.phoneRef.device && j.phoneRef.rel) {
         // Legacy safety: a video that's still only on the phone — pull it now.
@@ -2175,11 +2176,11 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
     for (const j of list) {
       if (failSet.has(j.phoneRef.name)) { failed += 1; continue; }
       const src = path.join(tmp, j.phoneRef.name);
-      try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await fsp.rename(src, j.dest); done += 1; }
-      catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; } catch { failed += 1; } }
+      try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await fsp.rename(src, j.dest); done += 1; okDests.push(j.dest); }
+      catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; okDests.push(j.dest); } catch { failed += 1; } }
     }
   }
-  return { ok: true, copied: done, failed, total, cancelled: phoneAbort };
+  return { ok: true, copied: done, failed, total, okDests, cancelled: phoneAbort };
 });
 
 // Flat-copy files (renamed photos from Photos Temp) to the chosen back-up

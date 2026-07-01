@@ -1453,6 +1453,8 @@ function attachFieldCombo(input, fieldId) {
 // lazily (IntersectionObserver) so 100s of clips don't all probe up front.
 // ---------------------------------------------------------------------------
 let previewObserver = null;
+let renameMoreObs = null;              // windowed-grid "load more" observer (disconnect on re-render)
+let renameEnsureRendered = null;       // (clipIdx) => render chunks until that clip's card exists
 
 // Gentle, dismissable tips that teach the speed features a newcomer wouldn't find on
 // their own. Rotates one per visit so they all get seen; "Got it" hides them for good.
@@ -1554,9 +1556,9 @@ function buildRenameStep() {
   let lastDay = null; let rendered = 0;
   const CHUNK = 100;
   const sentinel = document.createElement('div'); sentinel.className = 'rn-sentinel'; sentinel.style.minHeight = '1px';
-  let moreObs = null;
+  if (renameMoreObs) { renameMoreObs.disconnect(); renameMoreObs = null; }   // don't leak across re-renders
   const renderNext = () => {
-    if (rendered >= order.length) { sentinel.remove(); if (moreObs) moreObs.disconnect(); return; }
+    if (rendered >= order.length) { sentinel.remove(); if (renameMoreObs) renameMoreObs.disconnect(); return; }
     const frag = document.createDocumentFragment();
     const end = Math.min(order.length, rendered + CHUNK);
     for (; rendered < end; rendered += 1) {
@@ -1582,8 +1584,14 @@ function buildRenameStep() {
     applyClipFilter();      // keep any active filter applied to the freshly-added cards
   };
   listEl.appendChild(sentinel);
-  moreObs = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) renderNext(); }, { root: listEl, rootMargin: '900px' });
-  moreObs.observe(sentinel);
+  renameMoreObs = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) renderNext(); }, { root: listEl, rootMargin: '900px' });
+  renameMoreObs.observe(sentinel);
+  // Let jump/focus render ahead: build chunks until the target clip's card exists.
+  renameEnsureRendered = (clipIdx) => {
+    const pos = order.indexOf(clipIdx); if (pos < 0) return;
+    let guard = 0;
+    while (rendered <= pos && rendered < order.length && guard++ < 100000) renderNext();
+  };
   renderNext();   // first chunk
   refreshNames();
   ensureClipFilterBar();
@@ -4290,6 +4298,8 @@ function updateProgress() {
 }
 
 function focusClip(i) {
+  // Windowed grid: the target may not be rendered yet — build chunks up to it first.
+  try { if (typeof renameEnsureRendered === 'function') renameEnsureRendered(i); } catch { /* ignore */ }
   const card = document.querySelector(`.rename-card[data-i="${i}"]`);
   if (!card) return;
   card.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -5135,7 +5145,17 @@ function selectAllClips(on) {
   });
   updateBatchBar();
 }
-function invertClipSelection() { (state.scannedFiles || []).forEach((c, i) => setClipSelected(i, !c.selected)); }
+function invertClipSelection() {
+  // Batch (like selectAllClips) — per-clip setClipSelected re-ran updateBatchBar+strip
+  // once per clip = O(n²) freeze on big rolls.
+  (state.scannedFiles || []).forEach((c) => { c.selected = !c.selected; });
+  document.querySelectorAll('#renameList .rename-card').forEach((card) => {
+    const i = Number(card.dataset.i); const on = !!(state.scannedFiles[i] && state.scannedFiles[i].selected);
+    const cb = card.querySelector('.clip-check'); if (cb) cb.checked = on;
+    card.classList.toggle('selected', on);
+  });
+  updateBatchBar();
+}
 
 // ---------------------------------------------------------------------------
 // Command palette (Ctrl+K) — fuzzy-search every command AND jump to any clip by
@@ -9190,7 +9210,7 @@ async function phoneCopy() {
 
 // Load the staged local files into the rename flow as clips — so phone photos AND
 // videos get the FULL treatment (AI naming, faces, tags) in the normal rename screen.
-function enterRenameWithPhoneFiles(staged) {
+async function enterRenameWithPhoneFiles(staged) {
   state.phoneBackup = true;
   state.scannedDrive = '__phone__';
   state.scannedFiles = staged.map((f) => {
@@ -9212,6 +9232,9 @@ function enterRenameWithPhoneFiles(staged) {
   $('flow').classList.remove('hidden');
   setStep(1);
   $('scanState').classList.add('hidden');
+  // Restore any naming/tags from a prior session (drafts are keyed by filename+size), so
+  // a re-pull or a crash+relaunch doesn't lose your batching work.
+  try { const drafts = await window.api.getDrafts(); const restored = applyDraftsToClips(drafts || {}); if (restored) showToast(`Restored your names on ${restored} clip${restored !== 1 ? 's' : ''} ✓`, 4000); } catch { /* ignore */ }
   buildRenameStep();
   const nPh = state.scannedFiles.filter((c) => c.isPhoto).length;
   const nVid = state.scannedFiles.length - nPh;
@@ -9529,8 +9552,11 @@ async function runPhoneCopy() {
   // and analyzed (this feeds the "already analyzed" count on the home banner). Point the
   // video clips at their intake copy so analysis can read them. Never deletes anything.
   try {
-    // Videos stay in _Phone Video Temp under their final names — point analysis there.
-    vids.forEach((v) => { const dp = `${vtemp}\\${finalName(v)}`; v.destPath = dp; v.sourcePath = dp; });
+    // Videos stay in _Phone Video Temp under their final names — point analysis/preview at
+    // the renamed file, but ONLY for ones that actually got renamed (a failed rename left
+    // the file at its original name, so keep that sourcePath).
+    const okSet = new Set((res && res.okDests) || []);
+    vids.forEach((v) => { const dp = `${vtemp}\\${finalName(v)}`; v.destPath = dp; if (!res || !res.okDests || okSet.has(dp)) v.sourcePath = dp; });
     saveFlowFinalMeta(state.scannedFiles);
     autoBackgroundEnrich(state.scannedFiles);   // silent face-tag (auto mode) + vision analysis (from temp)
   } catch { /* non-fatal */ }

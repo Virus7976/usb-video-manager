@@ -1434,14 +1434,28 @@ function metaFieldNext(input) {
     : nextClipField(input, '.f-meta');
 }
 
+// SINGLE source of truth for field suggestions: what you've used THIS session (so the
+// dropdown is useful immediately, even with no saved history) PLUS your saved history.
+// EVERY subject/description/location combo — per-clip rows, the command bar, and the
+// batch dialog — uses these, so they can never drift apart. Change suggestions in ONE
+// place and it applies everywhere.
+function sessionValues(field) {
+  const out = [];
+  for (const c of (state.scannedFiles || [])) { const v = String(c[field] || '').trim(); if (v && !out.includes(v)) out.push(v); }
+  return out;
+}
+function subjectSuggestions() { return [...new Set([...sessionValues('subject'), ...subjectsCache])]; }
+function descriptionSuggestions() { return [...new Set([...sessionValues('description'), ...descriptionsCache])]; }
+function locationSuggestions() { return [...new Set([...sessionValues('location'), ...locationsCache])]; }
+
 function attachSubjectCombo(input) {
-  attachCombo(input, () => subjectsCache, () => nextDescField(input));
+  attachCombo(input, subjectSuggestions, () => nextDescField(input));
 }
 function attachDescriptionCombo(input) {
-  attachCombo(input, () => descriptionsCache, () => afterDescription(input));
+  attachCombo(input, descriptionSuggestions, () => afterDescription(input));
 }
 function attachLocationCombo(input) {
-  attachCombo(input, () => locationsCache, () => afterLocation(input));
+  attachCombo(input, locationSuggestions, () => afterLocation(input));
 }
 function attachFieldCombo(input, fieldId) {
   attachCombo(input, () => fieldHistoryCache[fieldId] || [], () => metaFieldNext(input));
@@ -3993,9 +4007,9 @@ function buildBatchDialog(sel, prefill = {}) {
   document.body.appendChild(ov);
   const q = (s) => ov.querySelector(s);
   const close = () => ov.remove();
-  attachCombo(q('.bd-subject'), () => subjectsCache, () => q('.bd-desc'));
-  attachCombo(q('.bd-desc'), () => descriptionsCache, () => q('.bd-location'));
-  attachCombo(q('.bd-location'), () => locationsCache, () => q('.bd-context'));
+  attachCombo(q('.bd-subject'), subjectSuggestions, () => q('.bd-desc'));
+  attachCombo(q('.bd-desc'), descriptionSuggestions, () => q('.bd-location'));
+  attachCombo(q('.bd-location'), locationSuggestions, () => q('.bd-context'));
   // Prefill the clips' existing shared values (so re-opening shows what's there).
   q('.bd-subject').value = prefill.subject || '';
   q('.bd-desc').value = prefill.description || '';

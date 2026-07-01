@@ -7,7 +7,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.12] — 2026-07-01
+## [0.4.13] — 2026-07-01
+
+### Changed
+- **Subject/description/location dropdowns are now consistent everywhere** and useful
+  immediately. All three places (per-clip rows, the command bar, the batch-name dialog)
+  now draw from ONE shared suggestion source — values you've used **this session** plus
+  your saved history — so the dropdown appears even before you've built up history, and
+  the batch dialog can no longer drift out of sync with the rows. (First step of the
+  structural cleanup: one source of truth instead of three hand-wired copies.)
 
 ### Fixed
 - **Phone renames now survive a re-pull / crash.** The phone flow now restores your saved

@@ -1780,6 +1780,13 @@ $out | ConvertTo-Json -Compress
 // (phone locked / disconnected / timed out) instead of falsely reporting no media.
 async function scanPhone(deviceName, albums) {
   if (deviceName === SIM_PHONE_NAME) return { ok: true, media: await scanSimPhone() };
+  // Prefer ADB when it's on + an authorized device is present: MTP often goes blind
+  // to Windows once USB-debugging is enabled, so the PowerShell scan finds nothing.
+  const serial = await adbReadyDevice().catch(() => null);
+  if (serial) {
+    try { const a = await adbScanMedia(serial, albums); if (a.ok) return { ok: true, media: a.media }; }
+    catch (e) { console.error('[adb] scan failed, falling back to MTP:', e.message); }
+  }
   const env = { MTP_DEVICE: deviceName };
   if (Array.isArray(albums) && albums.length) env.MTP_ALBUMS = JSON.stringify(albums);
   const r = await runPwshScript(PS_PHONE_SCAN, { timeoutMs: 180000, env });
@@ -1794,6 +1801,11 @@ async function listPhoneAlbums(deviceName) {
   if (deviceName === SIM_PHONE_NAME) {
     const m = await scanSimPhone();
     return { ok: true, albums: [{ album: 'Camera', count: m.length }] };
+  }
+  const serial = await adbReadyDevice().catch(() => null);
+  if (serial) {
+    try { const a = await adbListAlbums(serial); if (a.ok && a.albums.length) return a; }
+    catch (e) { console.error('[adb] album list failed, falling back to MTP:', e.message); }
   }
   const r = await runPwshScript(PS_PHONE_ALBUMS, { timeoutMs: 60000, env: { MTP_DEVICE: deviceName } });
   if (!r.ok) return { ok: false, albums: [], reason: r.error || 'failed' };
@@ -1925,6 +1937,80 @@ async function adbReadyDevice() {
 function adbRemotePath(rel, name) {
   const parts = String(rel || '').split('/').filter(Boolean).slice(1);   // drop the storage label
   return '/sdcard/' + [...parts, name].join('/');
+}
+// Media extensions we care about, as a toybox-`find` predicate group.
+const ADB_MEDIA_EXTS = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'dng', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'mp4', 'mov', 'm4v', '3gp', '3g2', 'avi', 'mkv', 'webm', 'ts'];
+const ADB_VIDEO_RX = /\.(mp4|mov|m4v|3gp|3g2|avi|mkv|webm|ts)$/i;
+function adbInamePredicate() {
+  return '\\( ' + ADB_MEDIA_EXTS.map((e) => `-iname '*.${e}'`).join(' -o ') + ' \\)';
+}
+// Roots we scan on the device. DCIM is the camera roll; Pictures/Movies/Download catch
+// screenshots, saved clips, WhatsApp, etc. Missing roots are silently skipped (2>/dev/null).
+const ADB_SCAN_ROOTS = ['/sdcard/DCIM', '/sdcard/Pictures', '/sdcard/Movies', '/sdcard/Download'];
+// Turn an on-device path (/sdcard/DCIM/Camera/x.jpg) back into an MTP-style rel
+// ("Internal storage/DCIM/Camera") so the rest of the pipeline + adbRemotePath agree.
+function adbPathToRel(devPath) {
+  const name = devPath.split('/').pop();
+  const dir = devPath.slice(0, devPath.length - name.length - 1);
+  return { name, rel: 'Internal storage' + dir.replace(/^\/sdcard/, '') };
+}
+// The "album" label for a device path = the first folder under one of our roots
+// (e.g. /sdcard/DCIM/Camera/x.jpg → "Camera"); files directly in a root use the root name.
+function adbAlbumOf(devPath) {
+  for (const root of ADB_SCAN_ROOTS) {
+    if (devPath.startsWith(root + '/')) {
+      const rest = devPath.slice(root.length + 1);
+      const rootLabel = root.split('/').pop();
+      return rest.includes('/') ? rest.split('/')[0] : rootLabel;
+    }
+  }
+  return 'Phone';
+}
+// ADB-based media scan — one `find` over the media roots, with sizes via `stat`. Returns
+// the same shape as the MTP scan ({ name, rel, size, kind }). Used for BOTH the scan and
+// (grouped) the album chips, because when USB-debugging/ADB is on the phone often stops
+// exposing MTP to Windows, so the PowerShell scan sees nothing.
+let _adbScanCache = null;   // { serial, at, media } — the chooser lists albums then scans; don't `find` twice.
+async function adbScanAll(serial) {
+  if (_adbScanCache && _adbScanCache.serial === serial && (Date.now() - _adbScanCache.at) < 15000) {
+    return { ok: true, media: _adbScanCache.media };
+  }
+  const roots = ADB_SCAN_ROOTS.map((r) => `'${r}'`).join(' ');
+  const cmd = `find ${roots} -type f ${adbInamePredicate()} -exec stat -c '%s|%n' {} + 2>/dev/null`;
+  const r = await runAdb(['-s', serial, 'shell', cmd], { timeoutMs: 120000 });
+  const out = r.out || '';
+  if (!out.trim()) return { ok: r.code === 0, media: [] };
+  const media = [];
+  for (const line of out.split(/\r?\n/)) {
+    const m = line.match(/^(\d+)\|(\/.+)$/);
+    if (!m) continue;
+    const size = Number(m[1]);
+    const p = m[2].trim();
+    // Skip hidden folders/files (.thumbnails cache, .gs*, etc.) — not real camera media.
+    if (p.split('/').some((seg) => seg.startsWith('.'))) continue;
+    const { name, rel } = adbPathToRel(p);
+    if (!name) continue;
+    media.push({ name, rel, size, kind: ADB_VIDEO_RX.test(name) ? 'video' : 'photo', _album: adbAlbumOf(p) });
+  }
+  _adbScanCache = { serial, at: Date.now(), media };
+  return { ok: true, media };
+}
+async function adbListAlbums(serial) {
+  const scan = await adbScanAll(serial);
+  if (!scan.ok) return { ok: false, albums: [] };
+  const counts = new Map();
+  for (const it of scan.media) counts.set(it._album, (counts.get(it._album) || 0) + 1);
+  const albums = [...counts.entries()].map(([album, count]) => ({ album, count }))
+    .sort((a, b) => b.count - a.count);
+  return { ok: true, albums };
+}
+async function adbScanMedia(serial, albums) {
+  const scan = await adbScanAll(serial);
+  if (!scan.ok) return { ok: false, media: [] };
+  const want = Array.isArray(albums) && albums.length ? new Set(albums) : null;
+  const media = scan.media.filter((it) => !want || want.has(it._album))
+    .map(({ _album, ...rest }) => rest);   // drop the internal album tag
+  return { ok: true, media };
 }
 async function adbPullToDest(serial, items, dest, onName) {
   try { fs.mkdirSync(dest, { recursive: true }); } catch { /* ignore */ }

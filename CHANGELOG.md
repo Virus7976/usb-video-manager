@@ -7,6 +7,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-07-01
+
+### Fixed
+- **Phone scan now works when fast transfer (ADB) is on.** Previously only the file
+  *transfer* used ADB; the album listing and the "what's new" scan still went through
+  Windows MTP. But once USB debugging is enabled the phone often stops exposing MTP to
+  Windows, so the app showed "No albums found — Nothing here" even with thousands of
+  photos/videos on the device. The scan and album chips now use ADB too (one `find`
+  over DCIM/Pictures/Movies/Download with sizes), falling back to MTP when ADB is off.
+- Hidden folders (Android's `.thumbnails` cache, `.gs*`, etc.) are excluded from the
+  scan, so you're no longer offered thousands of cached thumbnails as "photos".
+
 ## [0.4.1] — 2026-06-30
 
 ### Added

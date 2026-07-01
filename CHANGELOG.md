@@ -7,6 +7,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.5] — 2026-07-01
+
+### Added
+- **⚡ Auto mode.** A toggle on the home screen: flip it on, pick your phone, and the app
+  runs the whole backup itself — scans, selects everything new/unfinished, pulls it off
+  (ADB fast), and stops only at photo batching. Once you've batched and continued, it
+  copies to Uncompressed and analyzes in the background on its own. **It never deletes
+  anything** — pulling only ever copies off the phone, and Auto mode never touches the
+  card-clear/delete step. You always delete manually.
+- **Batching is now glance-and-accept in Auto mode:** pulled photos are pre-named by the
+  AI (grouped by day) so you just review and continue. Edit any suggestion first.
+
+### Fixed
+- **Phone footage now remembers its metadata and gets pre-analyzed.** The phone copy step
+  now saves each clip's batched name/subject (keyed by final filename) and runs the same
+  background AI analysis the card flow does — so when you later organize, phone clips
+  already know their names and where they belong (and count toward the home banner's
+  "already analyzed" total). Previously this only happened for SD-card imports.
+
 ## [0.4.4] — 2026-07-01
 
 ### Added

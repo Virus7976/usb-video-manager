@@ -187,7 +187,7 @@ let cfg = null;
   // The home action list is always available — "Organize & back up" works on the
   // Compressed folder and needs no card inserted. The drive banner only appears
   // once a removable drive is detected/chosen.
-  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden');
+  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
 
   // A drive being detected refreshes the home Devices list (you pick from it) rather
   // than auto-jumping, so you always see every available drive.
@@ -195,6 +195,17 @@ let cfg = null;
   window.api.onDriveOptions((drives) => onDriveOptions(drives));
   refreshDriveList();   // populate the device list at startup
   renderPendingWork();  // "you've got footage to deal with" — surfaced on every launch
+  const amChk = $('autoModeChk');
+  if (amChk) {
+    amChk.checked = !!uiPrefs.autoMode;
+    amChk.addEventListener('change', () => {
+      uiPrefs.autoMode = amChk.checked;
+      window.api.setUiPref('autoMode', amChk.checked);
+      showToast(amChk.checked
+        ? '⚡ Auto mode on — pick a device and it runs the whole backup itself (you only batch photos, nothing is ever deleted).'
+        : 'Auto mode off — back up step by step.', 4000);
+    });
+  }
 
   // If a copy was already running (e.g. window was closed and reopened), resume
   // straight to its progress so you can see where it's at — and continue.
@@ -249,6 +260,18 @@ function renderDevices() {
     else onDrive(drives[Number(b.dataset.i)]);
   }));
 }
+// Auto mode: pick a device and the app runs the whole backup itself (scan → pull →
+// copy → background-analyze), stopping only for photo batching. NEVER deletes anything.
+function autoMode() { return !!uiPrefs.autoMode; }
+// The home-only chrome (Auto-mode bar + "footage to deal with" banner) must follow the
+// device/action lists — shown on home, hidden inside the flow/phone/finalize screens.
+// Called wherever actionList/driveList toggle. Null-safe so order of init doesn't matter.
+function hideHomeExtras() { ['pendingWork', 'autoModeBar'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); }); }
+function showHomeExtras() {
+  const amb = $('autoModeBar'); if (amb) amb.classList.remove('hidden');
+  const pw = $('pendingWork'); if (pw) pw.classList.toggle('hidden', !pw.innerHTML.trim());   // only if it has content
+}
+
 // "You've got footage to deal with" — a home banner surfaced on launch/return so work
 // waiting in the Uncompressed intake (to compress) or the Compressed folder (ready to
 // organize) is never forgotten. Clicking jumps straight into Organize & back up, where
@@ -299,7 +322,7 @@ function onDriveOptions(drives) {
   renderDriveList(drives || []);   // keep the home device list in sync with detection
   if (!drives || drives.length === 0) {
     $('driveBanner').classList.remove('hidden');
-    $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden');   // keep Organize reachable with no card
+    $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();   // keep Organize reachable with no card
     $('flow').classList.add('hidden');
     $('driveTitle').textContent = 'Insert a card or connect a phone';
     $('driveSub').textContent = 'Your SD card / GoPro or phone shows up here automatically — or use “Choose drive…” to pick a folder.';
@@ -310,7 +333,7 @@ function onDriveOptions(drives) {
   // let the user pick — no auto-jump, so you always see every available drive.
   $('flow').classList.add('hidden');
   $('driveBanner').classList.add('hidden');
-  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden');
+  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
   const oldPicker = document.getElementById('drivePicker'); if (oldPicker) oldPicker.classList.add('hidden');
   $('statusLine').textContent = `${drives.length} device${drives.length > 1 ? 's' : ''} ready`;
 }
@@ -338,7 +361,7 @@ function onDrive(drive) {
   if (picker) picker.classList.add('hidden');
 
   $('driveBanner').classList.remove('hidden');
-  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden');
+  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
   $('flow').classList.add('hidden');
 }
 
@@ -663,7 +686,7 @@ async function startFlow() {
     } else { const picked = await window.api.pickDrive(); if (picked) onDrive(picked); else return; }
   }
   $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden');
+  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
   $('driveBanner').classList.remove('hidden');
   $('flow').classList.remove('hidden');
 
@@ -789,7 +812,7 @@ function maybeOfferBatchStart() {
 
 $('cancelFlowBtn').addEventListener('click', () => {
   $('flow').classList.add('hidden');
-  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden');
+  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
 });
 
 // ---------------------------------------------------------------------------
@@ -8684,7 +8707,7 @@ async function goHome() {
   $('flow').classList.add('hidden');
   $('finalize').classList.add('hidden');
   $('phone').classList.add('hidden');
-  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden');
+  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
   state.phoneBackup = false;
   if (state.drive) $('driveBanner').classList.remove('hidden');
   refreshDriveList();   // re-read removable drives when returning home
@@ -8700,7 +8723,7 @@ async function openPhone(device) {
   closePopover();
   $('flow').classList.add('hidden');
   $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden');
+  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
   $('driveBanner').classList.add('hidden');
   $('phone').classList.remove('hidden');
   $('phCopyWrap').classList.add('hidden');
@@ -8756,6 +8779,16 @@ async function phoneEnterChooser() {
   renderPhoneAlbums();
   renderPhFast();
   await phoneScanScoped();
+  // AUTO MODE: no clicks — pull everything new/unfinished now. You still stop to batch
+  // photos at the rename step. Pulling only COPIES off the phone; nothing is deleted.
+  if (autoMode() && !phoneState.reviewMode && !phoneState.copying && Array.isArray(phoneState.media)) {
+    const act = phoneState.media.filter((m) => m._act);
+    if (act.length) {
+      phoneState.media.forEach((m) => { m.selected = !!m._act; });
+      showToast(`⚡ Auto mode — pulling ${act.length} off ${phoneState.device}…`, 3500);
+      phoneCopy();
+    }
+  }
 }
 
 // Fast-transfer (ADB) status + one-tap enable, shown under the chooser. ADB is far
@@ -9000,13 +9033,42 @@ function enterRenameWithPhoneFiles(staged) {
   });
   $('phone').classList.add('hidden');
   $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden');
+  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
   $('driveBanner').classList.add('hidden');
   $('flow').classList.remove('hidden');
   setStep(1);
   $('scanState').classList.add('hidden');
   buildRenameStep();
   showToast(`${state.scannedFiles.length} item${state.scannedFiles.length !== 1 ? 's' : ''} pulled off your phone — name them, then continue ✓`, 5000);
+  // AUTO MODE: pre-name the photos so batching is glance-and-accept.
+  if (autoMode()) autoSuggestPhotosForBatch();
+}
+
+// AUTO MODE batching helper: pre-name the pulled PHOTOS with the AI (they're local in
+// Photos Temp now) so batching is a glance-and-accept. Sampled one-per-day and applied
+// to that day's siblings; runs in the background and refreshes the grid. Videos aren't
+// local yet, so they're analyzed later (after copy). Never deletes anything; you can
+// edit any suggestion before continuing.
+let autoBatchSuggesting = false;
+async function autoSuggestPhotosForBatch() {
+  if (autoBatchSuggesting || !aiReady()) return;
+  const photos = state.scannedFiles.filter((c) => c.isPhoto && c.sourcePath && !slug(c.subject));
+  if (!photos.length) return;
+  autoBatchSuggesting = true;
+  const dayKey = (c) => c.date || 'x';
+  const groups = {}; for (const c of photos) (groups[dayKey(c)] = groups[dayKey(c)] || []).push(c);
+  const reps = Object.values(groups).map((g) => g[0]);
+  showToast(`⚡ Auto mode — suggesting names for ${reps.length} photo day${reps.length !== 1 ? 's' : ''}… (edit any before continuing)`, 4000);
+  for (const c of reps) {
+    if (!autoMode()) break;   // user turned it off mid-run
+    const i = state.scannedFiles.indexOf(c);
+    if (i < 0) continue;
+    try { await aiSuggestClip(i, 'all', { quiet: true }); } catch { /* keep going */ }
+    const subj = c.subject;
+    if (subj) for (const sib of (groups[dayKey(c)] || [])) { if (sib !== c && !slug(sib.subject)) { sib.subject = subj; if (!sib.description) sib.description = c.description || ''; } }
+  }
+  autoBatchSuggesting = false;
+  try { if (state.phoneBackup && !$('step1').classList.contains('hidden')) buildRenameStep(); } catch { /* ignore */ }
 }
 
 // Jump straight to the Name & copy (rename) flow from any screen.
@@ -9014,7 +9076,7 @@ async function goToRename() {
   closePopover();
   if (!state.scannedFiles || !state.scannedFiles.length) { showToast('Choose a drive first — then you can name & copy its clips'); return; }
   $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden');
+  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
   $('flow').classList.remove('hidden');
   buildRenameStep();
 }
@@ -9077,6 +9139,12 @@ function buildUploadStep() {
   renderPhoneDest();
   refreshUploadFreeSpace();
   if (state.phoneBackup) $('copyStartBtn').textContent = 'Copy out';
+  // AUTO MODE: once you've batched your photos and continued, copy out to Uncompressed
+  // on its own — no extra click. (Copying never deletes anything.)
+  if (autoMode() && state.phoneBackup && !copyInProgress) {
+    showToast('⚡ Auto mode — copying to Uncompressed…', 3000);
+    setTimeout(() => { if (!copyInProgress && !$('step2').classList.contains('hidden')) runCopy(); }, 800);
+  }
 }
 // Show free space on the intake volume vs. the import size, so a shortfall is obvious
 // before copying (turns red when there isn't enough room).
@@ -9189,7 +9257,7 @@ function showCopyingUI() {
 
 // Show progress for an already-running copy (resume after reopening / chip click).
 function goToCopyProgress(status) {
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden');
+  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
   $('driveBanner').classList.add('hidden');
   $('flow').classList.remove('hidden');
   setStep(2);
@@ -9311,6 +9379,15 @@ async function runPhoneCopy() {
     const okVids = (res && res.failed) ? [] : vids;
     const keys = [...photos, ...okVids].map((c) => importKey({ name: c.name, size: c.size }));
     if (keys.length) { window.api.importsAdd(keys); keys.forEach((k) => importedSet.add(k)); }
+  } catch { /* non-fatal */ }
+  // Remember each clip's batched metadata (keyed by final name) and analyze in the
+  // background — like the card flow — so phone footage arrives at Organize already named
+  // and analyzed (this feeds the "already analyzed" count on the home banner). Point the
+  // video clips at their intake copy so analysis can read them. Never deletes anything.
+  try {
+    vids.forEach((v) => { const dp = `${intake}\\${finalName(v)}`; v.destPath = dp; if (!v.sourcePath) v.sourcePath = dp; });
+    saveFlowFinalMeta(state.scannedFiles);
+    if (aiReady() && uiPrefs.autoAnalyzeAfterCopy !== false) autoAnalyzeAfterCopyRun(state.scannedFiles);
   } catch { /* non-fatal */ }
   $('copyBar').style.width = '100%'; $('copyPct').textContent = '100%';
   const destNames = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ');
@@ -9768,7 +9845,7 @@ function renderFinMap() {
 async function openFinalize() {
   closePopover();
   $('flow').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden');
+  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
   $('driveBanner').classList.add('hidden');
   $('finalize').classList.remove('hidden');
 

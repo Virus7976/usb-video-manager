@@ -8794,33 +8794,43 @@ async function phoneScanScoped() {
   try { pulledNames = new Set((await window.api.phonePulledNames()) || []); } catch { /* ignore */ }
   // Default-select only what's genuinely NEW: not backed up before (shared import memory)
   // AND not already pulled to Photos Temp.
+  const photosTemp = phoneStagingDests().photo.replace(/[\\/]+$/, '');
   phoneState.media = ((res && res.media) || []).map((m, i) => {
     const imported = importedSet.has(importKey({ name: m.name, size: m.size }));
     const pulled = m.kind === 'photo' && pulledNames.has(String(m.name || '').toLowerCase());
     const isNew = !imported && !pulled;
-    return { ...m, _i: i, _new: isNew, _pulled: pulled, selected: isNew };
+    // A photo only sitting in Photos Temp from an interrupted session isn't finished yet
+    // (still needs rename → copy → organize), so it still counts as "to back up". Only
+    // items in the import memory are truly done. Both new + unfinished are default-selected.
+    const needsFinish = pulled && !imported;
+    const act = isNew || needsFinish;
+    // Already-pulled photos have a LOCAL copy in Photos Temp → show its real thumbnail
+    // (free, no phone access). Not-yet-pulled items keep the placeholder icon.
+    const abs = m.abs || (pulled ? `${photosTemp}\\${m.name}` : '');
+    return { ...m, _i: i, _new: isNew, _pulled: pulled, _needsFinish: needsFinish, _act: act, abs, selected: act };
   });
   const total = phoneState.media.length;
-  const newOnes = phoneState.media.filter((m) => m._new);
-  const newN = newOnes.length;
-  const newPh = newOnes.filter((m) => m.kind === 'photo').length;
-  const newVid = newN - newPh;
-  const pulledN = phoneState.media.filter((m) => m._pulled).length;
-  const pulledNote = pulledN ? ` · ${pulledN} already pulled` : '';
+  const actOnes = phoneState.media.filter((m) => m._act);
+  const actN = actOnes.length;
+  const newN = phoneState.media.filter((m) => m._new).length;
+  const finishN = phoneState.media.filter((m) => m._needsFinish).length;
+  const actPh = actOnes.filter((m) => m.kind === 'photo').length;
+  const actVid = actN - actPh;
+  const doneN = total - actN;
+  const finishNote = finishN ? ` · ${finishN} to finish` : '';
+  const doneNote = doneN ? ` · ${doneN} backed up` : '';
   if (!total) {
     $('phNewSummary').textContent = 'Nothing here';
     $('phNewSub').textContent = 'No photos or videos in the selected album(s).';
-  } else if (!newN) {
-    $('phNewSummary').textContent = pulledN ? 'Caught up ✓' : 'All backed up ✓';
-    $('phNewSub').textContent = pulledN
-      ? `${pulledN} already pulled to your computer${pulledN !== total ? ` · ${total - pulledN} backed up` : ''}. Use Review to re-do any.`
-      : `${total} item${total !== 1 ? 's' : ''} here — all already backed up. Use Review to back any up again.`;
+  } else if (!actN) {
+    $('phNewSummary').textContent = 'All backed up ✓';
+    $('phNewSub').textContent = `${total} item${total !== 1 ? 's' : ''} here — all already backed up. Use Review to back any up again.`;
   } else {
-    $('phNewSummary').textContent = `${newN} new to back up`;
-    $('phNewSub').textContent = `${newPh} photo${newPh !== 1 ? 's' : ''} · ${newVid} video${newVid !== 1 ? 's' : ''}${pulledNote} · ${total} in selection`;
+    $('phNewSummary').textContent = (finishN && !newN) ? `${finishN} to finish` : `${actN} to back up`;
+    $('phNewSub').textContent = `${actPh} photo${actPh !== 1 ? 's' : ''} · ${actVid} video${actVid !== 1 ? 's' : ''}${finishNote}${doneNote} · ${total} in selection`;
   }
-  $('phBackupNew').textContent = newN ? `Back up ${newN} new` : 'Nothing new';
-  $('phBackupNew').disabled = !newN || phoneState.copying;
+  $('phBackupNew').textContent = actN ? `Back up ${actN}` : 'Nothing new';
+  $('phBackupNew').disabled = !actN || phoneState.copying;
   $('phReview').textContent = total ? `Review all ${total}` : 'Review';
   $('phReview').disabled = !total || phoneState.copying;
 }
@@ -10344,7 +10354,7 @@ $('phRescan').addEventListener('click', () => phoneDetect());
 $('phCopyBtn').addEventListener('click', phoneCopy);
 // Smart chooser actions
 $('phBackupNew').addEventListener('click', () => {
-  phoneState.media.forEach((m) => { m.selected = !!m._new; });   // back up only what's new
+  phoneState.media.forEach((m) => { m.selected = !!m._act; });   // back up what's new or unfinished
   phoneCopy();
 });
 $('phReview').addEventListener('click', phoneEnterReview);

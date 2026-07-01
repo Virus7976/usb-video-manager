@@ -9,6 +9,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [0.4.3] — 2026-07-01
 
+### Added
+- **Interrupted backups are now recognized as "to finish".** If a previous session
+  pulled photos to Photos Temp but never finished renaming/copying/organizing them,
+  those photos are no longer treated as done — they're counted as "to finish" and
+  default-selected alongside genuinely new items, so nothing is silently left half-done.
+  The summary now reads e.g. "N to back up · X to finish · Y backed up".
+- **Already-pulled photos show real thumbnails** in the chooser grid, loaded free from
+  their local Photos Temp copy (no phone access). Items still on the phone keep the
+  photo/video icon — pulling files just to preview them would defeat the fast workflow.
+
 ### Changed
 - **Phone videos now stage in a real "_Phone Video Temp" folder** (next to "04 - Photos
   Temp", under your Compression folder) instead of a hidden throwaway OS temp on C:.

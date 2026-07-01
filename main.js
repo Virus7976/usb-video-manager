@@ -1837,40 +1837,51 @@ ipcMain.handle('phone:pulledNames', async () => {
 // videos STAY on the device and are only copied to the Uncompressed intake later, at
 // the copy step. Returns staged clips: photos with a local sourcePath; videos as
 // references (sim videos already have a local path, real-phone videos are deferred).
+// Set by copy:cancel — checked in the phone pull/copy loops so Cancel actually stops the
+// (long) video transfer instead of hanging.
+let phoneAbort = false;
 ipcMain.handle('phone:pull', async (evt, payload) => {
-  const { device, items, photoDest, sim } = payload || {};
+  const { device, items, photoDest, videoDest, sim } = payload || {};
   if (!device || !Array.isArray(items) || !items.length) return { ok: false, error: 'Nothing selected' };
+  phoneAbort = false;
   const photos = items.filter((it) => it.kind !== 'video');
   const videos = items.filter((it) => it.kind === 'video');
+  const vDest = videoDest || photoDest;
   try { await fsp.mkdir(photoDest, { recursive: true }); } catch { /* ignore */ }
+  try { await fsp.mkdir(vDest, { recursive: true }); } catch { /* ignore */ }
   const sender = evt.sender;
   const staged = [];
   const total = items.length; let done = 0;
   const prog = (name) => { done += 1; try { sender.send('phone:copy-progress', { done, total, name }); } catch { /* ignore */ } };
 
-  // --- Photos → Photos Temp ---
-  if (sim) {
-    for (const it of photos) {
-      const dst = path.join(photoDest, it.name);
-      try {
-        let st = null; try { st = await fsp.stat(dst); } catch { /* not there yet */ }
-        if (!st || st.size !== it.size) { await fsp.copyFile(it.abs, dst); st = await fsp.stat(dst); }  // skip re-copy if already pulled
-        staged.push({ sourcePath: dst, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind: 'photo' });
-      } catch { /* skip */ }
-      prog(it.name);
+  // Pull a set of items off the phone into ONE local dest, then stage each with its LOCAL
+  // path (so batching, thumbnails, and AI all work on real files). Photos → Photos Temp,
+  // videos → _Phone Video Temp — BOTH up-front, so nothing stays stranded on the phone.
+  const pullInto = async (list, dest, kind) => {
+    if (!list.length) return;
+    if (sim) {
+      for (const it of list) {
+        if (phoneAbort) break;
+        const dst = path.join(dest, it.name);
+        try {
+          let st = null; try { st = await fsp.stat(dst); } catch { /* not there yet */ }
+          if (!st || st.size !== it.size) { await fsp.copyFile(it.abs, dst); st = await fsp.stat(dst); }  // resume
+          staged.push({ sourcePath: dst, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind });
+        } catch { /* skip */ }
+        prog(it.name);
+      }
+    } else {
+      await mtpCopyToDest(device, list, dest, (name) => prog(name));   // ADB-first; checks phoneAbort
+      for (const it of list) {
+        const p = path.join(dest, it.name);
+        try { const st = await fsp.stat(p); staged.push({ sourcePath: p, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind }); } catch { /* couldn't verify — skip */ }
+      }
     }
-  } else if (photos.length) {
-    await mtpCopyToDest(device, photos, photoDest, (name) => prog(name));
-    for (const it of photos) { const p = path.join(photoDest, it.name); try { const st = await fsp.stat(p); staged.push({ sourcePath: p, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind: 'photo' }); } catch { /* skip */ } }
-  }
+  };
 
-  // --- Videos STAY on device (only referenced; copied to Uncompressed at copy step) ---
-  for (const it of videos) {
-    if (sim) staged.push({ sourcePath: it.abs, name: it.name, ext: path.extname(it.name), size: it.size, mtimeMs: Date.now(), kind: 'video', phoneRef: { sim: true, abs: it.abs } });
-    else staged.push({ sourcePath: '', name: it.name, ext: path.extname(it.name), size: it.size, mtimeMs: Date.now(), kind: 'video', phoneRef: { sim: false, device, rel: it.rel, name: it.name, size: it.size } });
-    prog(it.name);
-  }
-  return { ok: true, copied: staged.length, total, staged };
+  await pullInto(photos, photoDest, 'photo');
+  if (!phoneAbort) await pullInto(videos, vDest, 'video');
+  return { ok: true, copied: staged.length, total, staged, cancelled: phoneAbort };
 });
 
 // MTP-copy a list of items (same rel-folder navigation) to ONE local dest, streaming
@@ -2016,6 +2027,7 @@ async function adbPullToDest(serial, items, dest, onName) {
   try { fs.mkdirSync(dest, { recursive: true }); } catch { /* ignore */ }
   const results = [];
   for (const it of items) {
+    if (phoneAbort) break;   // Cancel pressed — stop pulling
     const destFile = path.join(dest, it.name);
     let status = 'FAIL';
     try {
@@ -2126,53 +2138,48 @@ foreach ($entry in $items) {
 // videos are a local copy; real-phone videos are pulled off MTP now (kept on device
 // until this moment). `jobs` = [{phoneRef, dest}] where dest is the final file path.
 ipcMain.handle('phone:copyVideos', async (evt, payload) => {
-  const { jobs, videoTemp } = payload || {};
+  const { jobs } = payload || {};
   if (!Array.isArray(jobs) || !jobs.length) return { ok: true, copied: 0 };
+  phoneAbort = false;
   const sender = evt.sender;
   let done = 0; let failed = 0; const total = jobs.length;
+  const prog = (name) => { try { sender.send('phone:copy-progress', { done: done + failed, total, name }); } catch { /* ignore */ } };
   const realByDevice = new Map();
+  // Videos were already pulled off the phone into _Phone Video Temp during the pull step,
+  // so this is just a MOVE into the Uncompressed intake — same drive = instant rename.
   for (const j of jobs) {
-    const ref = j.phoneRef || {};
+    if (phoneAbort) break;
     try {
-      await fsp.mkdir(path.dirname(j.dest), { recursive: true });
-      if (ref.sim) {
-        // Resume: skip if already there with matching size; verify the copy after.
-        let st = null; try { st = await fsp.stat(j.dest); } catch { /* not there */ }
-        const need = (await fsp.stat(ref.abs)).size;
-        if (!(st && st.size === need)) { await fsp.copyFile(ref.abs, j.dest); st = await fsp.stat(j.dest); }
-        if (st && st.size === need) done += 1; else failed += 1;
-        try { sender.send('phone:copy-progress', { done: done + failed, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
-      } else { if (!realByDevice.has(ref.device)) realByDevice.set(ref.device, []); realByDevice.get(ref.device).push(j); }
+      let already = null; try { already = await fsp.stat(j.dest); } catch { /* not there */ }
+      if (already && Number(j.size) && already.size === Number(j.size)) { done += 1; prog(path.basename(j.dest)); continue; }   // resume
+      const src = j.src || (j.phoneRef && j.phoneRef.abs) || '';
+      let hasSrc = false; try { hasSrc = !!(src && (await fsp.stat(src)).size > 0); } catch { /* not local */ }
+      if (hasSrc) {
+        await fsp.mkdir(path.dirname(j.dest), { recursive: true });
+        try { await fsp.rename(src, j.dest); done += 1; }
+        catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; } catch { failed += 1; } }   // cross-drive
+        prog(path.basename(j.dest));
+      } else if (j.phoneRef && !j.phoneRef.sim && j.phoneRef.device && j.phoneRef.rel) {
+        // Legacy safety: a video that's still only on the phone — pull it now.
+        if (!realByDevice.has(j.phoneRef.device)) realByDevice.set(j.phoneRef.device, []);
+        realByDevice.get(j.phoneRef.device).push(j);
+      } else { failed += 1; prog(path.basename(j.dest)); }
     } catch { failed += 1; }
   }
-  // Real-phone videos: pull (ADB-fast, resume + verify) into the persistent "_Phone Video
-  // Temp" folder, then move each to the final name in the intake. Staging in that folder
-  // (a sibling of the intake, so it's the SAME drive) makes the move an instant rename
-  // instead of a slow full copy, and — because it persists — an interrupted pull resumes
-  // instead of re-downloading. Falls back to the OS temp only if no folder was passed.
   for (const [device, list] of realByDevice) {
-    const tmp = videoTemp || path.join(app.getPath('temp'), `phonevid_${Date.now()}`);
+    if (phoneAbort) break;
+    const tmp = path.join(app.getPath('temp'), `phonevid_${Date.now()}`);
     try { await fsp.mkdir(tmp, { recursive: true }); } catch { /* ignore */ }
-    // Resume: skip videos already sitting in the intake at the right size (a prior run).
-    const todo = [];
-    for (const j of list) {
-      let already = null; try { already = await fsp.stat(j.dest); } catch { /* not there */ }
-      if (already && Number(j.phoneRef.size) && already.size === Number(j.phoneRef.size)) {
-        done += 1; try { sender.send('phone:copy-progress', { done: done + failed, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
-      } else { todo.push(j); }
-    }
-    if (!todo.length) continue;
-    const mtp = await mtpCopyToDest(device, todo.map((j) => j.phoneRef), tmp, (name) => { try { sender.send('phone:copy-progress', { done: done + failed + 1, total, name }); } catch { /* ignore */ } });
+    const mtp = await mtpCopyToDest(device, list.map((j) => j.phoneRef), tmp, (name) => prog(name));
     const failSet = new Set((mtp.results || []).filter((r) => r.status === 'FAIL').map((r) => r.name));
-    for (const j of todo) {
+    for (const j of list) {
       if (failSet.has(j.phoneRef.name)) { failed += 1; continue; }
       const src = path.join(tmp, j.phoneRef.name);
       try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await fsp.rename(src, j.dest); done += 1; }
-      catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; } catch { failed += 1; } }   // cross-drive: copy then drop the staged copy
+      catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; } catch { failed += 1; } }
     }
-    // Keep the folder itself (persistent staging); only unverified files remain, for resume.
   }
-  return { ok: true, copied: done, failed, total };
+  return { ok: true, copied: done, failed, total, cancelled: phoneAbort };
 });
 
 // Flat-copy files (renamed photos from Photos Temp) to the chosen back-up
@@ -2621,6 +2628,7 @@ function copyStatus() {
 ipcMain.handle('copy:status', () => copyStatus());
 
 ipcMain.handle('copy:cancel', () => {
+  phoneAbort = true;   // stop the phone pull/copy loops (long video transfers)
   if (copyTask && copyTask.active) {
     copyTask.aborted = true;
     if (copyTask.token && copyTask.token.destroy) copyTask.token.destroy();

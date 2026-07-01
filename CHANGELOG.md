@@ -7,7 +7,22 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.7] — 2026-07-01
+## [0.4.8] — 2026-07-01
+
+### Changed
+- **Photos AND videos now pull off the phone together, up-front.** The pull step copies
+  photos → "04 - Photos Temp" and videos → "_Phone Video Temp" at the same time, so
+  everything is local before you batch — thumbnails render, the AI can analyze, and you
+  name it all in one place. At the copy step the videos just **move** into "01 -
+  Uncompressed" (same drive = instant), instead of the old "videos stay on the phone
+  until later" behavior that left them stranded and confusing.
+
+### Fixed
+- **Cancel actually cancels now.** The phone pull/copy loops check an abort flag, so
+  Cancel stops the (long) video transfer instead of hanging on "Cancelling…". Whatever
+  already copied is kept and resumes next time. Added a Cancel button to the pull screen.
+- Native-feel polish on the home screen: consistent Fluent card hover/press states,
+  tighter section rhythm, and the face option reads as an intentional inline option.
 
 ### Fixed
 - **No more invisible CPU churn at the batching step.** Auto mode was quietly running the

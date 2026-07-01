@@ -9081,8 +9081,8 @@ async function phoneCopy() {
   $('phChooser').classList.add('hidden');
   $('phCopyWrap').classList.remove('hidden');
   $('phCopyBar').style.width = '0%'; $('phCopyPct').textContent = '0%';
-  $('phCopyLabel').textContent = nPho ? 'Copying photos → 04 - Photos Temp…' : 'Preparing videos…';
-  $('phCopySub').textContent = nVid ? `${nVid} video${nVid !== 1 ? 's' : ''} stay on the device until you copy them out` : '';
+  $('phCopyLabel').textContent = 'Pulling off your phone…';
+  $('phCopySub').textContent = `${nPho} photo${nPho !== 1 ? 's' : ''} → Photos Temp · ${nVid} video${nVid !== 1 ? 's' : ''} → Video Temp`;
   const items = sel.map((m) => ({ rel: m.rel, name: m.name, size: m.size, kind: m.kind, abs: m.abs }));
   // Register a persistent task so leaving the window and coming back still shows it (tap to return).
   setTask('phone', 'Backing up phone', 0, sel.length, 'preparing', '');
@@ -9094,11 +9094,17 @@ async function phoneCopy() {
     setTask('phone', 'Backing up phone', p.done || 0, p.total || sel.length, 'preparing', p.name || '');
   });
   let res;
-  try { res = await window.api.pullFromPhone({ device: phoneState.device, items, photoDest: dests.photo, sim: phoneState.sim }); }
+  try { res = await window.api.pullFromPhone({ device: phoneState.device, items, photoDest: dests.photo, videoDest: dests.video, sim: phoneState.sim }); }
   catch (e) { res = { ok: false, error: e.message || String(e) }; }
   off();
   clearTask('phone');
   phoneState.copying = false;
+  const cancelBtn = $('phCopyCancel'); if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }
+  if (res && res.cancelled) {
+    showToast(`Cancelled — the ${(res.staged || []).length} already pulled are kept (they'll pick up where you left off next time).`, 5500);
+    goHome();
+    return;
+  }
   if (res && res.ok && Array.isArray(res.staged) && res.staged.length) {
     if (typeof pcNotify === 'function') pcNotify('Phone ready', `${nPho} photo${nPho !== 1 ? 's' : ''} in Photos Temp · ${nVid} video${nVid !== 1 ? 's' : ''} ready to name.`);
     enterRenameWithPhoneFiles(res.staged);
@@ -9403,7 +9409,9 @@ async function runPhoneCopy() {
   const vids = state.scannedFiles.filter((c) => c.kind === 'video');
   const photos = state.scannedFiles.filter((c) => c.kind === 'photo');
   const intake = (state.intakeFolder || '').replace(/[\\/]+$/, '');
-  const jobs = vids.map((v) => ({ phoneRef: v.phoneRef || { sim: false, device: phoneState.device, rel: '', name: v.name, size: v.size }, dest: `${intake}\\${finalName(v)}` }));
+  // Videos are already local (pulled into _Phone Video Temp), so this is a MOVE into the
+  // intake. Pass the local src + size; phoneRef stays as a legacy fallback for old data.
+  const jobs = vids.map((v) => ({ src: v.sourcePath || '', size: v.size, dest: `${intake}\\${finalName(v)}`, phoneRef: v.phoneRef || null }));
   // Free-space pre-flight on the intake (mirrors the card flow) so a big phone backup
   // never fails or corrupts halfway from a full disk.
   const totalBytes = state.scannedFiles.reduce((s, c) => s + (c.size || 0), 0);
@@ -9431,7 +9439,7 @@ async function runPhoneCopy() {
     setTask('phone-copy', 'Copying off phone', p.done || 0, p.total || jobs.length || 1, 'copying', p.name || '');
   });
   let res = { ok: true, copied: 0 };
-  if (jobs.length) { try { res = await window.api.copyPhoneVideos({ jobs, videoTemp: phoneStagingDests().video }); } catch (e) { res = { ok: false, error: e.message }; } }
+  if (jobs.length) { try { res = await window.api.copyPhoneVideos({ jobs }); } catch (e) { res = { ok: false, error: e.message }; } }
 
   // Distribute the renamed PHOTOS (already in Photos Temp) to computer/NAS + Projects.
   const { jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false);
@@ -9455,7 +9463,7 @@ async function runPhoneCopy() {
   // and analyzed (this feeds the "already analyzed" count on the home banner). Point the
   // video clips at their intake copy so analysis can read them. Never deletes anything.
   try {
-    vids.forEach((v) => { const dp = `${intake}\\${finalName(v)}`; v.destPath = dp; if (!v.sourcePath) v.sourcePath = dp; });
+    vids.forEach((v) => { const dp = `${intake}\\${finalName(v)}`; v.destPath = dp; v.sourcePath = dp; });   // moved into the intake now
     saveFlowFinalMeta(state.scannedFiles);
     autoBackgroundEnrich(state.scannedFiles);   // silent face-tag (auto mode) + vision analysis
   } catch { /* non-fatal */ }
@@ -10532,6 +10540,11 @@ document.querySelectorAll('.fin-home').forEach((b) => b.addEventListener('click'
 document.querySelectorAll('.ph-home').forEach((b) => b.addEventListener('click', goHome));
 $('phRescan').addEventListener('click', () => phoneDetect());
 $('phCopyBtn').addEventListener('click', phoneCopy);
+{ const c = $('phCopyCancel'); if (c) c.addEventListener('click', async () => {
+  c.disabled = true; c.textContent = 'Cancelling…';
+  $('phCopyLabel').textContent = 'Cancelling — finishing the current file…';
+  try { await window.api.cancelCopy(); } catch { /* ignore */ }
+}); }
 // Smart chooser actions
 $('phBackupNew').addEventListener('click', () => {
   phoneState.media.forEach((m) => { m.selected = !!m._act; });   // back up what's new or unfinished

@@ -2579,3 +2579,17 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .am-toggle { padding: 10px 12px; }
 .pending-work { margin: 2px 0 8px; }
 .automode-bar { margin: 2px 0 6px; }
+
+/* --- Cancel row under a progress bar --- */
+.progress-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; }
+.btn.sm { padding: 4px 12px; font-size: 12.5px; min-height: 28px; }
+
+/* --- Fluent home polish: native card feel, consistent rhythm --- */
+#main { padding-top: 8px; }
+.section-label { margin: 14px 2px 6px; opacity: .62; font-size: 12px; font-weight: 600; letter-spacing: .01em; }
+.settings-card.action.dl-card, .settings-card.action { border-radius: 8px; transition: background .12s ease, border-color .12s ease, box-shadow .12s ease; }
+.settings-card.action:hover { background: color-mix(in srgb, var(--accent) 7%, var(--card)); border-color: color-mix(in srgb, var(--accent) 30%, var(--card-stroke)); }
+.settings-card.action:active { background: color-mix(in srgb, var(--accent) 12%, var(--card)); }
+.sc-chevron { opacity: .5; }
+/* the face sub-toggle reads as an intentional inline option, not a stray checkbox */
+.am-sub-toggle { padding: 6px 4px 2px; }

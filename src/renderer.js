@@ -127,6 +127,25 @@ function applyUiPrefs() {
 }
 
 let cfg = null;
+// --- Interaction breadcrumb log (fixing-stage): record every click + which screen it
+// happened on, so a reported problem can be traced to exactly what was clicked/where it
+// went. Written to interaction-log.jsonl in userData. ---
+(function initInteractionLog() {
+  const screenNow = () => {
+    for (const id of ['taskTheater', 'phone', 'finalize', 'flow']) { const e = document.getElementById(id); if (e && !e.classList.contains('hidden')) return id; }
+    return 'home';
+  };
+  const describe = (el) => {
+    if (!el || el === document || !el.tagName) return '';
+    const txt = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 48);
+    return `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}${txt ? ` "${txt}"` : ''}`;
+  };
+  document.addEventListener('click', (e) => {
+    const el = (e.target.closest && e.target.closest('button, a, .settings-card, .dl-card, [data-action], .ph-f, .step, .fin-step, input, label, .ph-album')) || e.target;
+    try { window.api.logInteraction({ t: Date.now(), type: 'click', el: describe(el), screen: screenNow() }); } catch { /* ignore */ }
+  }, true);
+})();
+
 (async function init() {
   applyTheme(await window.api.getTheme());
   window.api.onThemeChange(applyTheme);
@@ -2191,6 +2210,10 @@ function renderTheater() {
   const eta = etaText(pt);
   $('ttTitle').textContent = `${pt.label}${pt.phase ? ` · ${pt.phase}` : ''}`;
   $('ttSub').textContent = `${pt.current} of ${pt.total}${eta ? ` · ${eta}` : ''}${pt.detail ? ` · ${pt.detail}` : ''}`;
+  // A real, prominent determinate bar (fills + surges) so "how much is left" is obvious.
+  const bar = $('ttBar'); const fill = $('ttBarFill'); const pctEl = $('ttBarPct');
+  const pctMain = pt.total ? Math.round((pt.current / pt.total) * 100) : 0;
+  if (bar && fill) { bar.classList.remove('hidden'); fill.style.width = `${pctMain}%`; if (pctEl) pctEl.textContent = `${pctMain}%`; }
   const tasks = [...bgTasks.entries()];
   // Single task → the header already shows label·phase·count·eta, so don't repeat it;
   // just offer a slim Cancel. Multiple tasks → show a row per task.
@@ -9103,6 +9126,7 @@ async function phoneCopy() {
     $('phCopySub').textContent = p.name || '';
     const tx = $('phPullTx'); if (tx) tx.textContent = `Pulling off your phone… ${p.done}/${p.total}`;
     setTask('phone', 'Backing up phone', p.done || 0, p.total || sel.length, 'pulling', p.name || '');
+    try { window.api.setProgress(p.total ? p.done / p.total : -1); } catch { /* ignore */ }   // native taskbar bar
     if (p.name && (p.done % 6 === 0 || p.done === p.total)) pushActivity(`Pulled ${p.name}`, isVid(p.name) ? 'frame' : 'done');
   });
   let res;
@@ -9110,6 +9134,7 @@ async function phoneCopy() {
   catch (e) { res = { ok: false, error: e.message || String(e) }; }
   off();
   clearTask('phone');
+  try { window.api.setProgress(-1); } catch { /* ignore */ }   // clear the taskbar bar
   phoneState.copying = false;
   const cancelBtn = $('phCopyCancel'); if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }
   if (res && res.cancelled) {
@@ -9440,6 +9465,7 @@ async function runPhoneCopy() {
     $('copyLabel').textContent = `Naming videos… ${p.done}/${p.total}`;
     $('copySub').textContent = p.name || '';
     setTask('phone-copy', 'Finishing phone backup', p.done || 0, p.total || renameJobs.length || 1, 'naming', p.name || '');
+    try { window.api.setProgress(p.total ? p.done / p.total : -1); } catch { /* ignore */ }
   });
   let res = { ok: true, copied: 0 };
   if (renameJobs.length) { try { res = await window.api.copyPhoneVideos({ jobs: renameJobs }); } catch (e) { res = { ok: false, error: e.message }; } }
@@ -9452,6 +9478,7 @@ async function runPhoneCopy() {
     try { const r2 = await window.api.distributePhotos({ jobs: pjobs }); distributed = (r2 && r2.copied) || 0; } catch { /* non-fatal */ }
   }
   off(); clearTask('phone-copy'); copyInProgress = false; hideCopyChip();
+  try { window.api.setProgress(-1); } catch { /* ignore */ }
   // Remember what we just backed up (by original phone name+size) so next time the
   // smart chooser knows it's no longer "new". Photos were already pulled to Photos Temp
   // (failed ones never reach scannedFiles); videos only count if NONE failed to copy —

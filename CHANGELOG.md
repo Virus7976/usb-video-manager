@@ -7,7 +7,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.9] — 2026-07-01
+## [0.4.10] — 2026-07-01
+
+### Added
+- **Native Windows taskbar progress** — the accent bar now fills on the app's taskbar
+  icon during a pull/copy, and the fullscreen focus view has a **real, prominent progress
+  bar that fills and "surges"** (shimmer) so how-much-is-left is obvious at a glance.
+- **Interaction breadcrumb log** (for this fixing stage): every click + which screen it
+  happened on is recorded to `interaction-log.jsonl`, so when something goes wrong we can
+  trace exactly what was clicked and where it led.
+
+### Changed
+- The idle media grid on the phone chooser **collapses when empty** instead of showing a
+  big blank bordered box.
+- The **Auto mode toggle** now matches the native WinUI toggle-switch look.
 
 ### Fixed
 - **Videos no longer land in "01 - Uncompressed" automatically** — they stay in

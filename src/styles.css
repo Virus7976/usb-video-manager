@@ -887,6 +887,9 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
   display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--ph-thumb, 150px), 1fr)); gap: 8px;
   padding: 4px; border: 1px solid var(--card-stroke); border-radius: var(--radius-lg); background: var(--card);
 }
+/* When there's nothing to show (the chooser view, before Review or a pull), collapse the
+   grid entirely instead of leaving a big empty bordered box that looks broken. */
+.ph-grid:empty { display: none; }
 .ph-tile {
   display: flex; flex-direction: column; gap: 4px; padding: 6px; border-radius: var(--radius-sm);
   border: 1px solid transparent; cursor: pointer; position: relative; background: color-mix(in srgb, var(--text-3) 5%, transparent);
@@ -2609,3 +2612,20 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .rename-preview:not(.is-photo) .frame-wrap:hover video,
 .rename-preview:not(.is-photo) .frame-wrap:hover .clip-video { object-fit: contain; }
 .frame-wrap { background: #0c0c0c; }   /* softer than pure black behind letterboxed frames */
+
+/* --- Theater determinate bar: fills + Windows-style "surge" shimmer so how-much-is-left is obvious --- */
+.tt-bigbar { position: relative; width: min(520px, 74%); height: 8px; margin: 10px auto 2px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 16%, transparent); overflow: hidden; }
+.tt-bigbar-fill { height: 100%; width: 0%; background: var(--accent); border-radius: 999px; transition: width .25s linear; position: relative; overflow: hidden; }
+.tt-bigbar-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent); animation: pb-surge 1.3s ease-in-out infinite; }
+.tt-bigbar-pct { position: absolute; right: 2px; top: -20px; font-size: 12px; font-variant-numeric: tabular-nums; opacity: .8; }
+@keyframes pb-surge { 0% { transform: translateX(-120%); } 100% { transform: translateX(220%); } }
+/* Surge shimmer on the standard progress + per-task bars too. */
+.progress-bar, .tt-task-fill { position: relative; overflow: hidden; }
+.progress-bar::after, .tt-task-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.28), transparent); animation: pb-surge 1.3s ease-in-out infinite; }
+
+/* --- Native (WinUI) toggle switch for Auto mode --- */
+.am-toggle input[type="checkbox"] { width: 40px; height: 20px; border-radius: 10px; background: transparent; border: 2px solid var(--text-3); transition: background .15s, border-color .15s; }
+.am-toggle input[type="checkbox"]::before { content: ''; position: absolute; top: 3px; left: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--text-2); transition: transform .15s, background .15s, width .15s, height .15s, top .15s, left .15s; }
+.am-toggle input[type="checkbox"]:hover { border-color: var(--text-2); }
+.am-toggle input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+.am-toggle input[type="checkbox"]:checked::before { transform: translateX(19px); width: 12px; height: 12px; top: 2px; left: 3px; background: #fff; }

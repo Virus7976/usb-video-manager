@@ -2636,6 +2636,23 @@ ipcMain.handle('copy:cancel', () => {
   return true;
 });
 
+// Native Windows taskbar progress — the accent bar that fills on the app's taskbar icon
+// (fraction 0..1; anything else clears it). Mirrors the in-app progress.
+ipcMain.on('progress:set', (_e, frac) => {
+  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(typeof frac === 'number' && frac >= 0 && frac <= 1 ? frac : -1); } catch { /* ignore */ }
+});
+// Interaction breadcrumb log — appends clicks/navigation to interaction-log.jsonl in
+// userData so a reported problem can be traced to "what did I click / where did it go".
+// Rolling-capped to ~512KB.
+ipcMain.on('log:interaction', (_e, entry) => {
+  try {
+    const f = path.join(app.getPath('userData'), 'interaction-log.jsonl');
+    fs.appendFileSync(f, JSON.stringify(entry) + '\n');
+    let st = null; try { st = fs.statSync(f); } catch { /* first write */ }
+    if (st && st.size > 512 * 1024) { const buf = fs.readFileSync(f); fs.writeFileSync(f, buf.slice(buf.length - 256 * 1024)); }
+  } catch { /* ignore */ }
+});
+
 // Copy the given files to the intake folder, reporting progress events.
 ipcMain.handle('copy:start', async (evt, payload) => {
   // Refuse a second copy while one is running — a concurrent copy would overwrite the

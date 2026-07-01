@@ -7,6 +7,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-07-01
+
+### Added
+- **"You've got footage to deal with" on the home screen.** When you open the app, a
+  banner now surfaces footage waiting in the Uncompressed intake (still to compress) and
+  clips already in the Compressed folder that are ready to organize — with a one-tap jump
+  straight into Organize & back up. The per-clip AI analysis is already remembered, so
+  nothing re-analyzes. First step toward a frictionless Auto mode: the app remembers your
+  in-progress work across restarts and tells you what's left instead of forgetting it.
+
 ## [0.4.3] — 2026-07-01
 
 ### Added

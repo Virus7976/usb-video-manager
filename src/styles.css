@@ -2535,3 +2535,16 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
   /* Spinners (.task-spin, .dmap-spinner, .chip-spin family) intentionally keep
      turning — continuous rotation conveys ongoing work, not vestibular motion. */
 }
+
+/* "You've got footage to deal with" — home banner surfaced on launch/return. */
+.pending-work { margin: 4px 0 10px; }
+.pw-card { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 12px 14px; border-radius: 12px; cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 14%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--card-stroke)); }
+.pw-card:hover { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
+.pw-ic { font-size: 22px; line-height: 1; flex: 0 0 auto; }
+.pw-tx { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.pw-title { font-weight: 650; }
+.pw-sub { font-size: 12.5px; opacity: 0.85; }
+.pw-cta { flex: 0 0 auto; font-weight: 650; color: var(--accent-text); white-space: nowrap; }

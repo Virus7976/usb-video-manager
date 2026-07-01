@@ -194,6 +194,7 @@ let cfg = null;
   window.api.onDriveDetected(() => refreshDriveList());
   window.api.onDriveOptions((drives) => onDriveOptions(drives));
   refreshDriveList();   // populate the device list at startup
+  renderPendingWork();  // "you've got footage to deal with" — surfaced on every launch
 
   // If a copy was already running (e.g. window was closed and reopened), resume
   // straight to its progress so you can see where it's at — and continue.
@@ -248,6 +249,36 @@ function renderDevices() {
     else onDrive(drives[Number(b.dataset.i)]);
   }));
 }
+// "You've got footage to deal with" — a home banner surfaced on launch/return so work
+// waiting in the Uncompressed intake (to compress) or the Compressed folder (ready to
+// organize) is never forgotten. Clicking jumps straight into Organize & back up, where
+// the AI analysis it already did is remembered per clip (nothing re-analyzes).
+async function renderPendingWork() {
+  const host = $('pendingWork'); if (!host) return;
+  let w = {}; try { w = await window.api.pendingWork(); } catch { w = {}; }
+  const ready = (w && w.ready) || 0;
+  const uncompressed = (w && w.uncompressed) || 0;
+  if (!ready && !uncompressed) { host.classList.add('hidden'); host.innerHTML = ''; return; }
+  const analyzed = (w && w.readyAnalyzed) || 0;
+  const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} already analyzed` : ''}` : '';
+  let uncLine = '';
+  if (uncompressed) {
+    uncLine = ready
+      ? `<b>${uncompressed}</b> still in Uncompressed`
+      : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'}, then organize`;
+  }
+  const sub = [readyLine, uncLine].filter(Boolean).join(' &nbsp;·&nbsp; ');
+  const cta = ready ? `Organize ${ready} ›` : 'Open Organize ›';
+  host.innerHTML = `<button type="button" class="pw-card" id="pwGo">
+      <span class="pw-ic keep-emoji">🎬</span>
+      <span class="pw-tx"><span class="pw-title">You've got footage to deal with</span><span class="pw-sub">${sub}</span></span>
+      <span class="pw-cta">${cta}</span>
+    </button>`;
+  host.classList.remove('hidden');
+  const go = host.querySelector('#pwGo');
+  if (go) go.addEventListener('click', () => openFinalize());
+}
+
 // Wireless workflow: remember the NAS folder a phone app (QNAP QuMagie/Qfile) uploads
 // the camera roll into, so it's a one-tap source under Devices — no phone tethering.
 async function pickPhoneBackupFolder() {
@@ -8657,6 +8688,7 @@ async function goHome() {
   state.phoneBackup = false;
   if (state.drive) $('driveBanner').classList.remove('hidden');
   refreshDriveList();   // re-read removable drives when returning home
+  renderPendingWork();  // refresh the "footage to deal with" banner (counts may have changed)
 }
 
 // ---------------------------------------------------------------------------

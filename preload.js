@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('api', {
   pullFromPhone: (payload) => ipcRenderer.invoke('phone:pull', payload),
   copyPhoneVideos: (payload) => ipcRenderer.invoke('phone:copyVideos', payload),
   distributePhotos: (payload) => ipcRenderer.invoke('phone:distribute', payload),
+  pendingWork: () => ipcRenderer.invoke('pending:work'),
   onPhoneCopyProgress: (cb) => {
     const listener = (_e, p) => cb(p);
     ipcRenderer.on('phone:copy-progress', listener);

@@ -4611,6 +4611,28 @@ ipcMain.handle('finalize:pickSource', async () => {
   return config.finalizeSource;
 });
 
+// "Pending work" for the home screen: how much footage is sitting in the Uncompressed
+// intake (still to compress, then organize) vs. already in the Compressed folder ready
+// to organize now. Lets the app greet you on launch with "you've got footage to deal
+// with" and jump straight into organizing — the per-clip AI analysis is already
+// remembered (finalMeta), so nothing re-analyzes.
+ipcMain.handle('pending:work', async () => {
+  const intakeDir = config.intakeFolder || '';
+  const readyDir = config.finalizeSource || config.organizeDest || '';
+  let uncompressed = 0; let ready = 0; let readyAnalyzed = 0;
+  try { uncompressed = (await listVideosShallow(intakeDir)).length; } catch { /* ignore */ }
+  if (readyDir && readyDir !== intakeDir) {
+    try {
+      const files = await listVideosShallow(readyDir);
+      ready = files.length;
+      const store = currentFinalMeta();
+      const stems = new Set(Object.keys(store).map((k) => stemOf(k)));
+      for (const f of files) { const lc = f.name.toLowerCase(); if (store[lc] || stems.has(stemOf(lc))) readyAnalyzed += 1; }
+    } catch { /* ignore */ }
+  }
+  return { ok: true, intakeDir, readyDir, uncompressed, ready, readyAnalyzed };
+});
+
 // Scan the (top level of the) Compressed folder and match each file to a stored
 // record by exact filename, falling back to a stem match (so a container change
 // during compression, e.g. .mov → .mp4, still matches).

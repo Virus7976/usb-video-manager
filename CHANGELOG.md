@@ -7,6 +7,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-07-01
+
+### Changed
+- **Phone videos now stage in a real "_Phone Video Temp" folder** (next to "04 - Photos
+  Temp", under your Compression folder) instead of a hidden throwaway OS temp on C:.
+  Because that folder is on the **same drive as the intake**, moving a finished video
+  into "01 - Uncompressed" is now an **instant rename** instead of a slow full copy —
+  and if a video pull is interrupted it **resumes** instead of re-downloading. Videos
+  already sitting in the intake at the right size are skipped on a re-run. (The staging
+  copy is removed once a video is safely in the intake; the folder itself stays.)
+  Real-phone video pulls continue to use ADB fast transfer when it's enabled.
+
 ## [0.4.2] — 2026-07-01
 
 ### Fixed

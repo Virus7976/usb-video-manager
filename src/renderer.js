@@ -9251,7 +9251,7 @@ async function runPhoneCopy() {
     setTask('phone-copy', 'Copying off phone', p.done || 0, p.total || jobs.length || 1, 'copying', p.name || '');
   });
   let res = { ok: true, copied: 0 };
-  if (jobs.length) { try { res = await window.api.copyPhoneVideos({ jobs }); } catch (e) { res = { ok: false, error: e.message }; } }
+  if (jobs.length) { try { res = await window.api.copyPhoneVideos({ jobs, videoTemp: phoneStagingDests().video }); } catch (e) { res = { ok: false, error: e.message }; } }
 
   // Distribute the renamed PHOTOS (already in Photos Temp) to computer/NAS + Projects.
   const { jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false);

@@ -2126,7 +2126,7 @@ foreach ($entry in $items) {
 // videos are a local copy; real-phone videos are pulled off MTP now (kept on device
 // until this moment). `jobs` = [{phoneRef, dest}] where dest is the final file path.
 ipcMain.handle('phone:copyVideos', async (evt, payload) => {
-  const { jobs } = payload || {};
+  const { jobs, videoTemp } = payload || {};
   if (!Array.isArray(jobs) || !jobs.length) return { ok: true, copied: 0 };
   const sender = evt.sender;
   let done = 0; let failed = 0; const total = jobs.length;
@@ -2145,19 +2145,32 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       } else { if (!realByDevice.has(ref.device)) realByDevice.set(ref.device, []); realByDevice.get(ref.device).push(j); }
     } catch { failed += 1; }
   }
-  // Real-phone videos: MTP-copy (resume + verify) to a temp by original name, then
-  // rename to final. Files the MTP pass couldn't verify are counted as failed.
+  // Real-phone videos: pull (ADB-fast, resume + verify) into the persistent "_Phone Video
+  // Temp" folder, then move each to the final name in the intake. Staging in that folder
+  // (a sibling of the intake, so it's the SAME drive) makes the move an instant rename
+  // instead of a slow full copy, and — because it persists — an interrupted pull resumes
+  // instead of re-downloading. Falls back to the OS temp only if no folder was passed.
   for (const [device, list] of realByDevice) {
-    const tmp = path.join(app.getPath('temp'), `phonevid_${Date.now()}`);
-    const mtp = await mtpCopyToDest(device, list.map((j) => j.phoneRef), tmp, (name) => { try { sender.send('phone:copy-progress', { done: done + failed + 1, total, name }); } catch { /* ignore */ } });
-    const failSet = new Set((mtp.results || []).filter((r) => r.status === 'FAIL').map((r) => r.name));
+    const tmp = videoTemp || path.join(app.getPath('temp'), `phonevid_${Date.now()}`);
+    try { await fsp.mkdir(tmp, { recursive: true }); } catch { /* ignore */ }
+    // Resume: skip videos already sitting in the intake at the right size (a prior run).
+    const todo = [];
     for (const j of list) {
+      let already = null; try { already = await fsp.stat(j.dest); } catch { /* not there */ }
+      if (already && Number(j.phoneRef.size) && already.size === Number(j.phoneRef.size)) {
+        done += 1; try { sender.send('phone:copy-progress', { done: done + failed, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
+      } else { todo.push(j); }
+    }
+    if (!todo.length) continue;
+    const mtp = await mtpCopyToDest(device, todo.map((j) => j.phoneRef), tmp, (name) => { try { sender.send('phone:copy-progress', { done: done + failed + 1, total, name }); } catch { /* ignore */ } });
+    const failSet = new Set((mtp.results || []).filter((r) => r.status === 'FAIL').map((r) => r.name));
+    for (const j of todo) {
       if (failSet.has(j.phoneRef.name)) { failed += 1; continue; }
       const src = path.join(tmp, j.phoneRef.name);
       try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await fsp.rename(src, j.dest); done += 1; }
-      catch { try { await fsp.copyFile(src, j.dest); done += 1; } catch { failed += 1; } }
+      catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; } catch { failed += 1; } }   // cross-drive: copy then drop the staged copy
     }
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+    // Keep the folder itself (persistent staging); only unverified files remain, for resume.
   }
   return { ok: true, copied: done, failed, total };
 });

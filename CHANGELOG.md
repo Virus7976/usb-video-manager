@@ -7,7 +7,21 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.10] — 2026-07-01
+## [0.4.11] — 2026-07-01
+
+### Fixed
+- **The rename screen no longer crashes or lags on big rolls.** It was building AND wiring
+  every clip card (≈3,000 × 6 inputs + comboboxes) at once. Now cards render + wire in
+  **chunks of 100 as you scroll** (windowed), so the screen opens instantly and clicks
+  stay snappy no matter how many clips.
+- **"Select all" no longer freezes/crashes.** It was re-running the batch-bar + rebuilding
+  a growing thumbnail strip once per clip (O(n²)). Now it flips all clips in one pass with
+  a single UI update, and the selected-clips strip is capped (shows "+N more").
+
+### Notes
+- Easy unselect: use the **Clear** button on the selected-clips strip (or the ✕ on any
+  thumb). The subject/description dropdown is a learn-as-you-go autocomplete — it shows
+  once what you type matches a previously-used value.
 
 ### Added
 - **Native Windows taskbar progress** — the accent bar now fills on the app's taskbar

@@ -1499,10 +1499,8 @@ function buildRenameStep() {
   const dayCounts = {};
   state.scannedFiles.forEach((c) => { const dk = c.date || ''; dayCounts[dk] = (dayCounts[dk] || 0) + 1; });
   // Display ORDER: when grouping by day, lay out every clip of the same day together
-  // (newest day first) so the "N clips" header actually shows all N. Phone/card scans
-  // aren't date-sorted, so the old "divider when the day changes between consecutive
-  // clips" scattered each day across the list (header said 34 but showed 1). Indices stay
-  // the ORIGINAL positions (data-i), so all the per-row editing/handlers are unaffected.
+  // (newest day first) so the "N clips" header actually shows all N. Indices stay the
+  // ORIGINAL positions (data-i), so all per-row editing/handlers are unaffected.
   const order = [];
   if (uiPrefs.dayDividers !== false) {
     const byDay = new Map();
@@ -1512,25 +1510,9 @@ function buildRenameStep() {
   } else {
     for (let i = 0; i < n; i += 1) order.push(i);
   }
-  let lastDay = null;
-  for (const i of order) {
+  // Build ONE clip card element (heavy inputs/combos are wired later, per chunk).
+  const buildCard = (i) => {
     const clip = state.scannedFiles[i];
-    // Day dividers: a labelled split between clips shot on different days, so a
-    // card's worth of footage is easy to batch-select. (Setting: View → Group by day.)
-    if (uiPrefs.dayDividers !== false) {
-      const day = clip.date || '';
-      if (day !== lastDay) {
-        const cnt = dayCounts[day] || 0;
-        const div = document.createElement('div');
-        div.className = 'day-divider';
-        div.innerHTML = `<span class="day-divider-label">${escapeHtml(day || 'No date')}</span>
-          <span class="day-divider-count">${cnt} clip${cnt !== 1 ? 's' : ''}</span>
-          <button type="button" class="day-select" title="Select all ${cnt} clips from this day">Select all</button>`;
-        div.querySelector('.day-select').addEventListener('click', () => selectDay(day));
-        listEl.appendChild(div);
-        lastDay = day;
-      }
-    }
     const card = document.createElement('div');
     card.className = 'rename-card' + (clip.selected ? ' selected' : '') + (clip._aiQ ? ' has-aiq' : '');
     card.dataset.i = i;
@@ -1562,11 +1544,47 @@ function buildRenameStep() {
         <div class="clip-people" data-people="${i}">${peopleChipsHTML(clip, i)}</div>
         <div class="clip-tags" data-tags="${i}">${tagChipsHTML(clip, i)}</div>
       </div>`;
-    listEl.appendChild(card);
-    previewObserver.observe(card);
-  }
+    return card;
+  };
 
-  wireRowEditing(listEl);
+  // WINDOWED rendering: building + wiring ~3000 cards (each with 6 inputs + comboboxes)
+  // at once froze and CRASHED the renderer. Render+wire in chunks; more load as you
+  // scroll (a sentinel near the bottom pulls the next chunk). Selection/batch operate on
+  // state, not the DOM, so they still cover every clip even if it's not rendered yet.
+  let lastDay = null; let rendered = 0;
+  const CHUNK = 100;
+  const sentinel = document.createElement('div'); sentinel.className = 'rn-sentinel'; sentinel.style.minHeight = '1px';
+  let moreObs = null;
+  const renderNext = () => {
+    if (rendered >= order.length) { sentinel.remove(); if (moreObs) moreObs.disconnect(); return; }
+    const frag = document.createDocumentFragment();
+    const end = Math.min(order.length, rendered + CHUNK);
+    for (; rendered < end; rendered += 1) {
+      const i = order[rendered]; const clip = state.scannedFiles[i];
+      if (uiPrefs.dayDividers !== false) {
+        const day = clip.date || '';
+        if (day !== lastDay) {
+          const cnt = dayCounts[day] || 0;
+          const div = document.createElement('div'); div.className = 'day-divider';
+          div.innerHTML = `<span class="day-divider-label">${escapeHtml(day || 'No date')}</span>
+            <span class="day-divider-count">${cnt} clip${cnt !== 1 ? 's' : ''}</span>
+            <button type="button" class="day-select" title="Select all ${cnt} clips from this day">Select all</button>`;
+          div.querySelector('.day-select').addEventListener('click', () => selectDay(day));
+          frag.appendChild(div); lastDay = day;
+        }
+      }
+      const card = buildCard(i);
+      frag.appendChild(card);
+      previewObserver.observe(card);
+    }
+    wireRowEditing(frag);   // wire ONLY this chunk's rows (per-element; no double-wiring)
+    listEl.insertBefore(frag, sentinel);
+    applyClipFilter();      // keep any active filter applied to the freshly-added cards
+  };
+  listEl.appendChild(sentinel);
+  moreObs = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) renderNext(); }, { root: listEl, rootMargin: '900px' });
+  moreObs.observe(sentinel);
+  renderNext();   // first chunk
   refreshNames();
   ensureClipFilterBar();
   applyClipFilter();
@@ -4318,7 +4336,9 @@ function renderCheckedStrip() {
   row._stripKey = key;
   wrap.classList.remove('hidden');
   row.innerHTML = '';
-  for (const i of sel) {
+  const STRIP_CAP = 60;   // never render thousands of thumbs (that froze the app)
+  const shown = sel.slice(0, STRIP_CAP);
+  for (const i of shown) {
     const clip = state.scannedFiles[i];
     const t = document.createElement('button');
     t.className = 'cs-thumb';
@@ -4340,6 +4360,12 @@ function renderCheckedStrip() {
         if (ph) { const im = document.createElement('img'); im.src = url; ph.replaceWith(im); }
       });
     }
+  }
+  if (sel.length > STRIP_CAP) {
+    const more = document.createElement('span');
+    more.className = 'cs-more muted small';
+    more.textContent = `+${sel.length - STRIP_CAP} more selected · use “Clear” to unselect all`;
+    row.appendChild(more);
   }
 }
 
@@ -5098,7 +5124,17 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 // Bulk selection helpers (used by the palette + default context menu).
-function selectAllClips(on) { (state.scannedFiles || []).forEach((c, i) => setClipSelected(i, on)); }
+function selectAllClips(on) {
+  // Batch: set state for ALL clips, then touch only the DOM cards that exist (windowed)
+  // and refresh the bar ONCE. (Calling setClipSelected per clip re-ran updateBatchBar +
+  // rebuilt a growing checked-strip ~n times = O(n²) → froze/crashed on a 3000-clip roll.)
+  (state.scannedFiles || []).forEach((c) => { c.selected = on; });
+  document.querySelectorAll('#renameList .rename-card').forEach((card) => {
+    const cb = card.querySelector('.clip-check'); if (cb) cb.checked = on;
+    card.classList.toggle('selected', on);
+  });
+  updateBatchBar();
+}
 function invertClipSelection() { (state.scannedFiles || []).forEach((c, i) => setClipSelected(i, !c.selected)); }
 
 // ---------------------------------------------------------------------------

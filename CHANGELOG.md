@@ -7,7 +7,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.13] — 2026-07-01
+## [0.4.14] — 2026-07-01
+
+### Changed (internal / maintainability — no behavior change)
+- **`renderer.js` is now split into modules** under `src/mod/` (`01-core`, `02-combo`,
+  `03-rename`, `04-tasks-ai`, `05-preview`, `06-menus`, `07-organize-map`, `08-people`,
+  `09-phone-finalize`, `10-boot`). `scripts/bundle.mjs` concatenates them back into the
+  single `src/renderer.js` the app loads (runs automatically before start/dev/check/dist).
+  Verified byte-identical to the pre-split file, so behavior is unchanged — this is purely
+  to make the code navigable and localize future changes. Edit the module, then it's
+  bundled on build. (Module sources are excluded from the shipped package.)
 
 ### Changed
 - **Subject/description/location dropdowns are now consistent everywhere** and useful

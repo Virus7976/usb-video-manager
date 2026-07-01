@@ -1,6 +1,6 @@
 {
   "name": "usb-auto-action",
-  "version": "0.4.13",
+  "version": "0.4.14",
   "description": "Auto-detects USB/SD insertion on Windows and shows an expandable action menu (compress intake copy, rename, delete from source).",
   "main": "main.js",
   "author": "Jake",
@@ -9,6 +9,12 @@
     "node": ">=20"
   },
   "scripts": {
+    "bundle": "node scripts/bundle.mjs",
+    "prestart": "node scripts/bundle.mjs",
+    "predev": "node scripts/bundle.mjs",
+    "precheck": "node scripts/bundle.mjs",
+    "predist": "node scripts/bundle.mjs",
+    "prebuild:win": "node scripts/bundle.mjs",
     "start": "electron .",
     "dev": "electron . --dev",
     "check": "node --check main.js && node --check preload.js && node --check src/renderer.js && node --check watch-drives.js",
@@ -37,7 +43,8 @@
       "main.js",
       "preload.js",
       "config.json",
-      "src/**/*"
+      "src/**/*",
+      "!src/mod/**"
     ],
     "asarUnpack": [
       "node_modules/exiftool-vendored/**",

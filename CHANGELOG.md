@@ -7,7 +7,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.8] — 2026-07-01
+## [0.4.9] — 2026-07-01
+
+### Fixed
+- **Videos no longer land in "01 - Uncompressed" automatically** — they stay in
+  "_Phone Video Temp" (renamed), which Tdarr doesn't watch, so it can't start compressing
+  before you're ready or with the wrong names. When you're done, a deliberate **"Send N
+  videos to Uncompressed"** button on the finish screen moves them over (instant,
+  same-drive) — that's the moment Tdarr picks them up. You're in control of when.
+- **The pull screen is no longer a blank box.** It now shows a live "Pulling off your
+  phone…" state with the running count, and the fullscreen/focus view's **Live Activity**
+  feed lists each file as it's pulled (instead of "Waiting for the first step…").
+- **Portrait phone videos** fill the thumbnail cleanly instead of showing big black
+  side-bars, and **hovering reveals the full frame**. Photos are never cropped.
 
 ### Changed
 - **Photos AND videos now pull off the phone together, up-front.** The pull step copies

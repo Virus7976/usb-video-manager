@@ -9083,15 +9083,27 @@ async function phoneCopy() {
   $('phCopyBar').style.width = '0%'; $('phCopyPct').textContent = '0%';
   $('phCopyLabel').textContent = 'Pulling off your phone…';
   $('phCopySub').textContent = `${nPho} photo${nPho !== 1 ? 's' : ''} → Photos Temp · ${nVid} video${nVid !== 1 ? 's' : ''} → Video Temp`;
+  // Fill the (otherwise blank) grid area with a live "pulling" state so the step reads as
+  // busy-and-fine, not broken.
+  $('phGrid').innerHTML = `<div class="ph-pulling">
+      <span class="illo scan-illo">${typeof ILLO_SCAN !== 'undefined' ? ILLO_SCAN : ''}</span>
+      <p class="ph-pulling-tx" id="phPullTx">Pulling everything off ${escapeHtml(phoneState.device || 'your phone')}…</p>
+      <p class="muted small" id="phPullSub">Copying ${nPho} photo${nPho !== 1 ? 's' : ''} + ${nVid} video${nVid !== 1 ? 's' : ''} into your temp folders so you can name and organize them. This is the big copy — you can Cancel any time.</p>
+    </div>`;
   const items = sel.map((m) => ({ rel: m.rel, name: m.name, size: m.size, kind: m.kind, abs: m.abs }));
   // Register a persistent task so leaving the window and coming back still shows it (tap to return).
-  setTask('phone', 'Backing up phone', 0, sel.length, 'preparing', '');
+  setTask('phone', 'Backing up phone', 0, sel.length, 'pulling', '');
+  clearActivity();
+  pushActivity(`Pulling ${sel.length} item${sel.length !== 1 ? 's' : ''} off ${phoneState.device || 'your phone'}…`, 'step');
+  const isVid = (n) => /\.(mp4|mov|m4v|mkv|webm|avi|3gp|3g2|ts)$/i.test(n || '');
   const off = window.api.onPhoneCopyProgress((p) => {
     const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
     $('phCopyBar').style.width = `${pct}%`; $('phCopyPct').textContent = `${pct}%`;
-    $('phCopyLabel').textContent = `Preparing… ${p.done}/${p.total}`;
+    $('phCopyLabel').textContent = `Pulling off your phone… ${p.done}/${p.total}`;
     $('phCopySub').textContent = p.name || '';
-    setTask('phone', 'Backing up phone', p.done || 0, p.total || sel.length, 'preparing', p.name || '');
+    const tx = $('phPullTx'); if (tx) tx.textContent = `Pulling off your phone… ${p.done}/${p.total}`;
+    setTask('phone', 'Backing up phone', p.done || 0, p.total || sel.length, 'pulling', p.name || '');
+    if (p.name && (p.done % 6 === 0 || p.done === p.total)) pushActivity(`Pulled ${p.name}`, isVid(p.name) ? 'frame' : 'done');
   });
   let res;
   try { res = await window.api.pullFromPhone({ device: phoneState.device, items, photoDest: dests.photo, videoDest: dests.video, sim: phoneState.sim }); }
@@ -9409,37 +9421,28 @@ async function runPhoneCopy() {
   const vids = state.scannedFiles.filter((c) => c.kind === 'video');
   const photos = state.scannedFiles.filter((c) => c.kind === 'photo');
   const intake = (state.intakeFolder || '').replace(/[\\/]+$/, '');
-  // Videos are already local (pulled into _Phone Video Temp), so this is a MOVE into the
-  // intake. Pass the local src + size; phoneRef stays as a legacy fallback for old data.
-  const jobs = vids.map((v) => ({ src: v.sourcePath || '', size: v.size, dest: `${intake}\\${finalName(v)}`, phoneRef: v.phoneRef || null }));
-  // Free-space pre-flight on the intake (mirrors the card flow) so a big phone backup
-  // never fails or corrupts halfway from a full disk.
-  const totalBytes = state.scannedFiles.reduce((s, c) => s + (c.size || 0), 0);
-  if (totalBytes && intake) {
-    try {
-      const fsr = await window.api.freeSpace(intake);
-      if (fsr && fsr.ok && fsr.free < totalBytes + 250 * 1024 * 1024) {
-        const proceed = await confirmDialog('Low space',
-          `This backup is about ${fmtBytes(totalBytes)}, but only ${fmtBytes(fsr.free)} is free on ${fsr.path}. Copy anyway?`,
-          'Copy anyway', 'Cancel');
-        if (!proceed) return;
-      }
-    } catch { /* never block the backup on a failed probe */ }
-  }
+  const vtemp = phoneStagingDests().video.replace(/[\\/]+$/, '');
+  // Videos were already pulled into _Phone Video Temp and STAY there. Moving them into
+  // "01 - Uncompressed" now would make Tdarr start compressing before you're ready (and
+  // with the wrong names). So we just RENAME them in the temp folder to their final names,
+  // and remember a "send to Uncompressed" job for when YOU choose to compress. Nothing
+  // touches Tdarr's watched folder yet.
+  const renameJobs = vids.map((v) => ({ src: v.sourcePath || `${vtemp}\\${v.name}`, size: v.size, dest: `${vtemp}\\${finalName(v)}` }));
+  phonePendingVideos = vids.map((v) => ({ src: `${vtemp}\\${finalName(v)}`, size: v.size, dest: `${intake}\\${finalName(v)}` }));
   copyInProgress = true; showCopyingUI();
   $('copyBar').style.width = '0%'; $('copyPct').textContent = '0%';
-  $('copyLabel').textContent = vids.length ? 'Copying videos → 01 - Uncompressed…' : 'Finishing…';
+  $('copyLabel').textContent = vids.length ? 'Naming your videos…' : 'Finishing…';
   $('copySub').textContent = '';
-  setTask('phone-copy', 'Copying off phone', 0, jobs.length || 1, 'copying', '');
+  setTask('phone-copy', 'Finishing phone backup', 0, renameJobs.length || 1, 'naming', '');
   const off = window.api.onPhoneCopyProgress((p) => {
     const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
     $('copyBar').style.width = `${pct}%`; $('copyPct').textContent = `${pct}%`;
-    $('copyLabel').textContent = `Copying videos… ${p.done}/${p.total}`;
+    $('copyLabel').textContent = `Naming videos… ${p.done}/${p.total}`;
     $('copySub').textContent = p.name || '';
-    setTask('phone-copy', 'Copying off phone', p.done || 0, p.total || jobs.length || 1, 'copying', p.name || '');
+    setTask('phone-copy', 'Finishing phone backup', p.done || 0, p.total || renameJobs.length || 1, 'naming', p.name || '');
   });
   let res = { ok: true, copied: 0 };
-  if (jobs.length) { try { res = await window.api.copyPhoneVideos({ jobs }); } catch (e) { res = { ok: false, error: e.message }; } }
+  if (renameJobs.length) { try { res = await window.api.copyPhoneVideos({ jobs: renameJobs }); } catch (e) { res = { ok: false, error: e.message }; } }
 
   // Distribute the renamed PHOTOS (already in Photos Temp) to computer/NAS + Projects.
   const { jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false);
@@ -9463,17 +9466,39 @@ async function runPhoneCopy() {
   // and analyzed (this feeds the "already analyzed" count on the home banner). Point the
   // video clips at their intake copy so analysis can read them. Never deletes anything.
   try {
-    vids.forEach((v) => { const dp = `${intake}\\${finalName(v)}`; v.destPath = dp; v.sourcePath = dp; });   // moved into the intake now
+    // Videos stay in _Phone Video Temp under their final names — point analysis there.
+    vids.forEach((v) => { const dp = `${vtemp}\\${finalName(v)}`; v.destPath = dp; v.sourcePath = dp; });
     saveFlowFinalMeta(state.scannedFiles);
-    autoBackgroundEnrich(state.scannedFiles);   // silent face-tag (auto mode) + vision analysis
+    autoBackgroundEnrich(state.scannedFiles);   // silent face-tag (auto mode) + vision analysis (from temp)
   } catch { /* non-fatal */ }
   $('copyBar').style.width = '100%'; $('copyPct').textContent = '100%';
   const destNames = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ');
   const routedNote = routedN ? ` (${routedN} also filed into Projects)` : '';
   const photoLine = (dests.length || routedN) ? `${distributed} photo cop${distributed !== 1 ? 'ies' : 'y'} → ${destNames || 'Projects'}${routedNote}` : `${photos.length} photo${photos.length !== 1 ? 's' : ''} in 04 - Photos Temp`;
-  const failNote = (res && res.failed) ? ` · ⚠ ${res.failed} couldn’t be verified (kept on phone — try again)` : ' (verified)';
-  showDone(`${res.copied || 0} video${(res.copied || 0) !== 1 ? 's' : ''} → 01 - Uncompressed${failNote} · ${photoLine}. Compress the videos, then Organize & back up.`);
-  if (typeof pcNotify === 'function') pcNotify('Phone backup', `${res.copied || 0} videos staged${res && res.failed ? ` · ${res.failed} failed` : ''} · ${photoLine}.`);
+  const nVid = phonePendingVideos.length;
+  const vidLine = nVid ? `${nVid} video${nVid !== 1 ? 's' : ''} named &amp; staged in _Phone Video Temp (Tdarr won't touch them yet)` : '';
+  // Reveal a deliberate "Send to Uncompressed" button so YOU decide when Tdarr compresses.
+  const sendBtn = document.getElementById('phSendUncompressedBtn');
+  if (sendBtn) { sendBtn.classList.toggle('hidden', !nVid); sendBtn.textContent = nVid ? `Send ${nVid} video${nVid !== 1 ? 's' : ''} to Uncompressed` : 'Send to Uncompressed'; sendBtn.disabled = false; }
+  showDone(`${[vidLine, photoLine].filter(Boolean).join(' · ')}. When you're ready to compress, hit “Send to Uncompressed”.`);
+  if (typeof pcNotify === 'function') pcNotify('Phone backup', `${nVid} video${nVid !== 1 ? 's' : ''} staged in Video Temp · ${photoLine}.`);
+}
+// Videos wait in _Phone Video Temp (renamed) until the user sends them to Uncompressed —
+// so Tdarr never compresses before they're ready. { src: tempPath, dest: intakePath }.
+let phonePendingVideos = [];
+async function sendPendingVideosToUncompressed() {
+  const jobs = (phonePendingVideos || []).slice();
+  if (!jobs.length) { showToast('No staged videos to send'); return; }
+  const btn = document.getElementById('phSendUncompressedBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  setTask('phone-send', 'Sending to Uncompressed', 0, jobs.length, 'moving', '');
+  const off = window.api.onPhoneCopyProgress((p) => setTask('phone-send', 'Sending to Uncompressed', p.done || 0, p.total || jobs.length, 'moving', p.name || ''));
+  let res = { copied: 0 };
+  try { res = await window.api.copyPhoneVideos({ jobs }); } catch { /* ignore */ }
+  off(); clearTask('phone-send');
+  phonePendingVideos = [];
+  if (btn) { btn.classList.add('hidden'); }
+  showToast(`${(res && res.copied) || 0} video${((res && res.copied) !== 1) ? 's' : ''} → 01 - Uncompressed — Tdarr can compress them now ✓`, 5000);
 }
 
 async function runCopy() {
@@ -9840,6 +9865,7 @@ function finishFlow(summary) {
 $('openIntakeBtn').addEventListener('click', () => window.api.openFolder(state.intakeFolder));
 $('finishBtn').addEventListener('click', () => window.api.hideWindow());
 { const b = document.getElementById('doneOrganizeBtn'); if (b) b.addEventListener('click', () => openFinalize()); }
+{ const b = document.getElementById('phSendUncompressedBtn'); if (b) b.addEventListener('click', sendPendingVideosToUncompressed); }
 
 // ---------------------------------------------------------------------------
 // Organize & back up (Finalize) — a self-contained, stepped flow (Match →

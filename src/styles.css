@@ -2593,3 +2593,19 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .sc-chevron { opacity: .5; }
 /* the face sub-toggle reads as an intentional inline option, not a stray checkbox */
 .am-sub-toggle { padding: 6px 4px 2px; }
+
+/* --- Pulling state (fills the phone grid area during the big copy) --- */
+.ph-pulling { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 320px; text-align: center; padding: 24px; }
+.ph-pulling .scan-illo svg { width: 120px; opacity: .95; }
+.ph-pulling-tx { font-size: 15px; font-weight: 600; }
+.ph-pulling .muted { max-width: 460px; }
+
+/* --- Portrait videos in the 16:9 rename thumb: fill cleanly (no black side-bars),
+       reveal the FULL frame on hover. Photos always stay uncropped (contain). --- */
+.rename-preview:not(.is-photo) .frame-wrap img,
+.rename-preview:not(.is-photo) .frame-wrap video,
+.rename-preview:not(.is-photo) .clip-video { object-fit: cover; }
+.rename-preview:not(.is-photo) .frame-wrap:hover img,
+.rename-preview:not(.is-photo) .frame-wrap:hover video,
+.rename-preview:not(.is-photo) .frame-wrap:hover .clip-video { object-fit: contain; }
+.frame-wrap { background: #0c0c0c; }   /* softer than pure black behind letterboxed frames */

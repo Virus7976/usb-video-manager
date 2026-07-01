@@ -4463,7 +4463,7 @@ ipcMain.handle('finalMeta:save', (_evt, map) => {
     const rec = { ts: now };
     for (const [k, val] of Object.entries(v)) {
       if (k === 'ts') continue;
-      if (k === 'keywords' || k === 'people') rec[k] = Array.isArray(val) ? val : [];
+      if (k === 'keywords' || k === 'people' || k === 'peopleAuto' || k === 'tags') rec[k] = Array.isArray(val) ? val : [];
       else rec[k] = (val == null ? '' : String(val));
     }
     if (!Array.isArray(rec.keywords)) rec.keywords = [];
@@ -4479,6 +4479,52 @@ ipcMain.handle('finalMeta:save', (_evt, map) => {
   config.finalMeta = Object.fromEntries(entries);
   saveConfig();
   return true;
+});
+
+// Find every stored clip (organized finalMeta + in-progress drafts) tagged with a person
+// name — powers the "you changed X, re-tag N clips?" offer after a rename/merge/reassign.
+ipcMain.handle('clips:findByPerson', (_evt, name) => {
+  const nm = String(name || '').trim();
+  if (!nm) return { ok: true, finalMeta: [], drafts: [], total: 0 };
+  const has = (rec) => rec && ((Array.isArray(rec.people) && rec.people.includes(nm)) || (Array.isArray(rec.peopleAuto) && rec.peopleAuto.includes(nm)));
+  const fm = currentFinalMeta(); const fmHits = Object.keys(fm).filter((k) => has(fm[k]));
+  const dr = currentDrafts(); const drHits = Object.keys(dr).filter((k) => has(dr[k]));
+  return { ok: true, finalMeta: fmHits, drafts: drHits, total: fmHits.length + drHits.length };
+});
+
+// Re-tag a person across all stored clips: rename `from` -> `to` in people/peopleAuto
+// (drop it if `to` is empty) and swap the name inside subject/description text too — the
+// cheap "re-tag + re-name" offered after you change a face/person. Returns how many
+// records changed. Never touches or deletes the media files themselves.
+ipcMain.handle('clips:retagPerson', (_evt, payload) => {
+  const from = String((payload && payload.from) || '').trim();
+  const to = String((payload && payload.to) || '').trim();   // '' => remove the tag
+  if (!from) return { ok: false, changed: 0 };
+  const fixArr = (arr) => {
+    if (!Array.isArray(arr) || !arr.includes(from)) return { arr, changed: false };
+    const out = [...new Set(arr.map((n) => (n === from ? to : n)).filter(Boolean))];
+    return { arr: out, changed: true };
+  };
+  const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const fixText = (s) => (to && typeof s === 'string') ? s.replace(new RegExp(`\\b${esc}\\b`, 'g'), to) : s;
+  let changed = 0;
+  const apply = (store) => {
+    for (const k of Object.keys(store)) {
+      const rec = store[k]; if (!rec) continue;
+      const p = fixArr(rec.people); const pa = fixArr(rec.peopleAuto);
+      if (p.changed || pa.changed) {
+        if (p.changed) rec.people = p.arr;
+        if (pa.changed) rec.peopleAuto = pa.arr;
+        rec.subject = fixText(rec.subject);
+        rec.description = fixText(rec.description);
+        changed += 1;
+      }
+    }
+  };
+  apply(currentFinalMeta());
+  apply(currentDrafts());
+  saveConfig();
+  return { ok: true, changed };
 });
 
 ipcMain.handle('finalMeta:get', () => currentFinalMeta());

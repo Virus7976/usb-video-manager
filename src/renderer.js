@@ -206,6 +206,15 @@ let cfg = null;
         : 'Auto mode off — back up step by step.', 4000);
     });
   }
+  const afChk = $('autoFaceChk');
+  if (afChk) {
+    afChk.checked = uiPrefs.autoFaceScan !== false;   // default on
+    afChk.addEventListener('change', () => {
+      uiPrefs.autoFaceScan = afChk.checked;
+      window.api.setUiPref('autoFaceScan', afChk.checked);
+      showToast(afChk.checked ? 'Auto face-tagging on (unconfirmed guesses).' : 'Auto face-tagging off.', 3000);
+    });
+  }
 
   // If a copy was already running (e.g. window was closed and reopened), resume
   // straight to its progress so you can see where it's at — and continue.
@@ -783,6 +792,7 @@ async function applyPeopleFromDrafts() {
     const d = drafts[clipKey(clip)];
     if (!d) continue;
     if (Array.isArray(d.people) && d.people.length) clip.people = [...new Set([...(clip.people || []), ...d.people])];
+    if (Array.isArray(d.peopleAuto) && d.peopleAuto.length) clip.peopleAuto = [...new Set([...(clip.peopleAuto || []), ...d.peopleAuto])];
     if (Array.isArray(d.tags) && d.tags.length) clip.tags = [...new Set([...(clip.tags || []), ...d.tags])];
     if (d.facesScanned) clip._facesScanned = true;
   }
@@ -892,6 +902,7 @@ function buildDraftMap() {
       shotType: clip.shotType || '',
       observation: clip.observation || '',
       people: Array.isArray(clip.people) ? clip.people : [],
+      peopleAuto: Array.isArray(clip.peopleAuto) ? clip.peopleAuto : [],   // unconfirmed face guesses
       tags: Array.isArray(clip.tags) ? clip.tags : [],
       facesScanned: !!clip._facesScanned,
       ledgerRel: clip._ledgerRel || ''
@@ -971,6 +982,7 @@ function applyDraftsToClips(drafts) {
     if (d.shotType) clip.shotType = d.shotType;
     if (d.observation) clip.observation = d.observation;
     if (Array.isArray(d.people) && d.people.length) clip.people = [...new Set([...(clip.people || []), ...d.people])];
+    if (Array.isArray(d.peopleAuto) && d.peopleAuto.length) clip.peopleAuto = [...new Set([...(clip.peopleAuto || []), ...d.peopleAuto])];
     if (Array.isArray(d.tags) && d.tags.length) clip.tags = [...new Set([...(clip.tags || []), ...d.tags])];
     if (d.facesScanned) clip._facesScanned = true;
     if (d.ledgerRel) clip._ledgerRel = d.ledgerRel;
@@ -1580,7 +1592,11 @@ function refreshNames() {
 function peopleChipsHTML(clip) {
   const ppl = Array.isArray(clip.people) ? clip.people.filter(Boolean) : [];
   if (!ppl.length) return '';
-  return ppl.map((n) => `<span class="clip-person-chip">${escapeHtml(n)}<button type="button" class="cpc-x" data-name="${escapeAttr(n)}" title="Remove ${escapeAttr(n)}">×</button></span>`).join('');
+  const auto = new Set(Array.isArray(clip.peopleAuto) ? clip.peopleAuto : []);   // unconfirmed guesses
+  return ppl.map((n) => {
+    const guess = auto.has(n);   // show a face-guess as "Liam?" with a dashed chip
+    return `<span class="clip-person-chip${guess ? ' unconfirmed' : ''}"${guess ? ' title="Auto-detected face — unconfirmed guess. Confirm on the person\'s profile."' : ''}>${escapeHtml(n)}${guess ? '?' : ''}<button type="button" class="cpc-x" data-name="${escapeAttr(n)}" title="Remove ${escapeAttr(n)}">×</button></span>`;
+  }).join('');
 }
 // All the keyword tags that get embedded in the file at Finalize (mirrors main's
 // buildEmbedTags) — so the user can SEE exactly what metadata will be written.
@@ -7556,6 +7572,59 @@ async function collectClipFaces(clip, clusters, keys) {
   return 0;
 }
 
+// SILENT auto face-tag (Auto mode): detect faces and, for any that MATCH someone you've
+// already named, tag that person onto the clip as an UNCONFIRMED guess (also tracked in
+// clip.peopleAuto) — no review modal, no naming of strangers. Unconfirmed people still
+// feed the AI descriptions + metadata; a later person rename/merge offers to re-tag the
+// affected clips. Never blocks or deletes. Returns how many clips got a tag.
+async function scanFacesAuto(clipList) {
+  const toScan = (clipList || []).filter((c) => c && c.sourcePath && !c._facesScanned);
+  if (!toScan.length) return { ok: true, tagged: 0 };
+  const probe = await ensureFaceModels();
+  if (!probe.ok) return { ok: false, tagged: 0 };   // face recognition not set up — skip silently
+  faceScanAborted = false;
+  let tagged = 0; let done = 0;
+  showToast(`⚡ Auto mode — scanning ${toScan.length} clip${toScan.length !== 1 ? 's' : ''} for known faces…`, 3500);
+  for (const clip of toScan) {
+    if (faceScanAborted || !autoMode()) break;
+    done += 1;
+    setTask('faces', 'Scanning faces', done, toScan.length, 'scanning', clip.name);
+    let fr = null;
+    try { fr = await detectFacesForClip({ sourcePath: clip.sourcePath }, () => {}); } catch { fr = null; }
+    const names = new Set();
+    for (const f of (fr && fr.faces) || []) {
+      let m = null;
+      try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ }
+      const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
+      if (m && m.match && m.match.name && dist <= FACE_SUGGEST_DIST) {
+        names.add(m.match.name);
+        // Save this face onto that person as UNCONFIRMED (a guess), so it shows on their
+        // profile for review and improves future matching — never auto-confirmed.
+        try { await window.api.savePerson({ name: m.match.name, descriptors: [f.descriptor], thumb: f.thumb, confirmed: false }); } catch { /* non-fatal */ }
+      }
+    }
+    const r = clip._ref || clip;
+    if (names.size) {
+      clip.people = [...new Set([...(clip.people || []), ...names])];
+      clip.peopleAuto = [...new Set([...(clip.peopleAuto || []), ...names])];
+      if (r !== clip) { r.people = clip.people; r.peopleAuto = clip.peopleAuto; }
+      tagged += 1;
+    }
+    clip._facesScanned = true; r._facesScanned = true;
+  }
+  clearTask('faces');
+  try { scheduleDraftSave(); } catch { /* ignore */ }
+  if (tagged) showToast(`Auto-tagged people on ${tagged} clip${tagged !== 1 ? 's' : ''} — unconfirmed guesses you can fix on a person's profile ✓`, 4500);
+  return { ok: true, tagged };
+}
+
+// Auto-mode background enrichment after a copy: silently face-tag (unconfirmed) FIRST so
+// the vision pass can weave those people into the descriptions — then analyze. No popups.
+async function autoBackgroundEnrich(clips) {
+  try { if (autoMode() && uiPrefs.autoFaceScan !== false) await scanFacesAuto(clips); } catch { /* non-fatal */ }
+  try { if (aiReady() && uiPrefs.autoAnalyzeAfterCopy !== false) await autoAnalyzeAfterCopyRun(clips); } catch { /* non-fatal */ }
+}
+
 // Reusable "scanning" animation — a framing-bracket icon with a sweeping accent
 // line. Used in the face grid header and the live task panel to feel premium while
 // work runs. currentColor for the brackets; the line uses the accent.
@@ -7944,7 +8013,7 @@ async function showPeopleManager() {
       ${sec('Confirmed', conf, 'conf')}
       ${!faces.length ? '<p class="muted small">No face crops stored yet.</p>' : ''}`;
     const nameInp = main.querySelector('.pd-name');
-    const commitName = async () => { const nm = nameInp.value.trim(); if (nm && nm !== d.name) { await window.api.renamePerson({ id: selId, name: nm }); updateClipPeopleName(d.name, nm); showToast(`Renamed to "${nm}"`); await reloadPeople(true); } };
+    const commitName = async () => { const nm = nameInp.value.trim(); if (nm && nm !== d.name) { const old = d.name; await window.api.renamePerson({ id: selId, name: nm }); updateClipPeopleName(old, nm); showToast(`Renamed to "${nm}"`); await reloadPeople(true); offerRetagAffectedClips(old, nm); } };
     nameInp.addEventListener('blur', commitName);
     nameInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nameInp.blur(); } });
     main.querySelector('.pd-del').addEventListener('click', async () => { removeClipPersonName(d.name); await window.api.deletePerson(selId); await reloadPeople(false); });
@@ -7996,7 +8065,7 @@ async function showPeopleManager() {
     pop.querySelectorAll('.pd-merge-opt').forEach((b) => b.addEventListener('click', async () => {
       const from = others.find((p) => p.id === b.dataset.id);
       await window.api.mergePerson({ intoId: selId, fromId: b.dataset.id });
-      if (from) updateClipPeopleName(from.name, d.name);
+      if (from) { updateClipPeopleName(from.name, d.name); offerRetagAffectedClips(from.name, d.name); }
       pop.remove(); showToast('Merged ✓'); await reloadPeople(true);
     }));
   }
@@ -8006,9 +8075,25 @@ async function showPeopleManager() {
 // the dashboard, so the metadata written at Finalize matches the dashboard.
 function updateClipPeopleName(oldName, newName) {
   const fix = (arr) => (Array.isArray(arr) ? [...new Set(arr.map((n) => (n === oldName ? newName : n)))] : arr);
-  (state.scannedFiles || []).forEach((c) => { if (Array.isArray(c.people)) c.people = fix(c.people); });
-  if (typeof finScan !== 'undefined' && finScan && Array.isArray(finScan.files)) finScan.files.forEach((f) => { if (f.meta && Array.isArray(f.meta.people)) f.meta.people = fix(f.meta.people); });
+  (state.scannedFiles || []).forEach((c) => { if (Array.isArray(c.people)) c.people = fix(c.people); if (Array.isArray(c.peopleAuto)) c.peopleAuto = fix(c.peopleAuto); });
+  if (typeof finScan !== 'undefined' && finScan && Array.isArray(finScan.files)) finScan.files.forEach((f) => { if (f.meta && Array.isArray(f.meta.people)) f.meta.people = fix(f.meta.people); if (f.meta && Array.isArray(f.meta.peopleAuto)) f.meta.peopleAuto = fix(f.meta.peopleAuto); });
   refreshNames && refreshNames();
+}
+// After a person is renamed/merged/reassigned, offer to re-tag (and re-name) every STORED
+// clip tagged with the old name — organized footage + saved drafts, across sessions — so
+// descriptions and people metadata stay correct. Always asks; never changes silently.
+async function offerRetagAffectedClips(oldName, newName) {
+  const from = String(oldName || '').trim(); const to = String(newName || '').trim();
+  if (!from || from === to) return;
+  let hit = null;
+  try { hit = await window.api.findClipsWithPerson(from); } catch { return; }
+  if (!hit || !hit.total) return;
+  const ok = await confirmDialog('Re-tag affected clips?',
+    `${hit.total} saved clip${hit.total !== 1 ? 's are' : ' is'} tagged with "${from}". Re-tag ${hit.total !== 1 ? 'them' : 'it'} as "${to}" and update ${hit.total !== 1 ? 'their names' : 'its name'}/descriptions to match?`,
+    `Re-tag ${hit.total}`, 'Leave as is');
+  if (!ok) return;
+  try { const r = await window.api.retagPerson({ from, to }); showToast(`Re-tagged ${(r && r.changed) || 0} clip${((r && r.changed) !== 1) ? 's' : ''} → "${to}" ✓`, 4000); }
+  catch { showToast('Couldn’t re-tag the clips', 3000); }
 }
 function removeClipPersonName(name) {
   (state.scannedFiles || []).forEach((c) => { if (Array.isArray(c.people)) c.people = c.people.filter((n) => n !== name); });
@@ -9387,7 +9472,7 @@ async function runPhoneCopy() {
   try {
     vids.forEach((v) => { const dp = `${intake}\\${finalName(v)}`; v.destPath = dp; if (!v.sourcePath) v.sourcePath = dp; });
     saveFlowFinalMeta(state.scannedFiles);
-    if (aiReady() && uiPrefs.autoAnalyzeAfterCopy !== false) autoAnalyzeAfterCopyRun(state.scannedFiles);
+    autoBackgroundEnrich(state.scannedFiles);   // silent face-tag (auto mode) + vision analysis
   } catch { /* non-fatal */ }
   $('copyBar').style.width = '100%'; $('copyPct').textContent = '100%';
   const destNames = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ');
@@ -9479,7 +9564,7 @@ async function runCopy() {
   $('copyPct').textContent = '100%';
   // Auto-analyze the copied footage in the BACKGROUND (if AI is on) so it's already
   // analyzed by the time you organize — then re-save its metadata. Fire-and-forget.
-  if (aiReady() && uiPrefs.autoAnalyzeAfterCopy !== false) autoAnalyzeAfterCopyRun(clips);
+  autoBackgroundEnrich(clips);   // silent face-tag (auto mode) + vision analysis
   // Only auto-advance to Delete if the user is still watching the copy; if they
   // navigated away, leave them be (they can reach Delete via the step tabs).
   const watching = !$('flow').classList.contains('hidden') && !$('step2').classList.contains('hidden');
@@ -9509,7 +9594,8 @@ function saveFlowFinalMeta(clips) {
       subject: clip.subject || '', description: clip.description || '', date: clip.date || '',
       location: clip.location || '', context: clip.context || '',
       shotType: clip.shotType || '', observation: clip.observation || '',
-      people: Array.isArray(clip.people) ? clip.people : []
+      people: Array.isArray(clip.people) ? clip.people : [],
+      peopleAuto: Array.isArray(clip.peopleAuto) ? clip.peopleAuto : []   // unconfirmed face guesses
     };
     for (const fld of organizeFields) rec[fld.id] = clip[fld.id] || '';
     rec.tags = Array.isArray(clip.tags) ? clip.tags : [];

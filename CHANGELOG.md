@@ -7,7 +7,23 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.4.5] — 2026-07-01
+## [0.4.6] — 2026-07-01
+
+### Added
+- **Auto face-tagging in Auto mode.** After a copy, footage is silently scanned for faces
+  in the background. Any face that matches someone you've already named gets tagged onto
+  the clip as an **unconfirmed guess** ("Liam?" — dashed chip) — it **never asks you to
+  confirm** and never invents names for strangers. Unconfirmed people **still feed the AI
+  descriptions** and carry into the metadata, so your footage arrives peopled without a
+  single popup. A sub-toggle under Auto mode turns the (CPU-heavy) face pass off.
+- **Change a person → offer to re-tag the affected clips.** When you **rename** or
+  **merge** a person, the app finds every saved clip (organized + drafts) tagged with the
+  old name and asks: *"Re-tag N clips as [new] and update their names/descriptions?"* — yes
+  swaps the name everywhere (people tags + inside subject/description text); no leaves them.
+
+### Fixed
+- Unconfirmed face guesses (`peopleAuto`) now persist correctly through drafts and
+  finalMeta (arrays were being stringified in the finalMeta store).
 
 ### Added
 - **⚡ Auto mode.** A toggle on the home screen: flip it on, pick your phone, and the app

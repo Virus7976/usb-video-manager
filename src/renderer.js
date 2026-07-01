@@ -34,6 +34,9 @@ const VIDEO_RX = /\.(mp4|mov|m4v|avi|mkv|mts|m2ts|3gp|3g2|webm|ts)$/i;
 function personThumbHTML(thumb) {
   return thumb ? `<img src="${escapeAttr(thumb)}"/>` : '<span class="face-ph-icon">🙂</span>';
 }
+// One progress-percent formula for the whole app: integer, clamped to 100. (Was a mix of
+// Math.round((n/d)*100) and Math.min(100,(n/d)*100).) Returns 0 for a zero denominator.
+function pctOf(num, den) { return den ? Math.min(100, Math.round((num / den) * 100)) : 0; }
 
 // ---------------------------------------------------------------------------
 // Init
@@ -2380,7 +2383,7 @@ async function aiStageAdvance(clip, phase) {
   aiStageEl.querySelector('.aist-phase').textContent = phase || task.phase || '';
   aiStageEl.querySelector('.aist-count').textContent = `${cur}/${total}`;
   const eta = etaText(bgTasks.get('ai')); const etaEl = aiStageEl.querySelector('.aist-eta'); if (etaEl) etaEl.textContent = eta ? `· ${eta}` : '';
-  aiStageEl.querySelector('.aist-fill').style.width = `${total ? Math.min(100, (cur / total) * 100) : 0}%`;
+  aiStageEl.querySelector('.aist-fill').style.width = `${pctOf(cur, total)}%`;
   const nm = [clip.subject, clip.description].filter(Boolean).join(' / ');
   aiStageEl.querySelector('.aist-cap').innerHTML = `<span class="aist-cap-name">${escapeHtml(clip.name)}</span>${nm ? `<span class="aist-cap-result"> · ${escapeHtml(nm)}</span>` : ''}`;
 
@@ -9211,7 +9214,7 @@ async function phoneCopy() {
   pushActivity(`Pulling ${sel.length} item${sel.length !== 1 ? 's' : ''} off ${phoneState.device || 'your phone'}…`, 'step');
   const isVid = (n) => VIDEO_RX.test(n || '');
   const off = window.api.onPhoneCopyProgress((p) => {
-    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+    const pct = pctOf(p.done, p.total);
     $('phCopyBar').style.width = `${pct}%`; $('phCopyPct').textContent = `${pct}%`;
     $('phCopyLabel').textContent = `Pulling off your phone… ${p.done}/${p.total}`;
     $('phCopySub').textContent = p.name || '';
@@ -9439,7 +9442,7 @@ $('backToRenameBtn').addEventListener('click', () => buildRenameStep());
 function subscribeProgress() {
   if (unsubProgress) return;
   unsubProgress = window.api.onCopyProgress((p) => {
-    const pct = p.totalBytes ? Math.min(100, (p.copiedBytes / p.totalBytes) * 100) : 0;
+    const pct = pctOf(p.copiedBytes, p.totalBytes);
     if (p.phase === 'copying' || p.phase === 'done') {
       $('copyBar').style.width = `${pct}%`;
       $('copyPct').textContent = `${pct.toFixed(0)}%`;
@@ -9473,7 +9476,7 @@ function goToCopyProgress(status) {
   subscribeProgress();
   updateCopyChip(status);
   if (status && status.totalBytes) {
-    const pct = Math.min(100, (status.copiedBytes / status.totalBytes) * 100);
+    const pct = pctOf(status.copiedBytes, status.totalBytes);
     $('copyBar').style.width = `${pct}%`;
     $('copyPct').textContent = `${pct.toFixed(0)}%`;
     $('copyLabel').textContent = `Copying ${(status.currentIndex || 0) + 1}/${status.totalFiles}: ${status.currentName}`;
@@ -9554,7 +9557,7 @@ async function runPhoneCopy() {
   $('copySub').textContent = '';
   setTask('phone-copy', 'Finishing phone backup', 0, renameJobs.length || 1, 'naming', '');
   const off = window.api.onPhoneCopyProgress((p) => {
-    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+    const pct = pctOf(p.done, p.total);
     $('copyBar').style.width = `${pct}%`; $('copyPct').textContent = `${pct}%`;
     $('copyLabel').textContent = `Naming videos… ${p.done}/${p.total}`;
     $('copySub').textContent = p.name || '';
@@ -9795,7 +9798,7 @@ $('cancelCopyBtn').addEventListener('click', async () => {
 function updateCopyChip(p) {
   if (!p) { hideCopyChip(); return; }
   if (p.phase === 'done' || p.phase === 'cancelled' || p.active === false) { hideCopyChip(); return; }
-  const pct = p.totalBytes ? Math.min(100, (p.copiedBytes / p.totalBytes) * 100) : 0;
+  const pct = pctOf(p.copiedBytes, p.totalBytes);
   $('copyChipText').textContent = `Copying ${(p.currentIndex || 0) + 1}/${p.totalFiles} · ${pct.toFixed(0)}%`;
   $('copyChip').classList.remove('hidden');
 }
@@ -9917,7 +9920,7 @@ function updateDeleteSummary() {
   // Reclaim panel — the headline "free up" figure + animated fill of the copied total.
   const big = $('reclaimBig'); if (big) big.innerHTML = fmtBytes(bytes).replace(' ', '&nbsp;');
   const cnt = $('reclaimCount'); if (cnt) cnt.textContent = `${idx.length} file${idx.length !== 1 ? 's' : ''}`;
-  const fill = $('reclaimFill'); if (fill) fill.style.width = `${total ? Math.min(100, (bytes / total) * 100) : 0}%`;
+  const fill = $('reclaimFill'); if (fill) fill.style.width = `${pctOf(bytes, total)}%`;
   const oft = $('reclaimOfTotal'); if (oft) oft.textContent = total ? `of ${fmtBytes(total)} copied` : '';
   // Keep each row's selected styling in sync (covers Select-all too).
   document.querySelectorAll('#deleteList [data-del]').forEach((cb) => {
@@ -10799,7 +10802,7 @@ $('finRunBtn').addEventListener('click', async () => {
 
   if (finUnsub) finUnsub();
   finUnsub = window.api.onFinalizeProgress((p) => {
-    const pct = p.total ? Math.min(100, (p.index / p.total) * 100) : 0;
+    const pct = pctOf(p.index, p.total);
     $('finBar').style.width = `${pct}%`;
     $('finPct').textContent = `${pct.toFixed(0)}%`;
     const phase = { embedding: 'Embedding', moving: 'Filing', backup: 'Backing up' }[p.phase] || 'Working';

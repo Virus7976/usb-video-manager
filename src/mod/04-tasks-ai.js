@@ -327,7 +327,7 @@ async function aiStageAdvance(clip, phase) {
   aiStageEl.querySelector('.aist-phase').textContent = phase || task.phase || '';
   aiStageEl.querySelector('.aist-count').textContent = `${cur}/${total}`;
   const eta = etaText(bgTasks.get('ai')); const etaEl = aiStageEl.querySelector('.aist-eta'); if (etaEl) etaEl.textContent = eta ? `· ${eta}` : '';
-  aiStageEl.querySelector('.aist-fill').style.width = `${total ? Math.min(100, (cur / total) * 100) : 0}%`;
+  aiStageEl.querySelector('.aist-fill').style.width = `${pctOf(cur, total)}%`;
   const nm = [clip.subject, clip.description].filter(Boolean).join(' / ');
   aiStageEl.querySelector('.aist-cap').innerHTML = `<span class="aist-cap-name">${escapeHtml(clip.name)}</span>${nm ? `<span class="aist-cap-result"> · ${escapeHtml(nm)}</span>` : ''}`;
 

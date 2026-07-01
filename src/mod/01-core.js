@@ -32,6 +32,9 @@ const VIDEO_RX = /\.(mp4|mov|m4v|avi|mkv|mts|m2ts|3gp|3g2|webm|ts)$/i;
 function personThumbHTML(thumb) {
   return thumb ? `<img src="${escapeAttr(thumb)}"/>` : '<span class="face-ph-icon">🙂</span>';
 }
+// One progress-percent formula for the whole app: integer, clamped to 100. (Was a mix of
+// Math.round((n/d)*100) and Math.min(100,(n/d)*100).) Returns 0 for a zero denominator.
+function pctOf(num, den) { return den ? Math.min(100, Math.round((num / den) * 100)) : 0; }
 
 // ---------------------------------------------------------------------------
 // Init

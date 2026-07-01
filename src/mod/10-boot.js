@@ -269,7 +269,7 @@ $('finRunBtn').addEventListener('click', async () => {
 
   if (finUnsub) finUnsub();
   finUnsub = window.api.onFinalizeProgress((p) => {
-    const pct = p.total ? Math.min(100, (p.index / p.total) * 100) : 0;
+    const pct = pctOf(p.index, p.total);
     $('finBar').style.width = `${pct}%`;
     $('finPct').textContent = `${pct.toFixed(0)}%`;
     const phase = { embedding: 'Embedding', moving: 'Filing', backup: 'Backing up' }[p.phase] || 'Working';

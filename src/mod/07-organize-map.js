@@ -1,3 +1,7 @@
+// Canonicalize a string to alnum-lowercase for loose comparison (distinct from slug()
+// which keeps hyphens). Single source — was declared identically inside two functions.
+const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
+
 // ---------------------------------------------------------------------------
 // Destination map — a clickable mock file-explorer showing where every clip will
 // be filed in your real Projects tree. Base placement comes from the filename/
@@ -936,7 +940,6 @@ async function showDestinationMap(rawClips, opts = {}) {
       return slug(toks[0] || '') || 'untitled';
     };
     // Group by a canonical key so spelling variants merge (lawn-mowing == lawnmowing).
-    const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
     const gmap = new Map();
     for (const c of targets) { const lab = clipLabel(c); const k = canon(lab) || 'misc'; if (!gmap.has(k)) gmap.set(k, { key: lab, rep: c, clips: [] }); gmap.get(k).clips.push(c); }
     const groupsAll = [...gmap.values()];
@@ -1228,7 +1231,6 @@ async function showDestinationMap(rawClips, opts = {}) {
   // it goes (tap a folder or type one), and it FILES that whole subject AND remembers a
   // rule so the same footage auto-routes next time. The cure for "the AI is just guessing".
   async function openSortChat() {
-    const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
     const gmap = new Map();
     for (const c of clips) { const lab = clipLabel(c) || c.subject || c.location || 'misc'; const k = canon(lab) || 'misc'; if (!gmap.has(k)) gmap.set(k, { label: lab, clips: [] }); gmap.get(k).clips.push(c); }
     const groups = [...gmap.values()].sort((a, b) => b.clips.length - a.clips.length);

@@ -85,7 +85,7 @@ let nasBackup = { enabled: false, path: '' };       // optional second copy duri
 let organizeFields = [{ id: 'category', label: 'Category' }, { id: 'project', label: 'Project' }];
 let fieldHistoryCache = {};                          // { fieldId: [remembered values] }
 // Local AI (Ollama) suggestions — off until configured.
-let aiCfg = { enabled: false, endpoint: 'http://localhost:11434', model: '', textModel: '', suggestCategory: true, suggestTags: true, frames: 3, detectShot: true, updateSubject: false, shotTypes: [], askAfterRun: false, temperature: 0.2, prompt: '', multiPass: false, learnFromEdits: true, learnFromAnalysis: true, faceInterval: 2, faceMaxFrames: 24, memories: [] };
+let aiCfg = { enabled: false, endpoint: DEFAULT_OLLAMA_ENDPOINT, model: '', textModel: '', suggestCategory: true, suggestTags: true, frames: 3, detectShot: true, updateSubject: false, shotTypes: [], askAfterRun: false, temperature: 0.2, prompt: '', multiPass: false, learnFromEdits: true, learnFromAnalysis: true, faceInterval: 2, faceMaxFrames: 24, memories: [] };
 function postRunConfirmEnabled() { return !!aiCfg.askAfterRun; }
 const AI_DEFAULT_GUIDANCE = "You are tagging one video clip for a videographer's archive. The image is a contact sheet of frames sampled across the clip in time order (left to right). Use them together to judge motion and the type of shot, then identify the main subject and what is happening.";
 const DEFAULT_SHOT_TYPES = [
@@ -182,7 +182,7 @@ let cfg = null;
   if (typeof cfg.organizeDest === 'string') organizeDest = cfg.organizeDest;
   if (cfg.nasBackup) nasBackup = { enabled: !!cfg.nasBackup.enabled, path: cfg.nasBackup.path || '' };
   if (cfg.ai) aiCfg = {
-    enabled: !!cfg.ai.enabled, endpoint: cfg.ai.endpoint || 'http://localhost:11434', model: cfg.ai.model || '', textModel: cfg.ai.textModel || '',
+    enabled: !!cfg.ai.enabled, endpoint: cfg.ai.endpoint || DEFAULT_OLLAMA_ENDPOINT, model: cfg.ai.model || '', textModel: cfg.ai.textModel || '',
     suggestCategory: cfg.ai.suggestCategory !== false, suggestTags: cfg.ai.suggestTags !== false,
     frames: Number(cfg.ai.frames) || 3, detectShot: cfg.ai.detectShot !== false,
     updateSubject: !!cfg.ai.updateSubject, shotTypes: Array.isArray(cfg.ai.shotTypes) ? cfg.ai.shotTypes : [], askAfterRun: !!cfg.ai.askAfterRun,
@@ -1836,7 +1836,7 @@ async function showAddPersonPicker(i) {
     <div class="illo mob-illo">${ILLO_PEOPLE}</div>
     <div class="ai-hd" style="margin-top:2px"><div class="ai-hd-text"><h3>Add person</h3><p class="muted small">Tag who's in this clip — written into the file's people metadata at Finalize.</p></div></div>
     <input type="text" class="ai-input pp-name" placeholder="Type a name…" autocomplete="off" />
-    ${people.length ? `<div class="pp-existing">${people.map((p) => `<button type="button" class="pp-opt" data-name="${escapeAttr(p.name)}"><span class="people-thumb">${p.thumb ? `<img src="${p.thumb}"/>` : '<span class="face-ph-icon">🙂</span>'}</span><span>${escapeHtml(p.name)}</span></button>`).join('')}</div>` : ''}
+    ${people.length ? `<div class="pp-existing">${people.map((p) => `<button type="button" class="pp-opt" data-name="${escapeAttr(p.name)}"><span class="people-thumb">${personThumbHTML(p.thumb)}</span><span>${escapeHtml(p.name)}</span></button>`).join('')}</div>` : ''}
     <div class="modal-actions"><button type="button" class="btn primary pp-add">Add</button><button type="button" class="btn pp-cancel">Cancel</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -1859,7 +1859,7 @@ async function showReassignFacePicker(fromId, index, onDone) {
   ov.innerHTML = `<div class="modal-card modal-form" style="width:min(400px,92vw);text-align:left">
     <div class="ai-hd"><span class="ai-hd-icon">⇄</span><div class="ai-hd-text"><h3>Who is this really?</h3><p class="muted small">Move this face to the right person — they'll learn from it. Type a new name or pick someone.</p></div></div>
     <input type="text" class="ai-input pp-name" placeholder="Type a name…" autocomplete="off" />
-    ${others.length ? `<div class="pp-existing">${others.map((p) => `<button type="button" class="pp-opt" data-name="${escapeAttr(p.name)}"><span class="people-thumb">${p.thumb ? `<img src="${p.thumb}"/>` : '<span class="face-ph-icon">🙂</span>'}</span><span>${escapeHtml(p.name)}</span></button>`).join('')}</div>` : ''}
+    ${others.length ? `<div class="pp-existing">${others.map((p) => `<button type="button" class="pp-opt" data-name="${escapeAttr(p.name)}"><span class="people-thumb">${personThumbHTML(p.thumb)}</span><span>${escapeHtml(p.name)}</span></button>`).join('')}</div>` : ''}
     <div class="modal-actions"><button type="button" class="btn primary pp-add">Move</button><button type="button" class="btn pp-cancel">Cancel</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -5459,7 +5459,7 @@ function showSetupWizard(opts = {}) {
     intake: (cfg && cfg.intakeFolder) || state.intakeFolder || '',
     projects: (cfg && cfg.projectsRoot) || '',
     nas: { enabled: !!(nasBackup && nasBackup.enabled), path: (nasBackup && nasBackup.path) || '' },
-    ai: { enabled: !!(aiCfg && aiCfg.enabled), endpoint: (aiCfg && aiCfg.endpoint) || 'http://localhost:11434', model: (aiCfg && aiCfg.model) || '', touched: false },
+    ai: { enabled: !!(aiCfg && aiCfg.enabled), endpoint: (aiCfg && aiCfg.endpoint) || DEFAULT_OLLAMA_ENDPOINT, model: (aiCfg && aiCfg.model) || '', touched: false },
     face: null   // {ok,error} once checked
   };
   const STEPS = ['welcome', 'intake', 'projects', 'nas', 'ai', 'faces', 'done'];
@@ -5954,6 +5954,10 @@ function showOrganizeFields() {
 }
 
 // Local AI (Ollama) settings — fully offline metadata suggestions.
+// Canonicalize a string to alnum-lowercase for loose comparison (distinct from slug()
+// which keeps hyphens). Single source — was declared identically inside two functions.
+const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
+
 // ---------------------------------------------------------------------------
 // Destination map — a clickable mock file-explorer showing where every clip will
 // be filed in your real Projects tree. Base placement comes from the filename/
@@ -6892,7 +6896,6 @@ async function showDestinationMap(rawClips, opts = {}) {
       return slug(toks[0] || '') || 'untitled';
     };
     // Group by a canonical key so spelling variants merge (lawn-mowing == lawnmowing).
-    const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
     const gmap = new Map();
     for (const c of targets) { const lab = clipLabel(c); const k = canon(lab) || 'misc'; if (!gmap.has(k)) gmap.set(k, { key: lab, rep: c, clips: [] }); gmap.get(k).clips.push(c); }
     const groupsAll = [...gmap.values()];
@@ -7184,7 +7187,6 @@ async function showDestinationMap(rawClips, opts = {}) {
   // it goes (tap a folder or type one), and it FILES that whole subject AND remembers a
   // rule so the same footage auto-routes next time. The cure for "the AI is just guessing".
   async function openSortChat() {
-    const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
     const gmap = new Map();
     for (const c of clips) { const lab = clipLabel(c) || c.subject || c.location || 'misc'; const k = canon(lab) || 'misc'; if (!gmap.has(k)) gmap.set(k, { label: lab, clips: [] }); gmap.get(k).clips.push(c); }
     const groups = [...gmap.values()].sort((a, b) => b.clips.length - a.clips.length);
@@ -7883,7 +7885,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     render();
   }
   function cardHTML(cl) {
-    const thumb = cl.thumb ? `<img src="${cl.thumb}" alt="face"/>` : `<span class="face-ph-icon">🙂</span>`;
+    const thumb = personThumbHTML(cl.thumb);
     const seen = `${cl.clipKeys.size} clip${cl.clipKeys.size !== 1 ? 's' : ''}`;
     if (cl.done) {
       return `<div class="face-grid-card-item confirmed" data-i="${cl._i}">
@@ -8046,7 +8048,7 @@ async function showPeopleManager() {
     if (!people.length && !ignoredN) { side.style.display = 'none'; return; }
     side.style.display = '';
     const personRows = people.map((p) => `<button type="button" class="pd-person${p.id === selId ? ' active' : ''}" data-id="${p.id}">
-      <span class="pd-person-thumb">${p.thumb ? `<img src="${p.thumb}"/>` : '<span class="face-ph-icon">🙂</span>'}</span>
+      <span class="pd-person-thumb">${personThumbHTML(p.thumb)}</span>
       <span class="pd-person-tx"><span class="pd-person-name">${escapeHtml(p.name)}</span><span class="pd-person-count muted small">${p.count} face${p.count !== 1 ? 's' : ''}</span></span>
       ${p.unconfirmed ? `<span class="pd-badge" title="${p.unconfirmed} to confirm">${p.unconfirmed}</span>` : ''}
     </button>`).join('');
@@ -8074,7 +8076,7 @@ async function showPeopleManager() {
   }
   function faceCard(f, kind, n) {
     const delay = `style="animation-delay:${Math.min(n * 26, 380)}ms"`;
-    const img = f.t ? `<img src="${f.t}"/>` : '<span class="face-ph-icon">🙂</span>';
+    const img = personThumbHTML(f.t);
     let acts = '';
     const reassign = `<button type="button" class="pd-fa" data-act="reassign" title="This is someone else…">⇄</button>`;
     if (kind === 'ignored') acts = `<button type="button" class="pd-fa" data-act="restore" title="Not ignored — restore">↩</button>`;
@@ -8167,7 +8169,7 @@ async function showPeopleManager() {
     const pop = document.createElement('div'); pop.className = 'modal-overlay';
     pop.innerHTML = `<div class="modal-card modal-form" style="width:min(420px,92vw);text-align:left">
       <div class="ai-hd"><span class="ai-hd-icon">🔗</span><div class="ai-hd-text"><h3>Merge into ${escapeHtml(d.name)}</h3><p class="muted small">Pick a duplicate — its faces move into ${escapeHtml(d.name)} and it's removed.</p></div></div>
-      <div class="pd-merge-list">${others.map((p) => `<button type="button" class="pd-merge-opt" data-id="${p.id}"><span class="people-thumb">${p.thumb ? `<img src="${p.thumb}"/>` : '🙂'}</span><span class="people-name">${escapeHtml(p.name)}</span><span class="muted small">${p.count}</span></button>`).join('')}</div>
+      <div class="pd-merge-list">${others.map((p) => `<button type="button" class="pd-merge-opt" data-id="${p.id}"><span class="people-thumb">${personThumbHTML(p.thumb)}</span><span class="people-name">${escapeHtml(p.name)}</span><span class="muted small">${p.count}</span></button>`).join('')}</div>
       <div class="modal-actions"><button type="button" class="btn pd-merge-cancel">Cancel</button></div>
     </div>`;
     document.body.appendChild(pop);
@@ -8326,7 +8328,7 @@ function showAiSettings() {
   c.shotTypes = (Array.isArray(aiCfg.shotTypes) && aiCfg.shotTypes.length)
     ? aiCfg.shotTypes.map((s) => ({ ...s }))
     : DEFAULT_SHOT_TYPES.map((s) => ({ ...s }));
-  if (!c.endpoint) c.endpoint = 'http://localhost:11434';
+  if (!c.endpoint) c.endpoint = DEFAULT_OLLAMA_ENDPOINT;
   const tgl = (cls, on) => `<label class="tgl"><input type="checkbox" class="${cls}" ${on ? 'checked' : ''} /><span class="tgl-track"></span></label>`;
   const ICON = {
     engine: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6"/></svg>',
@@ -8484,7 +8486,7 @@ function showAiSettings() {
     if (memUnsub) memUnsub();
     document.removeEventListener('keydown', onEsc, true);
     aiCfg = {
-      enabled: c.enabled, endpoint: (c.endpoint || '').trim() || 'http://localhost:11434', model: (c.model || '').trim(), textModel: (c.textModel || '').trim(),
+      enabled: c.enabled, endpoint: (c.endpoint || '').trim() || DEFAULT_OLLAMA_ENDPOINT, model: (c.model || '').trim(), textModel: (c.textModel || '').trim(),
       suggestCategory: c.suggestCategory, suggestTags: c.suggestTags !== false, frames: c.frames, detectShot: c.detectShot, temperature: c.temperature,
       updateSubject: !!c.updateSubject, askAfterRun: !!c.askAfterRun,
       shotTypes: (c.shotTypes || []).map((s) => ({ name: (s.name || '').trim(), desc: (s.desc || '').trim() })).filter((s) => s.name),
@@ -8914,6 +8916,9 @@ async function goHome() {
 // Phone backup (MTP) — pull photos + videos off a plugged-in phone.
 // ---------------------------------------------------------------------------
 const phoneState = { device: null, media: [], filter: 'all', dest: '', copying: false };
+// The phone media currently visible under the All/Photos/Videos filter — single source
+// (was the same .filter() inline in 3 places).
+function phoneVisibleMedia() { return phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter); }
 
 async function openPhone(device) {
   closePopover();
@@ -9128,7 +9133,7 @@ function phoneDateOf(name) {
 }
 function phoneRenderGrid() {
   const host = $('phGrid');
-  const items = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);
+  const items = phoneVisibleMedia();
   host.innerHTML = items.map((m) => { const d = phoneDateOf(m.name); return `<label class="ph-tile${m.selected ? ' sel' : ''}${m.kind === 'photo' ? ' is-photo' : ''}" data-i="${m._i}">
       <input type="checkbox" class="ph-cb" ${m.selected ? 'checked' : ''} data-i="${m._i}" />
       ${mediaKindChip(m.kind)}
@@ -9165,7 +9170,7 @@ function phoneUpdateBar() {
   $('phSummary').textContent = sel.length ? `${sel.length} selected · ${fmtBytes(bytes)}` : 'Nothing selected';
   $('phCopyBtn').disabled = !sel.length || phoneState.copying;
   $('phCopyBtn').textContent = sel.length ? `Pull ${sel.length} off phone & rename` : 'Pull off phone & rename';
-  const vis = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);
+  const vis = phoneVisibleMedia();
   const all = $('phSelectAll'); if (all) all.checked = vis.length > 0 && vis.every((m) => m.selected);
 }
 
@@ -10698,7 +10703,7 @@ $('phBackupNew').addEventListener('click', () => {
 $('phReview').addEventListener('click', phoneEnterReview);
 $('phSelectAll').addEventListener('change', (e) => {
   // Toggle only the currently-visible (filtered) media, not hidden items.
-  const vis = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);
+  const vis = phoneVisibleMedia();
   vis.forEach((m) => { m.selected = e.target.checked; });
   phoneRenderGrid(); phoneUpdateBar();
 });

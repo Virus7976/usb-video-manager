@@ -785,7 +785,7 @@ function showSetupWizard(opts = {}) {
     intake: (cfg && cfg.intakeFolder) || state.intakeFolder || '',
     projects: (cfg && cfg.projectsRoot) || '',
     nas: { enabled: !!(nasBackup && nasBackup.enabled), path: (nasBackup && nasBackup.path) || '' },
-    ai: { enabled: !!(aiCfg && aiCfg.enabled), endpoint: (aiCfg && aiCfg.endpoint) || 'http://localhost:11434', model: (aiCfg && aiCfg.model) || '', touched: false },
+    ai: { enabled: !!(aiCfg && aiCfg.enabled), endpoint: (aiCfg && aiCfg.endpoint) || DEFAULT_OLLAMA_ENDPOINT, model: (aiCfg && aiCfg.model) || '', touched: false },
     face: null   // {ok,error} once checked
   };
   const STEPS = ['welcome', 'intake', 'projects', 'nas', 'ai', 'faces', 'done'];

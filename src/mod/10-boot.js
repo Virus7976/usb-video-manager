@@ -173,7 +173,7 @@ $('phBackupNew').addEventListener('click', () => {
 $('phReview').addEventListener('click', phoneEnterReview);
 $('phSelectAll').addEventListener('change', (e) => {
   // Toggle only the currently-visible (filtered) media, not hidden items.
-  const vis = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);
+  const vis = phoneVisibleMedia();
   vis.forEach((m) => { m.selected = e.target.checked; });
   phoneRenderGrid(); phoneUpdateBar();
 });

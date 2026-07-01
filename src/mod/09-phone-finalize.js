@@ -2,6 +2,9 @@
 // Phone backup (MTP) — pull photos + videos off a plugged-in phone.
 // ---------------------------------------------------------------------------
 const phoneState = { device: null, media: [], filter: 'all', dest: '', copying: false };
+// The phone media currently visible under the All/Photos/Videos filter — single source
+// (was the same .filter() inline in 3 places).
+function phoneVisibleMedia() { return phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter); }
 
 async function openPhone(device) {
   closePopover();
@@ -216,7 +219,7 @@ function phoneDateOf(name) {
 }
 function phoneRenderGrid() {
   const host = $('phGrid');
-  const items = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);
+  const items = phoneVisibleMedia();
   host.innerHTML = items.map((m) => { const d = phoneDateOf(m.name); return `<label class="ph-tile${m.selected ? ' sel' : ''}${m.kind === 'photo' ? ' is-photo' : ''}" data-i="${m._i}">
       <input type="checkbox" class="ph-cb" ${m.selected ? 'checked' : ''} data-i="${m._i}" />
       ${mediaKindChip(m.kind)}
@@ -253,7 +256,7 @@ function phoneUpdateBar() {
   $('phSummary').textContent = sel.length ? `${sel.length} selected · ${fmtBytes(bytes)}` : 'Nothing selected';
   $('phCopyBtn').disabled = !sel.length || phoneState.copying;
   $('phCopyBtn').textContent = sel.length ? `Pull ${sel.length} off phone & rename` : 'Pull off phone & rename';
-  const vis = phoneState.media.filter((m) => phoneState.filter === 'all' || m.kind === phoneState.filter);
+  const vis = phoneVisibleMedia();
   const all = $('phSelectAll'); if (all) all.checked = vis.length > 0 && vis.every((m) => m.selected);
 }
 

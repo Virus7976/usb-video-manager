@@ -313,7 +313,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     render();
   }
   function cardHTML(cl) {
-    const thumb = cl.thumb ? `<img src="${cl.thumb}" alt="face"/>` : `<span class="face-ph-icon">🙂</span>`;
+    const thumb = personThumbHTML(cl.thumb);
     const seen = `${cl.clipKeys.size} clip${cl.clipKeys.size !== 1 ? 's' : ''}`;
     if (cl.done) {
       return `<div class="face-grid-card-item confirmed" data-i="${cl._i}">
@@ -476,7 +476,7 @@ async function showPeopleManager() {
     if (!people.length && !ignoredN) { side.style.display = 'none'; return; }
     side.style.display = '';
     const personRows = people.map((p) => `<button type="button" class="pd-person${p.id === selId ? ' active' : ''}" data-id="${p.id}">
-      <span class="pd-person-thumb">${p.thumb ? `<img src="${p.thumb}"/>` : '<span class="face-ph-icon">🙂</span>'}</span>
+      <span class="pd-person-thumb">${personThumbHTML(p.thumb)}</span>
       <span class="pd-person-tx"><span class="pd-person-name">${escapeHtml(p.name)}</span><span class="pd-person-count muted small">${p.count} face${p.count !== 1 ? 's' : ''}</span></span>
       ${p.unconfirmed ? `<span class="pd-badge" title="${p.unconfirmed} to confirm">${p.unconfirmed}</span>` : ''}
     </button>`).join('');
@@ -504,7 +504,7 @@ async function showPeopleManager() {
   }
   function faceCard(f, kind, n) {
     const delay = `style="animation-delay:${Math.min(n * 26, 380)}ms"`;
-    const img = f.t ? `<img src="${f.t}"/>` : '<span class="face-ph-icon">🙂</span>';
+    const img = personThumbHTML(f.t);
     let acts = '';
     const reassign = `<button type="button" class="pd-fa" data-act="reassign" title="This is someone else…">⇄</button>`;
     if (kind === 'ignored') acts = `<button type="button" class="pd-fa" data-act="restore" title="Not ignored — restore">↩</button>`;
@@ -597,7 +597,7 @@ async function showPeopleManager() {
     const pop = document.createElement('div'); pop.className = 'modal-overlay';
     pop.innerHTML = `<div class="modal-card modal-form" style="width:min(420px,92vw);text-align:left">
       <div class="ai-hd"><span class="ai-hd-icon">🔗</span><div class="ai-hd-text"><h3>Merge into ${escapeHtml(d.name)}</h3><p class="muted small">Pick a duplicate — its faces move into ${escapeHtml(d.name)} and it's removed.</p></div></div>
-      <div class="pd-merge-list">${others.map((p) => `<button type="button" class="pd-merge-opt" data-id="${p.id}"><span class="people-thumb">${p.thumb ? `<img src="${p.thumb}"/>` : '🙂'}</span><span class="people-name">${escapeHtml(p.name)}</span><span class="muted small">${p.count}</span></button>`).join('')}</div>
+      <div class="pd-merge-list">${others.map((p) => `<button type="button" class="pd-merge-opt" data-id="${p.id}"><span class="people-thumb">${personThumbHTML(p.thumb)}</span><span class="people-name">${escapeHtml(p.name)}</span><span class="muted small">${p.count}</span></button>`).join('')}</div>
       <div class="modal-actions"><button type="button" class="btn pd-merge-cancel">Cancel</button></div>
     </div>`;
     document.body.appendChild(pop);
@@ -756,7 +756,7 @@ function showAiSettings() {
   c.shotTypes = (Array.isArray(aiCfg.shotTypes) && aiCfg.shotTypes.length)
     ? aiCfg.shotTypes.map((s) => ({ ...s }))
     : DEFAULT_SHOT_TYPES.map((s) => ({ ...s }));
-  if (!c.endpoint) c.endpoint = 'http://localhost:11434';
+  if (!c.endpoint) c.endpoint = DEFAULT_OLLAMA_ENDPOINT;
   const tgl = (cls, on) => `<label class="tgl"><input type="checkbox" class="${cls}" ${on ? 'checked' : ''} /><span class="tgl-track"></span></label>`;
   const ICON = {
     engine: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M21 12h-2.2M5.2 12H3M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6M18.4 18.4l-1.6-1.6M7.2 7.2 5.6 5.6"/></svg>',
@@ -914,7 +914,7 @@ function showAiSettings() {
     if (memUnsub) memUnsub();
     document.removeEventListener('keydown', onEsc, true);
     aiCfg = {
-      enabled: c.enabled, endpoint: (c.endpoint || '').trim() || 'http://localhost:11434', model: (c.model || '').trim(), textModel: (c.textModel || '').trim(),
+      enabled: c.enabled, endpoint: (c.endpoint || '').trim() || DEFAULT_OLLAMA_ENDPOINT, model: (c.model || '').trim(), textModel: (c.textModel || '').trim(),
       suggestCategory: c.suggestCategory, suggestTags: c.suggestTags !== false, frames: c.frames, detectShot: c.detectShot, temperature: c.temperature,
       updateSubject: !!c.updateSubject, askAfterRun: !!c.askAfterRun,
       shotTypes: (c.shotTypes || []).map((s) => ({ name: (s.name || '').trim(), desc: (s.desc || '').trim() })).filter((s) => s.name),

@@ -83,7 +83,7 @@ let nasBackup = { enabled: false, path: '' };       // optional second copy duri
 let organizeFields = [{ id: 'category', label: 'Category' }, { id: 'project', label: 'Project' }];
 let fieldHistoryCache = {};                          // { fieldId: [remembered values] }
 // Local AI (Ollama) suggestions — off until configured.
-let aiCfg = { enabled: false, endpoint: 'http://localhost:11434', model: '', textModel: '', suggestCategory: true, suggestTags: true, frames: 3, detectShot: true, updateSubject: false, shotTypes: [], askAfterRun: false, temperature: 0.2, prompt: '', multiPass: false, learnFromEdits: true, learnFromAnalysis: true, faceInterval: 2, faceMaxFrames: 24, memories: [] };
+let aiCfg = { enabled: false, endpoint: DEFAULT_OLLAMA_ENDPOINT, model: '', textModel: '', suggestCategory: true, suggestTags: true, frames: 3, detectShot: true, updateSubject: false, shotTypes: [], askAfterRun: false, temperature: 0.2, prompt: '', multiPass: false, learnFromEdits: true, learnFromAnalysis: true, faceInterval: 2, faceMaxFrames: 24, memories: [] };
 function postRunConfirmEnabled() { return !!aiCfg.askAfterRun; }
 const AI_DEFAULT_GUIDANCE = "You are tagging one video clip for a videographer's archive. The image is a contact sheet of frames sampled across the clip in time order (left to right). Use them together to judge motion and the type of shot, then identify the main subject and what is happening.";
 const DEFAULT_SHOT_TYPES = [
@@ -180,7 +180,7 @@ let cfg = null;
   if (typeof cfg.organizeDest === 'string') organizeDest = cfg.organizeDest;
   if (cfg.nasBackup) nasBackup = { enabled: !!cfg.nasBackup.enabled, path: cfg.nasBackup.path || '' };
   if (cfg.ai) aiCfg = {
-    enabled: !!cfg.ai.enabled, endpoint: cfg.ai.endpoint || 'http://localhost:11434', model: cfg.ai.model || '', textModel: cfg.ai.textModel || '',
+    enabled: !!cfg.ai.enabled, endpoint: cfg.ai.endpoint || DEFAULT_OLLAMA_ENDPOINT, model: cfg.ai.model || '', textModel: cfg.ai.textModel || '',
     suggestCategory: cfg.ai.suggestCategory !== false, suggestTags: cfg.ai.suggestTags !== false,
     frames: Number(cfg.ai.frames) || 3, detectShot: cfg.ai.detectShot !== false,
     updateSubject: !!cfg.ai.updateSubject, shotTypes: Array.isArray(cfg.ai.shotTypes) ? cfg.ai.shotTypes : [], askAfterRun: !!cfg.ai.askAfterRun,

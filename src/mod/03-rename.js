@@ -357,7 +357,7 @@ async function showAddPersonPicker(i) {
     <div class="illo mob-illo">${ILLO_PEOPLE}</div>
     <div class="ai-hd" style="margin-top:2px"><div class="ai-hd-text"><h3>Add person</h3><p class="muted small">Tag who's in this clip — written into the file's people metadata at Finalize.</p></div></div>
     <input type="text" class="ai-input pp-name" placeholder="Type a name…" autocomplete="off" />
-    ${people.length ? `<div class="pp-existing">${people.map((p) => `<button type="button" class="pp-opt" data-name="${escapeAttr(p.name)}"><span class="people-thumb">${p.thumb ? `<img src="${p.thumb}"/>` : '<span class="face-ph-icon">🙂</span>'}</span><span>${escapeHtml(p.name)}</span></button>`).join('')}</div>` : ''}
+    ${people.length ? `<div class="pp-existing">${people.map((p) => `<button type="button" class="pp-opt" data-name="${escapeAttr(p.name)}"><span class="people-thumb">${personThumbHTML(p.thumb)}</span><span>${escapeHtml(p.name)}</span></button>`).join('')}</div>` : ''}
     <div class="modal-actions"><button type="button" class="btn primary pp-add">Add</button><button type="button" class="btn pp-cancel">Cancel</button></div>
   </div>`;
   document.body.appendChild(ov);
@@ -380,7 +380,7 @@ async function showReassignFacePicker(fromId, index, onDone) {
   ov.innerHTML = `<div class="modal-card modal-form" style="width:min(400px,92vw);text-align:left">
     <div class="ai-hd"><span class="ai-hd-icon">⇄</span><div class="ai-hd-text"><h3>Who is this really?</h3><p class="muted small">Move this face to the right person — they'll learn from it. Type a new name or pick someone.</p></div></div>
     <input type="text" class="ai-input pp-name" placeholder="Type a name…" autocomplete="off" />
-    ${others.length ? `<div class="pp-existing">${others.map((p) => `<button type="button" class="pp-opt" data-name="${escapeAttr(p.name)}"><span class="people-thumb">${p.thumb ? `<img src="${p.thumb}"/>` : '<span class="face-ph-icon">🙂</span>'}</span><span>${escapeHtml(p.name)}</span></button>`).join('')}</div>` : ''}
+    ${others.length ? `<div class="pp-existing">${others.map((p) => `<button type="button" class="pp-opt" data-name="${escapeAttr(p.name)}"><span class="people-thumb">${personThumbHTML(p.thumb)}</span><span>${escapeHtml(p.name)}</span></button>`).join('')}</div>` : ''}
     <div class="modal-actions"><button type="button" class="btn primary pp-add">Move</button><button type="button" class="btn pp-cancel">Cancel</button></div>
   </div>`;
   document.body.appendChild(ov);

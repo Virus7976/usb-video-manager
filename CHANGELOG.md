@@ -7,6 +7,21 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.7] — 2026-07-01
+
+### Fixed
+- **No more invisible CPU churn at the batching step.** Auto mode was quietly running the
+  AI to pre-name photos with no on-screen indicator (it looked frozen while the computer
+  worked). Removed that silent pass — batching stays day-grouped, and the toast now tells
+  you plainly: name what you like, then **Continue to copy your videos off the phone**.
+- **Clarified that videos copy on "Continue".** Videos stay on the phone (shown as "On
+  phone") until you continue — so a huge roll doesn't tie up your phone before you've
+  batched. The mechanism is verified (ADB pull works); nothing was broken, just unclear.
+- **Bad dates like "2045-49-65"** from long numeric filenames are gone — the date parser
+  now skips digit-runs that aren't a real calendar date (month 1–12, day 1–31).
+- **Tidier home screen:** the face-scan option only shows when Auto mode is on, and the
+  Auto-mode/pending bars are more compact.
+
 ## [0.4.6] — 2026-07-01
 
 ### Added

@@ -198,8 +198,10 @@ let cfg = null;
   const amChk = $('autoModeChk');
   if (amChk) {
     amChk.checked = !!uiPrefs.autoMode;
+    const amBar = $('autoModeBar'); if (amBar) amBar.classList.toggle('am-on', amChk.checked);
     amChk.addEventListener('change', () => {
       uiPrefs.autoMode = amChk.checked;
+      if (amBar) amBar.classList.toggle('am-on', amChk.checked);
       window.api.setUiPref('autoMode', amChk.checked);
       showToast(amChk.checked
         ? '⚡ Auto mode on — pick a device and it runs the whole backup itself (you only batch photos, nothing is ever deleted).'
@@ -9004,8 +9006,16 @@ function phoneEnterReview() {
 // Most phone cameras name files with the capture date — pull a YYYY-MM-DD out of the
 // filename (e.g. 20260604_214438.jpg, IMG_20260604.jpg, PXL_20260604.jpg) for display.
 function phoneDateOf(name) {
-  const m = String(name || '').match(/(20\d{2})[-_]?(\d{2})[-_]?(\d{2})/);
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+  // Scan ALL YYYYMMDD-looking runs and take the first that's a VALID calendar date, so a
+  // long numeric ID (e.g. lv_7572921339120454965_20260125…) can't yield "2045-49-65".
+  const s = String(name || '');
+  const rx = /(20\d{2})[-_]?(\d{2})[-_]?(\d{2})/g;
+  let m;
+  while ((m = rx.exec(s))) {
+    const mo = +m[2]; const da = +m[3];
+    if (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) return `${m[1]}-${m[2]}-${m[3]}`;
+  }
+  return '';
 }
 function phoneRenderGrid() {
   const host = $('phGrid');
@@ -9124,36 +9134,11 @@ function enterRenameWithPhoneFiles(staged) {
   setStep(1);
   $('scanState').classList.add('hidden');
   buildRenameStep();
-  showToast(`${state.scannedFiles.length} item${state.scannedFiles.length !== 1 ? 's' : ''} pulled off your phone — name them, then continue ✓`, 5000);
-  // AUTO MODE: pre-name the photos so batching is glance-and-accept.
-  if (autoMode()) autoSuggestPhotosForBatch();
-}
-
-// AUTO MODE batching helper: pre-name the pulled PHOTOS with the AI (they're local in
-// Photos Temp now) so batching is a glance-and-accept. Sampled one-per-day and applied
-// to that day's siblings; runs in the background and refreshes the grid. Videos aren't
-// local yet, so they're analyzed later (after copy). Never deletes anything; you can
-// edit any suggestion before continuing.
-let autoBatchSuggesting = false;
-async function autoSuggestPhotosForBatch() {
-  if (autoBatchSuggesting || !aiReady()) return;
-  const photos = state.scannedFiles.filter((c) => c.isPhoto && c.sourcePath && !slug(c.subject));
-  if (!photos.length) return;
-  autoBatchSuggesting = true;
-  const dayKey = (c) => c.date || 'x';
-  const groups = {}; for (const c of photos) (groups[dayKey(c)] = groups[dayKey(c)] || []).push(c);
-  const reps = Object.values(groups).map((g) => g[0]);
-  showToast(`⚡ Auto mode — suggesting names for ${reps.length} photo day${reps.length !== 1 ? 's' : ''}… (edit any before continuing)`, 4000);
-  for (const c of reps) {
-    if (!autoMode()) break;   // user turned it off mid-run
-    const i = state.scannedFiles.indexOf(c);
-    if (i < 0) continue;
-    try { await aiSuggestClip(i, 'all', { quiet: true }); } catch { /* keep going */ }
-    const subj = c.subject;
-    if (subj) for (const sib of (groups[dayKey(c)] || [])) { if (sib !== c && !slug(sib.subject)) { sib.subject = subj; if (!sib.description) sib.description = c.description || ''; } }
-  }
-  autoBatchSuggesting = false;
-  try { if (state.phoneBackup && !$('step1').classList.contains('hidden')) buildRenameStep(); } catch { /* ignore */ }
+  const nPh = state.scannedFiles.filter((c) => c.isPhoto).length;
+  const nVid = state.scannedFiles.length - nPh;
+  showToast(nVid
+    ? `Photos pulled ✓ — name what you like, then Continue to copy your ${nVid} video${nVid !== 1 ? 's' : ''} off the phone.`
+    : `${state.scannedFiles.length} pulled off your phone — name them, then continue ✓`, 6000);
 }
 
 // Jump straight to the Name & copy (rename) flow from any screen.

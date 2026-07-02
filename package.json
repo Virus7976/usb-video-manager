@@ -17,7 +17,7 @@
     "prebuild:win": "node scripts/bundle.mjs",
     "start": "electron .",
     "dev": "electron . --dev",
-    "check": "node --check main.js && node --check preload.js && node --check src/renderer.js && node --check watch-drives.js",
+    "check": "node --check main.js && node --check preload.js && node --check src/renderer.js && node --check watch-drives.js && node scripts/check-primitives.mjs",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win",
     "build:win": "electron-builder --win --publish never",

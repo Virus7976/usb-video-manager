@@ -110,12 +110,16 @@ cacheTag/err-msg helpers.
 5. **Relocate components:** lift `ai-client` and `media` out of 06 into their own modules;
    thin the `finalize:run`/`copy:start`/`prefs:set` mega-handlers onto L1 calls.
 
-**Anti-regression (so it STAYS fixed — this is what stops the mole game):** add a tiny
-`scripts/check-primitives.mjs` (run in `precheck`/CI) that greps `main-mod/**` for
-bypasses — raw `spawn(` outside the spawn helpers, `fsp.copyFile(`/`fs.copyFileSync(`
-outside `copyFileVerified`, raw `mkdir` outside `ensureDir`, `config.*=` writes outside
-`ConfigStore` — and fails with the file:line + the primitive to use. New code then can't
-re-introduce the class; the wall stays built.
+**Anti-regression (so it STAYS fixed — this is what stops the mole game) — DONE (2026-07-01).**
+`scripts/check-primitives.mjs` (wired into `npm run check`) counts raw `spawn(` / `copyFile(`
+/ `mkdir(` bypasses in `main-mod/**` and **fails if any category exceeds its committed
+baseline** (`scripts/primitives-baseline.json`) — fixing bypasses is always allowed, adding
+one fails with the file:line + the primitive to use. Count-based so it grandfathers today's
+known bypasses and only catches NEW ones (verified: a fresh raw `mkdir` fails the gate).
+**Current baseline = the burn-down list:** `spawn:12, copyFile:4, mkdir:12`. Lower these over
+time (P7 = route the 12 mkdir through `ensureDir`; P4 = the spawns through `streamSpawn`),
+running `--update-baseline` after each reduction. Extend RULES with a `config.<store>=`
+rule once a ConfigStore accessor exists.
 
 ---
 

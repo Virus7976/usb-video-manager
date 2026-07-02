@@ -58,6 +58,23 @@ const BUNDLED_CONFIG = path.join(__dirname, 'config.json');
 const ROAMING_DIR = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
 const USER_CONFIG = path.join(ROAMING_DIR, 'USB SD Auto-Action', 'config.json');
 
+// Sidecar stores. The append-mostly collections (rename drafts, final metadata,
+// version snapshots, project ledger) used to live INSIDE config.json — so every
+// trivial toggle and every drafts autosave re-serialized hundreds of KB of unrelated
+// data (the documented write-amplification / slow-open). They now live in their OWN
+// files next to config.json, loaded into the SAME in-memory `config[key]` (so every
+// existing reader is unchanged) but persisted INDEPENDENTLY via saveStore(key). One
+// writer per file (single-instance lock) makes a fresh re-read cheap and race-free.
+const STORE_DIR = path.join(ROAMING_DIR, 'USB SD Auto-Action');
+const STORE_FILES = {
+  renameDrafts:   path.join(STORE_DIR, 'drafts.json'),
+  finalMeta:      path.join(STORE_DIR, 'final-meta.json'),
+  renameVersions: path.join(STORE_DIR, 'versions.json'),
+  projectLedger:  path.join(STORE_DIR, 'project-ledger.json'),
+};
+const STORE_DEFAULT = { renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [] };
+const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
+
 // Atomic JSON write: write a temp file, then rename it over the target. Rename is
 // atomic, so a concurrent reader (e.g. a relaunching instance during quit) always
 // sees either the old or the new complete file — never a half-written/empty one.
@@ -188,6 +205,11 @@ function loadConfig() {
 let config_readFailed = false;
 
 const config = loadConfig();
+// Pull the sidecar stores into config[key] before any boot migration/slim runs, so
+// they operate on the real (sidecar) data. On the FIRST launch after this change the
+// sidecars don't exist yet — the old in-config values are kept and migrateStores()
+// (post single-instance-lock, in boot) writes them to their new homes.
+loadStores();
 
 // Whether a saved user config existed BEFORE this launch — the signal the
 // renderer uses to auto-show the first-run setup wizard (issue #1) exactly once,
@@ -280,6 +302,66 @@ function readConfigFresh() {
   return (j && typeof j === 'object') ? j : null;
 }
 
+// Load each sidecar store into config[key]. When a sidecar file is ABSENT but
+// config.json already carried the key (the old single-file format), we KEEP that
+// in-memory value so migrateStores() can write it to its new home — a non-destructive
+// migration (nothing is deleted until it's safely re-homed).
+function loadStores() {
+  for (const key of Object.keys(STORE_FILES)) {
+    const file = STORE_FILES[key];
+    const j = readJsonRetry(file);
+    if (j !== null && j !== undefined) {
+      config[key] = j;                                            // sidecar wins
+      try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+    } else if (config[key] === undefined) {
+      config[key] = STORE_DEFAULT[key]();
+    } // else keep the config.json-sourced value as the migration source
+  }
+}
+
+// One-time, post-lock migration: any store still missing its sidecar file gets its
+// current in-memory value (carried over from the old config.json) written out. MUST run
+// in the primary only (after requestSingleInstanceLock) and BEFORE anything can trigger
+// a config save, so legacy drafts/ledger land in their new files before saveConfig()
+// strips those keys from config.json.
+function migrateStores() {
+  for (const key of Object.keys(STORE_FILES)) {
+    try { if (!fs.existsSync(STORE_FILES[key])) saveStore(key); } catch { /* ignore */ }
+  }
+}
+
+// Persist ONE sidecar store atomically — cheap, only that file is rewritten. Unknown
+// keys fall back to a whole-config save so a typo can't silently drop data.
+function saveStore(key) {
+  const file = STORE_FILES[key];
+  if (!file) { saveConfig(); return; }
+  if (config_readFailed) return;   // same guard as saveConfig — don't clobber unread data
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const val = (config[key] === undefined || config[key] === null) ? STORE_DEFAULT[key]() : config[key];
+    writeJsonAtomic(file, val);
+    try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+  } catch (err) { console.error(`Could not save store ${key}:`, err.message); }
+}
+
+// Return a sidecar store, re-reading from disk ONLY if something else changed the file
+// since our last write (rare under the single-instance lock). Replaces the old
+// whole-config reload-merge, which blindly overwrote every in-memory key from disk and
+// could clobber unsaved edits.
+function freshStore(key) {
+  const file = STORE_FILES[key];
+  if (file) {
+    let mtime = 0; let exists = true;
+    try { mtime = fs.statSync(file).mtimeMs; } catch { exists = false; }   // no file yet → in-memory
+    if (exists && !(storeSelfMtimeMs[key] && mtime <= storeSelfMtimeMs[key])) {
+      const j = readJsonRetry(file);
+      if (j !== null && j !== undefined) { config[key] = j; storeSelfMtimeMs[key] = mtime; }
+    }
+  }
+  if (config[key] === undefined || config[key] === null) config[key] = (STORE_DEFAULT[key] || (() => ({})))();
+  return config[key];
+}
+
 const VIDEO_EXTS = new Set(config.videoExtensions.map((e) => e.toLowerCase()));
 // Image types — phone/GoPro photos. They are NEVER compressed and don't need ffmpeg
 // frame extraction (the file IS the frame), so poster/contact-sheet short-circuit.
@@ -293,7 +375,11 @@ function saveConfig() {
   if (config_readFailed) { console.error('Skipping config save (read had failed this launch).'); return; }
   try {
     fs.mkdirSync(path.dirname(USER_CONFIG), { recursive: true });
-    writeJsonAtomic(USER_CONFIG, config);
+    // The sidecar stores persist to their own files (saveStore) — strip them here so a
+    // settings save no longer rewrites hundreds of KB of drafts/versions/meta/ledger.
+    const toWrite = {};
+    for (const k of Object.keys(config)) if (!STORE_FILES[k]) toWrite[k] = config[k];
+    writeJsonAtomic(USER_CONFIG, toWrite);
     try { lastSelfWriteMtimeMs = fs.statSync(USER_CONFIG).mtimeMs; } catch { /* ignore */ }
   } catch (err) {
     console.error('Could not save config:', err.message);
@@ -973,7 +1059,7 @@ ipcMain.handle('ledger:record', (_e, payload) => {
     config.projectLedger.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
     config.projectLedger = config.projectLedger.slice(0, 4000);
   }
-  if (touched.size) saveConfig();
+  if (touched.size) saveStore('projectLedger');
   return { ok: true, projects: [...touched] };
 });
 // Find ledger projects whose dates overlap the given dates (a later import from the
@@ -1025,7 +1111,7 @@ ipcMain.handle('ledger:summarize', async (_e, payload) => {
     rec.keywords = Array.isArray(o && o.keywords) ? o.keywords.map((k) => String(k || '').trim().toLowerCase()).filter(Boolean).slice(0, 12) : (rec.keywords || []);
     rec.summaryClips = rec.clips;
     rec.summaryAt = Date.now();
-    saveConfig();
+    saveStore('projectLedger');
     return { ok: true, summary, keywords: rec.keywords };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
 });
@@ -4380,16 +4466,9 @@ ipcMain.handle('debug:info', () => {
 
 // Merge the freshest on-disk renameDrafts into our in-memory copy, then return
 // it. Reading fresh means a draft written by another instance is still seen.
-function currentDrafts() {
-  const fresh = readConfigFresh();
-  if (fresh && fresh.renameDrafts && typeof fresh.renameDrafts === 'object') {
-    config.renameDrafts = fresh.renameDrafts;
-    // Adopt other fresh fields too so a later save can't write stale settings.
-    for (const k of Object.keys(fresh)) if (k !== 'renameDrafts') config[k] = fresh[k];
-  }
-  if (!config.renameDrafts || typeof config.renameDrafts !== 'object') config.renameDrafts = {};
-  return config.renameDrafts;
-}
+// Drafts live in their own sidecar file now (drafts.json); freshStore re-reads it only
+// if another process changed it since our last write — no more whole-config reload-merge.
+function currentDrafts() { return freshStore('renameDrafts'); }
 
 ipcMain.handle('drafts:get', () => currentDrafts());
 
@@ -4415,7 +4494,7 @@ ipcMain.handle('drafts:save', (_evt, map) => {
     entries = entries.slice(0, 1000);
   }
   config.renameDrafts = Object.fromEntries(entries);
-  saveConfig();
+  saveStore('renameDrafts');
   return true;
 });
 
@@ -4427,7 +4506,7 @@ ipcMain.handle('drafts:clear', (_evt, keys) => {
   } else {
     config.renameDrafts = {};
   }
-  saveConfig();
+  saveStore('renameDrafts');
   return true;
 });
 
@@ -4438,8 +4517,9 @@ ipcMain.handle('drafts:clear', (_evt, keys) => {
 // as a newest-first array; capped so it can't grow without bound.
 // ---------------------------------------------------------------------------
 function currentVersions() {
-  if (!Array.isArray(config.renameVersions)) config.renameVersions = [];
-  return config.renameVersions;
+  const list = freshStore('renameVersions');
+  if (!Array.isArray(list)) { config.renameVersions = []; return config.renameVersions; }
+  return list;
 }
 ipcMain.handle('versions:get', () => currentVersions());
 ipcMain.handle('versions:save', (_evt, entry) => {
@@ -4455,15 +4535,15 @@ ipcMain.handle('versions:save', (_evt, entry) => {
   });
   if (list.length > 12) list.length = 12;   // each save-point's map is ~60KB — keep few
   config.renameVersions = list;
-  saveConfig();
+  saveStore('renameVersions');
   return list;
 });
 ipcMain.handle('versions:delete', (_evt, id) => {
   config.renameVersions = currentVersions().filter((v) => v && v.id !== id);
-  saveConfig();
+  saveStore('renameVersions');
   return config.renameVersions;
 });
-ipcMain.handle('versions:clear', () => { config.renameVersions = []; saveConfig(); return []; });
+ipcMain.handle('versions:clear', () => { config.renameVersions = []; saveStore('renameVersions'); return []; });
 
 // ---------------------------------------------------------------------------
 // Metadata-by-final-filename store. renameDrafts is keyed by the SOURCE clip
@@ -4473,15 +4553,7 @@ ipcMain.handle('versions:clear', () => { config.renameVersions = []; saveConfig(
 // 2026-06-01_vlog_josiah_v1.mp4) so the Finalize step can match the compressed
 // file by name and write its metadata. Keyed lower-cased for robust matching.
 // ---------------------------------------------------------------------------
-function currentFinalMeta() {
-  const fresh = readConfigFresh();
-  if (fresh && fresh.finalMeta && typeof fresh.finalMeta === 'object') {
-    config.finalMeta = fresh.finalMeta;
-    for (const k of Object.keys(fresh)) if (k !== 'finalMeta') config[k] = fresh[k];
-  }
-  if (!config.finalMeta || typeof config.finalMeta !== 'object') config.finalMeta = {};
-  return config.finalMeta;
-}
+function currentFinalMeta() { return freshStore('finalMeta'); }
 
 ipcMain.handle('finalMeta:save', (_evt, map) => {
   if (!map || typeof map !== 'object') return false;
@@ -4509,7 +4581,7 @@ ipcMain.handle('finalMeta:save', (_evt, map) => {
     entries = entries.slice(0, 5000);
   }
   config.finalMeta = Object.fromEntries(entries);
-  saveConfig();
+  saveStore('finalMeta');
   return true;
 });
 
@@ -5171,6 +5243,11 @@ if (!gotLock) {
   app.on('second-instance', () => showWindow());
 
   app.whenReady().then(() => {
+    // FIRST, in the primary only (we hold the single-instance lock here): move any
+    // append-heavy stores still living in config.json into their own sidecar files,
+    // before anything can trigger a config save. One-time; a no-op once migrated.
+    migrateStores();
+
     // Keep the OS login-item entry in sync with config on every start.
     applyLoginItem(config.launchAtLogin);
     console.log(`[startup] launchAtLogin = ${config.launchAtLogin}`);

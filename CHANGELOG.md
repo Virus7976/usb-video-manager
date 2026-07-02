@@ -7,6 +7,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.20] — 2026-07-01
+
+### Changed (internal / performance — no behavior change)
+- **Config no longer rewrites everything on every save (ConfigStore, step 1).** The big
+  append-heavy stores — rename drafts, version save-points, final metadata, and the
+  project ledger — used to live inside `config.json`, so a single toggle or a routine
+  drafts autosave re-serialized ~400KB+ of unrelated data (slow open, heavy writes). They
+  now live in their **own files** next to the config and save **independently**, so a
+  drafts save writes only the drafts file. Existing data migrates automatically on first
+  launch (non-destructive — nothing is removed until it's safely re-homed). Also collapsed
+  two copies of the "reload store fresh from disk" routine into one, removing a subtle
+  case where an in-memory edit could be clobbered by a stale on-disk merge. See
+  [`DEDUP.md`](DEDUP.md) → Component architecture roadmap (P3).
+
 ## [0.4.19] — 2026-07-01
 
 ### Fixed (reliability / safety)

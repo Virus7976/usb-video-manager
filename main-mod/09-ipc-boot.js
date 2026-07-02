@@ -608,6 +608,11 @@ if (!gotLock) {
   app.on('second-instance', () => showWindow());
 
   app.whenReady().then(() => {
+    // FIRST, in the primary only (we hold the single-instance lock here): move any
+    // append-heavy stores still living in config.json into their own sidecar files,
+    // before anything can trigger a config save. One-time; a no-op once migrated.
+    migrateStores();
+
     // Keep the OS login-item entry in sync with config on every start.
     applyLoginItem(config.launchAtLogin);
     console.log(`[startup] launchAtLogin = ${config.launchAtLogin}`);

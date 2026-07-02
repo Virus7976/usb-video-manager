@@ -499,16 +499,9 @@ ipcMain.handle('debug:info', () => {
 
 // Merge the freshest on-disk renameDrafts into our in-memory copy, then return
 // it. Reading fresh means a draft written by another instance is still seen.
-function currentDrafts() {
-  const fresh = readConfigFresh();
-  if (fresh && fresh.renameDrafts && typeof fresh.renameDrafts === 'object') {
-    config.renameDrafts = fresh.renameDrafts;
-    // Adopt other fresh fields too so a later save can't write stale settings.
-    for (const k of Object.keys(fresh)) if (k !== 'renameDrafts') config[k] = fresh[k];
-  }
-  if (!config.renameDrafts || typeof config.renameDrafts !== 'object') config.renameDrafts = {};
-  return config.renameDrafts;
-}
+// Drafts live in their own sidecar file now (drafts.json); freshStore re-reads it only
+// if another process changed it since our last write — no more whole-config reload-merge.
+function currentDrafts() { return freshStore('renameDrafts'); }
 
 ipcMain.handle('drafts:get', () => currentDrafts());
 
@@ -534,7 +527,7 @@ ipcMain.handle('drafts:save', (_evt, map) => {
     entries = entries.slice(0, 1000);
   }
   config.renameDrafts = Object.fromEntries(entries);
-  saveConfig();
+  saveStore('renameDrafts');
   return true;
 });
 
@@ -546,7 +539,7 @@ ipcMain.handle('drafts:clear', (_evt, keys) => {
   } else {
     config.renameDrafts = {};
   }
-  saveConfig();
+  saveStore('renameDrafts');
   return true;
 });
 
@@ -557,8 +550,9 @@ ipcMain.handle('drafts:clear', (_evt, keys) => {
 // as a newest-first array; capped so it can't grow without bound.
 // ---------------------------------------------------------------------------
 function currentVersions() {
-  if (!Array.isArray(config.renameVersions)) config.renameVersions = [];
-  return config.renameVersions;
+  const list = freshStore('renameVersions');
+  if (!Array.isArray(list)) { config.renameVersions = []; return config.renameVersions; }
+  return list;
 }
 ipcMain.handle('versions:get', () => currentVersions());
 ipcMain.handle('versions:save', (_evt, entry) => {
@@ -574,15 +568,15 @@ ipcMain.handle('versions:save', (_evt, entry) => {
   });
   if (list.length > 12) list.length = 12;   // each save-point's map is ~60KB — keep few
   config.renameVersions = list;
-  saveConfig();
+  saveStore('renameVersions');
   return list;
 });
 ipcMain.handle('versions:delete', (_evt, id) => {
   config.renameVersions = currentVersions().filter((v) => v && v.id !== id);
-  saveConfig();
+  saveStore('renameVersions');
   return config.renameVersions;
 });
-ipcMain.handle('versions:clear', () => { config.renameVersions = []; saveConfig(); return []; });
+ipcMain.handle('versions:clear', () => { config.renameVersions = []; saveStore('renameVersions'); return []; });
 
 // ---------------------------------------------------------------------------
 // Metadata-by-final-filename store. renameDrafts is keyed by the SOURCE clip
@@ -592,15 +586,7 @@ ipcMain.handle('versions:clear', () => { config.renameVersions = []; saveConfig(
 // 2026-06-01_vlog_josiah_v1.mp4) so the Finalize step can match the compressed
 // file by name and write its metadata. Keyed lower-cased for robust matching.
 // ---------------------------------------------------------------------------
-function currentFinalMeta() {
-  const fresh = readConfigFresh();
-  if (fresh && fresh.finalMeta && typeof fresh.finalMeta === 'object') {
-    config.finalMeta = fresh.finalMeta;
-    for (const k of Object.keys(fresh)) if (k !== 'finalMeta') config[k] = fresh[k];
-  }
-  if (!config.finalMeta || typeof config.finalMeta !== 'object') config.finalMeta = {};
-  return config.finalMeta;
-}
+function currentFinalMeta() { return freshStore('finalMeta'); }
 
 ipcMain.handle('finalMeta:save', (_evt, map) => {
   if (!map || typeof map !== 'object') return false;
@@ -628,7 +614,7 @@ ipcMain.handle('finalMeta:save', (_evt, map) => {
     entries = entries.slice(0, 5000);
   }
   config.finalMeta = Object.fromEntries(entries);
-  saveConfig();
+  saveStore('finalMeta');
   return true;
 });
 

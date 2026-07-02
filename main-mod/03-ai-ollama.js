@@ -57,7 +57,7 @@ ipcMain.handle('ledger:record', (_e, payload) => {
     config.projectLedger.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
     config.projectLedger = config.projectLedger.slice(0, 4000);
   }
-  if (touched.size) saveConfig();
+  if (touched.size) saveStore('projectLedger');
   return { ok: true, projects: [...touched] };
 });
 // Find ledger projects whose dates overlap the given dates (a later import from the
@@ -109,7 +109,7 @@ ipcMain.handle('ledger:summarize', async (_e, payload) => {
     rec.keywords = Array.isArray(o && o.keywords) ? o.keywords.map((k) => String(k || '').trim().toLowerCase()).filter(Boolean).slice(0, 12) : (rec.keywords || []);
     rec.summaryClips = rec.clips;
     rec.summaryAt = Date.now();
-    saveConfig();
+    saveStore('projectLedger');
     return { ok: true, summary, keywords: rec.keywords };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
 });

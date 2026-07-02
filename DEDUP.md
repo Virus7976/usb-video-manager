@@ -36,6 +36,81 @@ Verify order for every dedup change:
 
 ---
 
+## Component architecture roadmap (single source of truth) — 2026-07-01
+
+**The principle (why bugs feel like whack-a-mole):** a bug recurs when *the same decision
+is encoded in N places*. When "is this file safely copied?" is written 5 different ways,
+fixing one leaves four wrong — and they drift. The cure is **one function owns one
+decision; every site calls it.** Dedup (collapsing copies) is half of it; the other half
+is **extracting the primitive that should have existed** and routing all call sites
+through it. A backend audit (3 parallel passes, 2026-07-01) mapped where we're not there.
+
+**Target shape — 3 layers, dependencies point DOWN only:**
+- **L0 core primitives** (no domain knowledge): `ConfigStore`, fs-safe
+  (`copyFileVerified`/`moveFileCrossDevice`/`scanDir`/`ensureDir`), spawn
+  (`runCapture` buffered + `streamSpawn` streaming), `pathsEqual`/`relCanon`,
+  result-convention `{ok:!failed, copied, failed, errors[]}`, `shortId`.
+- **L1 domain components:** `ai-client` (Ollama — currently mis-buried in 06-copy),
+  `media` (probe/poster/thumb — in 06), `ledger`, `people-db`, `memory-store`.
+- **L2 IPC handlers:** THIN — validate input → call L1/L0 → return the result convention.
+  (Today `finalize:run`/`copy:start` are ~120 lines doing everything inline.)
+
+**Known inversions to fix:** `ai-client` lives inside `06-copy-transfer` but is called by
+03/07/08; `01-core` calls feature code (`confirmQuitIfCopying` in 06); `config` is mutated
+from 8 modules with no accessor boundary.
+
+**Missing/bypassed primitives (ranked by bugs prevented):**
+| # | Primitive | Kills (concrete bug) |
+|---|-----------|----------------------|
+| P1 | `copyFileVerified(src,dest,{size})` — copy→fingerprint→1 retry→throw | silent corrupt NAS/phone backups + the two divergent NAS-mirror copies (06:426 vs 09:360) + unverified `phone:distribute` (05:586) / sim pull (05:254) |
+| P2 | result convention `{ok:!failed,…}` + `logWarn` (no bare `catch{}`) | `phone:distribute` returns `ok:true` on partial failure (05:591) → UI shows success on a dropped-photo backup |
+| P3 | `ConfigStore`: `patchConfig`/`saveKeys` + split append-stores into own files | ~60 whole-file rewrites per toggle (write-amplification); dup reload-merge that can clobber in-memory edits (08:502 == 08:595) |
+| P4 | `streamSpawn(cmd,args,{onLine,timeoutMs,watchdog})` | MTP `CopyHere` has **no timeout** → hung phone = orphan process forever (05:508); compress capture boilerplate (09:80) |
+| P5 | `scanDir(dir,{exts,recursive,dirsOnly,skipJunk})` + PS/ADB regex generated from `VIDEO_EXT_LIST` | 4 hand-rolled scanners drift (02:270/287, 05:597, 02:309, 03:127); `PS_PHONE_SCAN $rx` (05:104) still hardcodes exts → latent drift |
+| P6 | `pathsEqual(a,b)` (case-correct) + `relCanon(p)` | compress collision check misses case-dup on Windows (09:66/70 lacks `.toLowerCase()`); 6× inlined rel-canon (03) |
+| P7 | route remaining raw `mkdir` → `ensureDir` | ~9 swallowed mkdir failures hide the real error |
+
+**Also queued (from the dedup hunt, "Round 5"):** the "already-present" resume gate has
+5 copies with 4 strictness levels (unify as `alreadyPresent(dest,size,{verify})`); AI
+memory "dedup+push+cap+save+notify" written 4× (07:580/644/681/791 → `addMemories()`);
+`aiExtractRules` unwrap 7× (07:573… → `extractRulesFrom`, folds the 07:678 divergence);
+route `subjects`/`locations` through the existing `makeListHandlers` factory; small id/
+cacheTag/err-msg helpers.
+
+**Staged plan — each stage independently ships + CDP-verifies; ordered by bug-prevention:**
+1. **P1 + P2** (data integrity): add `copyFileVerified`, route both NAS mirrors + phone
+   copies through it, adopt the result convention on the copy/backup handlers. Fixes real
+   silent-data-loss + false-success bugs. *Do carefully, CDP-verify NAS mirror + resume.*
+2. **P3 ConfigStore — STEP 1 DONE + VERIFIED (v0.4.20, 2026-07-01).** Split the four
+   top-level append stores (`renameDrafts`/`finalMeta`/`renameVersions`/`projectLedger`)
+   into their own sidecar files (`drafts.json`/`final-meta.json`/`versions.json`/
+   `project-ledger.json`) via `STORE_FILES` + `loadStores`/`saveStore`/`freshStore`/
+   `migrateStores` in 01-core; `saveConfig` now strips those keys. Collapsed the dup
+   reload-merge (`currentDrafts`==`currentFinalMeta`) into `freshStore(key)` — removes the
+   clobber-in-merge bug. Wired 08 (drafts/versions/finalMeta) + 03 (ledger, 2 sites) onto
+   `saveStore`. **On-disk verified:** non-destructive migration created all 4 sidecars with
+   correct counts; **config.json 1073KB → 385KB (−64%)**; settings intact; drafts/versions/
+   finalMeta/ledger round-trips pass via CDP. *Vestigial now: `readConfigFresh` +
+   `lastSelfWriteMtimeMs` (no callers) — remove in a later pass.*
+   **STEP 2 (next):** the `config.ai` nested stores (`ai.memories`, `ai.clipObs` capped
+   4000, `ai.styleExamples`, `ai.feedbackLog`) are the remaining amplifiers inside the now
+   385KB config.json — split `ai.clipObs`/`ai.memories` out the same way. Optional
+   `patchConfig`/`saveKeys` accessor + call-site migration once the check-primitives guard
+   lands (so scattered `config.x=;saveConfig()` can't come back).
+3. **P4 streamSpawn** (fixes the MTP-hang) + **P5 scanDir**/regex single-source.
+4. **P6 paths** + **P7 ensureDir** + the Round-5 mechanical batch (memory/rules/list dedup).
+5. **Relocate components:** lift `ai-client` and `media` out of 06 into their own modules;
+   thin the `finalize:run`/`copy:start`/`prefs:set` mega-handlers onto L1 calls.
+
+**Anti-regression (so it STAYS fixed — this is what stops the mole game):** add a tiny
+`scripts/check-primitives.mjs` (run in `precheck`/CI) that greps `main-mod/**` for
+bypasses — raw `spawn(` outside the spawn helpers, `fsp.copyFile(`/`fs.copyFileSync(`
+outside `copyFileVerified`, raw `mkdir` outside `ensureDir`, `config.*=` writes outside
+`ConfigStore` — and fails with the file:line + the primitive to use. New code then can't
+re-introduce the class; the wall stays built.
+
+---
+
 ## Round 4 — behavioral-divergence merges (v0.4.19, 2026-07-01) — DONE + VERIFIED
 
 Target: the three divergent dupes flagged at the end of round 3. "Safely" = pick the

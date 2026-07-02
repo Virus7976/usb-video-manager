@@ -56,6 +56,23 @@ const BUNDLED_CONFIG = path.join(__dirname, 'config.json');
 const ROAMING_DIR = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
 const USER_CONFIG = path.join(ROAMING_DIR, 'USB SD Auto-Action', 'config.json');
 
+// Sidecar stores. The append-mostly collections (rename drafts, final metadata,
+// version snapshots, project ledger) used to live INSIDE config.json — so every
+// trivial toggle and every drafts autosave re-serialized hundreds of KB of unrelated
+// data (the documented write-amplification / slow-open). They now live in their OWN
+// files next to config.json, loaded into the SAME in-memory `config[key]` (so every
+// existing reader is unchanged) but persisted INDEPENDENTLY via saveStore(key). One
+// writer per file (single-instance lock) makes a fresh re-read cheap and race-free.
+const STORE_DIR = path.join(ROAMING_DIR, 'USB SD Auto-Action');
+const STORE_FILES = {
+  renameDrafts:   path.join(STORE_DIR, 'drafts.json'),
+  finalMeta:      path.join(STORE_DIR, 'final-meta.json'),
+  renameVersions: path.join(STORE_DIR, 'versions.json'),
+  projectLedger:  path.join(STORE_DIR, 'project-ledger.json'),
+};
+const STORE_DEFAULT = { renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [] };
+const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
+
 // Atomic JSON write: write a temp file, then rename it over the target. Rename is
 // atomic, so a concurrent reader (e.g. a relaunching instance during quit) always
 // sees either the old or the new complete file — never a half-written/empty one.
@@ -186,6 +203,11 @@ function loadConfig() {
 let config_readFailed = false;
 
 const config = loadConfig();
+// Pull the sidecar stores into config[key] before any boot migration/slim runs, so
+// they operate on the real (sidecar) data. On the FIRST launch after this change the
+// sidecars don't exist yet — the old in-config values are kept and migrateStores()
+// (post single-instance-lock, in boot) writes them to their new homes.
+loadStores();
 
 // Whether a saved user config existed BEFORE this launch — the signal the
 // renderer uses to auto-show the first-run setup wizard (issue #1) exactly once,
@@ -278,6 +300,66 @@ function readConfigFresh() {
   return (j && typeof j === 'object') ? j : null;
 }
 
+// Load each sidecar store into config[key]. When a sidecar file is ABSENT but
+// config.json already carried the key (the old single-file format), we KEEP that
+// in-memory value so migrateStores() can write it to its new home — a non-destructive
+// migration (nothing is deleted until it's safely re-homed).
+function loadStores() {
+  for (const key of Object.keys(STORE_FILES)) {
+    const file = STORE_FILES[key];
+    const j = readJsonRetry(file);
+    if (j !== null && j !== undefined) {
+      config[key] = j;                                            // sidecar wins
+      try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+    } else if (config[key] === undefined) {
+      config[key] = STORE_DEFAULT[key]();
+    } // else keep the config.json-sourced value as the migration source
+  }
+}
+
+// One-time, post-lock migration: any store still missing its sidecar file gets its
+// current in-memory value (carried over from the old config.json) written out. MUST run
+// in the primary only (after requestSingleInstanceLock) and BEFORE anything can trigger
+// a config save, so legacy drafts/ledger land in their new files before saveConfig()
+// strips those keys from config.json.
+function migrateStores() {
+  for (const key of Object.keys(STORE_FILES)) {
+    try { if (!fs.existsSync(STORE_FILES[key])) saveStore(key); } catch { /* ignore */ }
+  }
+}
+
+// Persist ONE sidecar store atomically — cheap, only that file is rewritten. Unknown
+// keys fall back to a whole-config save so a typo can't silently drop data.
+function saveStore(key) {
+  const file = STORE_FILES[key];
+  if (!file) { saveConfig(); return; }
+  if (config_readFailed) return;   // same guard as saveConfig — don't clobber unread data
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const val = (config[key] === undefined || config[key] === null) ? STORE_DEFAULT[key]() : config[key];
+    writeJsonAtomic(file, val);
+    try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+  } catch (err) { console.error(`Could not save store ${key}:`, err.message); }
+}
+
+// Return a sidecar store, re-reading from disk ONLY if something else changed the file
+// since our last write (rare under the single-instance lock). Replaces the old
+// whole-config reload-merge, which blindly overwrote every in-memory key from disk and
+// could clobber unsaved edits.
+function freshStore(key) {
+  const file = STORE_FILES[key];
+  if (file) {
+    let mtime = 0; let exists = true;
+    try { mtime = fs.statSync(file).mtimeMs; } catch { exists = false; }   // no file yet → in-memory
+    if (exists && !(storeSelfMtimeMs[key] && mtime <= storeSelfMtimeMs[key])) {
+      const j = readJsonRetry(file);
+      if (j !== null && j !== undefined) { config[key] = j; storeSelfMtimeMs[key] = mtime; }
+    }
+  }
+  if (config[key] === undefined || config[key] === null) config[key] = (STORE_DEFAULT[key] || (() => ({})))();
+  return config[key];
+}
+
 const VIDEO_EXTS = new Set(config.videoExtensions.map((e) => e.toLowerCase()));
 // Image types — phone/GoPro photos. They are NEVER compressed and don't need ffmpeg
 // frame extraction (the file IS the frame), so poster/contact-sheet short-circuit.
@@ -291,7 +373,11 @@ function saveConfig() {
   if (config_readFailed) { console.error('Skipping config save (read had failed this launch).'); return; }
   try {
     fs.mkdirSync(path.dirname(USER_CONFIG), { recursive: true });
-    writeJsonAtomic(USER_CONFIG, config);
+    // The sidecar stores persist to their own files (saveStore) — strip them here so a
+    // settings save no longer rewrites hundreds of KB of drafts/versions/meta/ledger.
+    const toWrite = {};
+    for (const k of Object.keys(config)) if (!STORE_FILES[k]) toWrite[k] = config[k];
+    writeJsonAtomic(USER_CONFIG, toWrite);
     try { lastSelfWriteMtimeMs = fs.statSync(USER_CONFIG).mtimeMs; } catch { /* ignore */ }
   } catch (err) {
     console.error('Could not save config:', err.message);

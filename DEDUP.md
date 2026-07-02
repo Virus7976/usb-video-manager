@@ -205,6 +205,29 @@ merged; `node scripts/bundle.mjs` + `node --check` pass; bundle has a single top
 
 ---
 
+## Component hardening pass (v0.4.27–0.4.28, 2026-07-02)
+
+Took every extracted primitive and made it the best it can be, driven by 4 parallel
+adversarial reviews (ConfigStore / verified-fs / spawn / path-ext-rules-submenu-guard).
+Applied only real correctness/robustness wins (unit-tested the pure logic; boot + CDP
+verified). Highlights:
+- **ConfigStore (0.4.27):** FIXED a live data-loss bug — `clips:retagPerson` mutated the
+  finalMeta/drafts sidecars then called `saveConfig()` (which strips them) → re-tags
+  reverted on restart; now `saveStore`. `stripStoresForWrite` only strips a key if its
+  sidecar EXISTS on disk → data can never land in ZERO files. `writeJsonAtomic` fsyncs
+  before rename + cleans temp on any failure. Removed dead `readConfigFresh`.
+- **Verified-fs (0.4.27):** post-copy verify now fsyncs then does a FULL hash (sampled
+  missed a length-preserving mid-file corruption — unit-proven); `copyFileVerified`
+  unlinks dest on final failure. Sampled kept for resume/dedup scans.
+- **Spawn (0.4.28):** `treeKill` (Windows `taskkill /T /F`) everywhere — `proc.kill()`
+  only killed the immediate PID, so the MTP idle-kill could still orphan the COM worker
+  (undercut P4). `streamSpawn` merges env into process.env (was replacing → PATH-drop
+  trap); output caps; MTP 3h absolute backstop.
+- **Guard (0.4.28):** fingerprint baseline (file+normalized-line) replaces the global
+  count — a new bypass fails even if an old one is removed same-commit (negative-tested).
+  Ext regexes now regex-escape each extension. Last bespoke `aiExtractRules` unwrap folded
+  into `extractRulesFrom`. Submenu `desc` honors lazy values.
+
 ## Deferred / not-a-dupe (don't "fix")
 
 - `runAdb` vs `runCapture`/`runFfprobeJson` — different return shape (`{code,out,err}`).

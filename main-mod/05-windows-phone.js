@@ -12,7 +12,7 @@ function runPwshScript(script, { timeoutMs = 120000, env = {} } = {}) {
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
       { windowsHide: true, env: { ...process.env, ...env } });
     let out = ''; let err = '';
-    const timer = setTimeout(() => { try { ps.kill(); } catch { /* ignore */ } resolve({ ok: false, error: 'timeout', stdout: out, stderr: err }); }, timeoutMs);
+    const timer = setTimeout(() => { treeKill(ps); resolve({ ok: false, error: 'timeout', stdout: out, stderr: err }); }, timeoutMs);
     ps.stdout.on('data', (d) => { out += d.toString(); });
     ps.stderr.on('data', (d) => { err += d.toString(); });
     ps.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, error: e.message, stdout: out, stderr: err }); });
@@ -310,7 +310,7 @@ function runAdb(args, { timeoutMs = 600000 } = {}) {
     if (!_adbPath) { resolve({ code: -1, out: '', err: 'no adb' }); return; }
     const ps = spawn(_adbPath, args, { windowsHide: true });
     let out = ''; let err = '';
-    const t = setTimeout(() => { try { ps.kill('SIGKILL'); } catch { /* ignore */ } }, timeoutMs);
+    const t = setTimeout(() => { treeKill(ps); }, timeoutMs);
     ps.stdout.on('data', (d) => { out += d.toString(); });
     ps.stderr.on('data', (d) => { err += d.toString(); });
     ps.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out, err: e.message }); });
@@ -510,8 +510,10 @@ foreach ($entry in $items) {
     // call on a disconnected phone — the idle watchdog kills it instead of leaking an orphan
     // that never resolves. A genuinely slow-but-progressing transfer keeps resetting the timer.
     streamSpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
-      env: { ...process.env, MTP_DEVICE: device, MTP_DEST: dest, MTP_LIST: listFile },
+      env: { MTP_DEVICE: device, MTP_DEST: dest, MTP_LIST: listFile },   // merged into process.env by streamSpawn
       idleMs: 8 * 60 * 1000,
+      timeoutMs: 3 * 60 * 60 * 1000,   // absolute ceiling — a child that dribbles stderr forever still can't run past 3h
+
       onLine: (raw) => {
         const line = raw.trim();
         const p = line.match(/^PROGRESS \d+ (.*)$/); if (p && onName) { onName(p[1]); return; }

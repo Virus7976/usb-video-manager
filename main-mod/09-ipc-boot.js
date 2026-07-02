@@ -33,7 +33,7 @@ function ffmpegLastError(err) {
 }
 let compressProc = null;
 let compressAborted = false;
-ipcMain.handle('compress:cancel', () => { compressAborted = true; if (compressProc) { try { compressProc.kill('SIGKILL'); } catch { /* ignore */ } } return true; });
+ipcMain.handle('compress:cancel', () => { compressAborted = true; if (compressProc) treeKill(compressProc); return true; });
 ipcMain.handle('compress:defaults', () => {
   let outDir = config.finalizeSource || '';
   if (!outDir && config.intakeFolder) outDir = config.intakeFolder.replace(/01 - Uncompressed[\\/]?$/i, '02 - Compressed');

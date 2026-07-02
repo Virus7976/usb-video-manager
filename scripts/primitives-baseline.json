@@ -1,5 +1,24 @@
 {
-  "spawn": 12,
-  "copyFile": 4,
-  "mkdir": 5
+  "01-core.js|spawn|try { spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true }); return; }": 1,
+  "01-core.js|mkdir|fs.mkdirSync(path.dirname(file), { recursive: true });": 1,
+  "01-core.js|mkdir|fs.mkdirSync(path.dirname(USER_CONFIG), { recursive: true });": 1,
+  "02-media.js|copyFile|await fsp.copyFile(src, tmp);": 1,
+  "02-media.js|copyFile|await fsp.copyFile(src, dest);": 1,
+  "04-routes-ledger.js|spawn|const ps = killAfter(spawn(": 1,
+  "05-windows-phone.js|spawn|const ps = spawn('powershell.exe',": 1,
+  "05-windows-phone.js|copyFile|if (!st || st.size !== it.size) { await fsp.copyFile(it.abs, dst); st = await fsp.stat(dst); }": 1,
+  "05-windows-phone.js|spawn|try { return require('node:child_process').spawnSync(p, ['version'], { windowsHide: true, timeout: 8000 }).status === 0; } catch { return false; }": 1,
+  "05-windows-phone.js|spawn|const ps = spawn('powershell.exe', ['-NoProfile', '-Command', `Expand-Archive -Force -LiteralPath '${zip}' -DestinationPath '${ud}'`], { windowsHide: true });": 1,
+  "05-windows-phone.js|spawn|const ps = spawn(_adbPath, args, { windowsHide: true });": 1,
+  "05-windows-phone.js|mkdir|fs.mkdirSync(dest, { recursive: true });": 1,
+  "05-windows-phone.js|mkdir|await fsp.mkdir(dir, { recursive: true });": 1,
+  "06-copy-transfer.js|spawn|const proc = killAfter(spawn(config.ffmpegPath, [": 1,
+  "06-copy-transfer.js|spawn|const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-i', pattern, '-frames:v', '1', '-vf', `tile=${cols}x${rows}:padding=6:margin=6:color=black`, outPath], { windowsHide: true }), 60000);": 1,
+  "07-naming-organize.js|spawn|let proc; try { proc = spawn(cmd, args, { windowsHide: true }); } catch { resolve(''); return; }": 1,
+  "07-naming-organize.js|spawn|try { proc = spawn(cmd, args, { windowsHide: true, env: env ? { ...process.env, ...env } : process.env }); }": 1,
+  "07-naming-organize.js|spawn|const p = killAfter(spawn(config.ffmpegPath, ['-y', '-i', srcPath, '-codec', 'copy', '-map', `0:${idx}`, '-f', 'rawvideo', binPath], { windowsHide: true }), 90000);": 1,
+  "07-naming-organize.js|spawn|await new Promise((r) => { const p = killAfter(spawn(config.ffmpegPath, ['-y', '-i', path.join(THUMB_DIR, `${tag}_%03d.jpg`), '-vf', `scdet=s=1,metadata=print:file=${metaFile}`, '-f', 'null', '-'], { windowsHide: true }), 90000); p.on('error', () => r()); p.on('close', () => r()); });": 1,
+  "08-finalize-feedback.js|mkdir|try { fs.mkdirSync(imgDir, { recursive: true }); } catch { /* ignore */ }": 1,
+  "08-finalize-feedback.js|copyFile|fs.copyFileSync(src, dst); images.push(dst);": 1,
+  "09-ipc-boot.js|spawn|const proc = spawn(config.ffmpegPath, args, { windowsHide: true });": 1
 }

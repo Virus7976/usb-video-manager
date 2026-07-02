@@ -247,7 +247,7 @@ function buildSubmenuFlyout(opts, anchorBtn, menuEl, cancelCloseSub, scheduleClo
     // A `desc` gives the item a second muted line explaining what it does — used to
     // disambiguate similar AI actions (analyze vs improve vs auto-name).
     inner += o.desc
-      ? `<span class="flyout-stack"><span class="flyout-label">${escapeHtml(val(o.label))}</span><span class="flyout-desc">${escapeHtml(o.desc)}</span></span>`
+      ? `<span class="flyout-stack"><span class="flyout-label">${escapeHtml(val(o.label))}</span><span class="flyout-desc">${escapeHtml(val(o.desc))}</span></span>`
       : `<span class="flyout-label">${escapeHtml(val(o.label))}</span>`;
     si.innerHTML = inner;
     if (!o.disabled) si.addEventListener('click', () => { closePopover(); if (o.action) o.action(); });

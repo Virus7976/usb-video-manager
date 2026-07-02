@@ -7,6 +7,23 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.28] — 2026-07-02
+
+### Changed (reliability — hardening the components under the hood)
+- **A stalled or unplugged phone can no longer leave a hidden process running.** When a
+  phone transfer is force-stopped (idle timeout or cancel), the app now tears down the whole
+  process tree on Windows — previously the helper's own child processes could survive as
+  orphans. Same tree-kill now applies to the ffmpeg compress cancel and the drive/ADB scans.
+- The phone transfer also gained an absolute 3-hour ceiling as a final backstop, and
+  background helpers cap how much output they buffer (can't balloon memory on a runaway
+  process).
+- Extension matching for phone scans is now escape-hardened, so adding a new video/photo
+  format in one place can never accidentally break the scan regex.
+- **The anti-regression guard is stronger:** it now tracks each bypass by location
+  (fingerprint) instead of a global count, so a newly hand-rolled `spawn`/`copyFile`/`mkdir`
+  is caught even if an unrelated old one was cleaned up in the same change.
+- Minor: unified a duplicated AI-rules unwrap; menu descriptions honor lazy values.
+
 ## [0.4.27] — 2026-07-02
 
 ### Fixed

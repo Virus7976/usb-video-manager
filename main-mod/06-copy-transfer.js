@@ -8,7 +8,7 @@ const metaCache = new Map(); // sourcePath -> { durationSec, dateISO }
 // forever), so the bounded poster/face pipeline can't deadlock and zombies don't pile
 // up. The existing 'close'/'error' handlers fire on the kill and settle the Promise.
 function killAfter(proc, ms) {
-  const t = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } }, ms);
+  const t = setTimeout(() => { treeKill(proc); }, ms);
   const clear = () => clearTimeout(t);
   try { proc.on('close', clear); proc.on('error', clear); } catch { /* ignore */ }
   return proc;

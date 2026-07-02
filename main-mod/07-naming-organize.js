@@ -9,13 +9,14 @@ let motionCounter = 0;
 // Single spawn-and-capture-stdout helper. Returns the captured stdout as a STRING;
 // the '' empty-string sentinel means "no usable output" (spawn threw, timed out, errored,
 // or — with onlyOnSuccess — the process exited non-zero). Callers test `if (out)`.
-function runCapture(cmd, args, { timeoutMs = 20000, onlyOnSuccess = false } = {}) {
+function runCapture(cmd, args, { timeoutMs = 20000, onlyOnSuccess = false, maxBytes = 8 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
     let out = ''; let done = false;
     let proc; try { proc = spawn(cmd, args, { windowsHide: true }); } catch { resolve(''); return; }
     const finish = (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } };
-    const t = setTimeout(() => { try { proc.kill(); } catch { /* ignore */ } finish(''); }, timeoutMs);
-    proc.stdout.on('data', (d) => { out += d.toString(); });
+    const t = setTimeout(() => { treeKill(proc); finish(''); }, timeoutMs);
+    // Cap the buffer so a runaway/misdirected process can't balloon main-process heap.
+    proc.stdout.on('data', (d) => { out += d.toString(); if (out.length > maxBytes) { treeKill(proc); finish(onlyOnSuccess ? '' : out); } });
     proc.on('error', () => finish(''));
     // onlyOnSuccess: discard partial output from a non-zero exit (e.g. ffprobe failure).
     proc.on('close', (code) => finish(onlyOnSuccess && code !== 0 ? '' : out));
@@ -28,14 +29,16 @@ function runCapture(cmd, args, { timeoutMs = 20000, onlyOnSuccess = false } = {}
 // assumed hung (e.g. an MTP CopyHere stuck in a COM call on a yanked phone) and killed —
 // unlike killAfter's fixed deadline, the idle timer RESETS on every chunk, so a genuinely
 // long-but-progressing transfer is never killed. Resolves {code, out, err, timedOut}.
-function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env } = {}) {
+function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env, maxBytes = 8 * 1024 * 1024 } = {}) {
   return new Promise((resolve) => {
     let proc;
-    try { proc = spawn(cmd, args, { windowsHide: true, ...(env ? { env } : {}) }); }
+    // Merge env INTO process.env (don't replace it) so a caller passing a couple of extra
+    // vars can't accidentally drop PATH/SystemRoot and make the child fail to launch.
+    try { proc = spawn(cmd, args, { windowsHide: true, env: env ? { ...process.env, ...env } : process.env }); }
     catch (e) { resolve({ code: -1, out: '', err: (e && e.message) || String(e), timedOut: false }); return; }
     let out = ''; let err = ''; let buf = ''; let done = false; let timedOut = false;
     let idleTimer = null; let hardTimer = null;
-    const kill = () => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } };
+    const kill = () => { treeKill(proc); };   // tear down the whole tree (COM/conhost/children)
     const resetIdle = () => { if (!idleMs) return; clearTimeout(idleTimer); idleTimer = setTimeout(() => { timedOut = true; kill(); }, idleMs); };
     const finish = (code) => {
       if (done) return; done = true;
@@ -46,11 +49,12 @@ function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env
     if (timeoutMs) hardTimer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
     resetIdle();
     proc.stdout.on('data', (d) => {
-      const s = d.toString(); out += s; resetIdle();
+      const s = d.toString(); if (out.length < maxBytes) out += s; resetIdle();
       if (onData) onData(s);
-      if (onLine) { buf += s; let nl; while ((nl = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, nl).replace(/\r$/, '')); buf = buf.slice(nl + 1); } }
+      // Cap buf so a stream with no newline can't grow unbounded (keep the tail).
+      if (onLine) { buf += s; let nl; while ((nl = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, nl).replace(/\r$/, '')); buf = buf.slice(nl + 1); } if (buf.length > maxBytes) buf = buf.slice(-maxBytes); }
     });
-    proc.stderr.on('data', (d) => { err += d.toString(); resetIdle(); });
+    proc.stderr.on('data', (d) => { if (err.length < maxBytes) err += d.toString(); resetIdle(); });
     proc.on('error', (e) => { err += (e && e.message) || String(e); finish(-1); });
     proc.on('close', (code) => finish(code));
   });
@@ -738,7 +742,7 @@ ipcMain.handle('ai:refineMemory', async (_evt, payload) => {
   try {
     const prompt = `Rewrite this note as ONE concise, standalone preference rule for an AI that names video clips. Keep every useful keyword, drop filler. Reply with STRICT JSON only: {"rule": "...", "example": "..."} — rule ≤ 14 words, example a SHORT concrete illustration (may be "").\nNote: "${text}"`;
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.2, timeout: 120000 }));
-    const r = aiExtractRules((o && (o.rule || o.memories || o.text)) !== undefined ? (o.memories || o) : o)[0];
+    const r = extractRulesFrom(o)[0];   // handles bare {rule,example} / {memories:[…]} / {text} identically
     if (!r || !r.text) return { ok: false, error: 'No result' };
     return { ok: true, text: r.text, example: r.example || '' };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }

@@ -25,8 +25,12 @@ const IMAGE_EXT_LIST = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'dng', 'gif', 'web
 // (PowerShell/MTP + ADB) match the exact same formats — a new format added to the lists
 // can't be silently missed by one scanner (mts/m2ts used to be absent from the PS regex).
 // In this template literal `\\.` collapses to `\.`, i.e. the regex "literal dot".
-const VIDEO_EXT_RX_SRC = `\\.(${VIDEO_EXT_LIST.join('|')})$`;
-const MEDIA_EXT_RX_SRC = `\\.(${[...IMAGE_EXT_LIST, ...VIDEO_EXT_LIST].join('|')})$`;
+// Regex-escape each extension before building the alternation, so a future entry with a
+// regex-special char (or a stray typo) can't turn into a live metacharacter that breaks the
+// PS injection / JS RegExp. No-op for today's plain [a-z0-9] extensions.
+const RX_ESC = (e) => String(e).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const VIDEO_EXT_RX_SRC = `\\.(${VIDEO_EXT_LIST.map(RX_ESC).join('|')})$`;
+const MEDIA_EXT_RX_SRC = `\\.(${[...IMAGE_EXT_LIST, ...VIDEO_EXT_LIST].map(RX_ESC).join('|')})$`;
 
 // Explicit identity so the userData path and the login-item registry key are
 // unique to this app (the packaged exe isn't rcedit-stamped, so without this it
@@ -130,6 +134,19 @@ function stripStoresForWrite() {
 // sees either the old or the new complete file — never a half-written/empty one.
 // A plain writeFileSync truncates-then-writes, which is what was silently losing
 // drafts/subjects when quit + reopen overlapped.
+// Kill a child process AND its descendants. On Windows, proc.kill() (→ TerminateProcess)
+// only terminates the immediate PID, so a wedged powershell/ffmpeg that spawned COM/conhost/
+// encoder children leaves them orphaned; `taskkill /T /F` tears down the whole tree. On
+// other platforms SIGKILL on the pid is sufficient. Use this everywhere a spawn is force-killed.
+function treeKill(proc) {
+  if (!proc) return;
+  if (process.platform === 'win32' && proc.pid) {
+    try { spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true }); return; }
+    catch { /* fall through to a plain kill */ }
+  }
+  try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+}
+
 let atomicWriteCounter = 0;
 function writeJsonAtomic(file, obj) {
   // Unique temp name per write (pid + counter) so two concurrent writers can't

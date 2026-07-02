@@ -115,7 +115,14 @@ cacheTag/err-msg helpers.
    resets timer); boot-verified on 0.4.23. Other 05 spawns (`runPwshScript`, `runAdb`)
    already had timeouts. *Follow-up: `runPwshScript`/`runAdb`/compress could delegate their
    spawn scaffolding to `streamSpawn` (D5) — not done (return-shape adapters, low urgency).*
-   **P5 scanDir**/regex single-source next.
+   **P5 regex single-source — DONE + VERIFIED (v0.4.24, 2026-07-02).** Added
+   `IMAGE_EXT_LIST` + `VIDEO_EXT_RX_SRC`/`MEDIA_EXT_RX_SRC` in 01-core; `IMAGE_EXTS`, the
+   ADB scan, and the PowerShell/MTP scan now ALL derive from the two ext lists. Fixed a
+   real drift bug: the PS `$vrx` had drifted to omit `mts|m2ts`, so AVCHD clips on a phone
+   were invisible to the MTP scan (ADB found them). Runtime-verified the derived regexes
+   include mts/m2ts and classify correctly; boot-verified on 0.4.24. *Still pending (dedup,
+   not a bug): the JS `scanDir` consolidation of the 4 readdir walkers
+   (listVideosShallow/listImagesShallow/walkForVideos/scanSimPhone).*
 4. **P6 paths + P7 ensureDir — DONE + VERIFIED (v0.4.22, 2026-07-02).** Added
    `pathsEqual`/`pathKey` (filesystem-case-aware) in 01-core; fixed the compress
    collision bug (09:66/71 compared case-SENSITIVELY → `Clip.mp4`/`clip.mp4` could

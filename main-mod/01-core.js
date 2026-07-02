@@ -18,6 +18,15 @@ const DETECTION_ENABLED = process.platform === 'win32';
 // derives from THIS — so the sets can never disagree again (they used to: some paths
 // treated .webm/.ts/.3gp as video, others didn't). Extensions without the leading dot.
 const VIDEO_EXT_LIST = ['mp4', 'mov', 'm4v', 'avi', 'mkv', 'mts', 'm2ts', '3gp', '3g2', 'webm', 'ts'];
+// Image extensions — the ONE source (IMAGE_EXTS, the ADB scan, and the PowerShell scan all
+// derive from this, so they can never disagree). Without the leading dot.
+const IMAGE_EXT_LIST = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'dng', 'gif', 'webp', 'bmp', 'tif', 'tiff'];
+// Extension-match regex SOURCES derived from the lists above, so the phone scanners
+// (PowerShell/MTP + ADB) match the exact same formats — a new format added to the lists
+// can't be silently missed by one scanner (mts/m2ts used to be absent from the PS regex).
+// In this template literal `\\.` collapses to `\.`, i.e. the regex "literal dot".
+const VIDEO_EXT_RX_SRC = `\\.(${VIDEO_EXT_LIST.join('|')})$`;
+const MEDIA_EXT_RX_SRC = `\\.(${[...IMAGE_EXT_LIST, ...VIDEO_EXT_LIST].join('|')})$`;
 
 // Explicit identity so the userData path and the login-item registry key are
 // unique to this app (the packaged exe isn't rcedit-stamped, so without this it
@@ -363,7 +372,7 @@ function freshStore(key) {
 const VIDEO_EXTS = new Set(config.videoExtensions.map((e) => e.toLowerCase()));
 // Image types — phone/GoPro photos. They are NEVER compressed and don't need ffmpeg
 // frame extraction (the file IS the frame), so poster/contact-sheet short-circuit.
-const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.heic', '.heif', '.dng', '.gif', '.webp', '.bmp', '.tif', '.tiff']);
+const IMAGE_EXTS = new Set(IMAGE_EXT_LIST.map((e) => `.${e}`));
 function isImagePath(p) { return IMAGE_EXTS.has(path.extname(String(p || '')).toLowerCase()); }
 const THUMB_DIR = path.join(app.getPath('temp'), 'usb-auto-action-thumbs');
 

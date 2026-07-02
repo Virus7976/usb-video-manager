@@ -7,6 +7,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.24] — 2026-07-02
+
+### Fixed
+- **AVCHD camcorder clips (`.mts` / `.m2ts`) on a phone are no longer invisible over USB.**
+  The Windows/MTP phone scan had its own hand-typed list of video extensions that had
+  drifted out of sync with the app's master list and was missing `.mts`/`.m2ts`, so those
+  clips didn't show up at all (the ADB scan already found them). Every scanner —
+  Windows/MTP, ADB, and the app's internal checks — now derives from ONE shared list of
+  video + image extensions, so a supported format can't be recognized by one path and
+  missed by another.
+
 ## [0.4.23] — 2026-07-02
 
 ### Fixed

@@ -101,8 +101,8 @@ $shell = New-Object -ComObject Shell.Application
 $pc = $shell.NameSpace(17)
 $dev = $pc.Items() | Where-Object { $_.Name -eq $name } | Select-Object -First 1
 if (-not $dev) { 'NODEV'; exit }
-$rx = '\\.(jpg|jpeg|png|heic|heif|dng|gif|webp|bmp|tif|tiff|mp4|mov|m4v|3gp|3g2|avi|mkv|webm|ts)$'
-$vrx = '\\.(mp4|mov|m4v|3gp|3g2|avi|mkv|webm|ts)$'
+$rx = '${MEDIA_EXT_RX_SRC}'
+$vrx = '${VIDEO_EXT_RX_SRC}'
 $list = New-Object System.Collections.Generic.List[object]
 $max = 12000
 function Walk($folder, $rel, $depth) {
@@ -337,9 +337,8 @@ function adbRemotePath(rel, name) {
 }
 // Media extensions we care about, as a toybox-`find` predicate group. Video portion is
 // single-sourced from VIDEO_EXT_LIST (main-mod/01-core.js) so it can't drift from VIDEO_EXTS.
-const ADB_IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'dng', 'gif', 'webp', 'bmp', 'tif', 'tiff'];
-const ADB_MEDIA_EXTS = [...ADB_IMAGE_EXTS, ...VIDEO_EXT_LIST];
-const ADB_VIDEO_RX = new RegExp(`\\.(${VIDEO_EXT_LIST.join('|')})$`, 'i');
+const ADB_MEDIA_EXTS = [...IMAGE_EXT_LIST, ...VIDEO_EXT_LIST];   // single-sourced (01-core)
+const ADB_VIDEO_RX = new RegExp(VIDEO_EXT_RX_SRC, 'i');
 function adbInamePredicate() {
   return '\\( ' + ADB_MEDIA_EXTS.map((e) => `-iname '*.${e}'`).join(' -o ') + ' \\)';
 }

@@ -106,9 +106,13 @@ function storeSet(key, val) {
 // Build the object to write to config.json: everything EXCEPT the sidecar stores. Nested
 // store keys (ai.people/ai.clipObs) clone their parent so the live config isn't mutated.
 function stripStoresForWrite() {
-  const topStores = new Set(Object.keys(STORE_FILES).filter((k) => !k.includes('.')));
+  // Only strip a store from config.json if its sidecar file actually EXISTS on disk. So if
+  // a sidecar write ever failed (disk full / AV lock during migration), the data stays
+  // INLINE in config.json rather than ending up in ZERO files — it can never be lost.
+  const existsOnDisk = (k) => { try { return fs.existsSync(STORE_FILES[k]); } catch { return false; } };
+  const topStores = new Set(Object.keys(STORE_FILES).filter((k) => !k.includes('.') && existsOnDisk(k)));
   const nestedByParent = {};
-  for (const k of Object.keys(STORE_FILES)) { if (k.includes('.')) { const [p, ...rest] = k.split('.'); (nestedByParent[p] = nestedByParent[p] || []).push(rest.join('.')); } }
+  for (const k of Object.keys(STORE_FILES)) { if (k.includes('.') && existsOnDisk(k)) { const [p, ...rest] = k.split('.'); (nestedByParent[p] = nestedByParent[p] || []).push(rest.join('.')); } }
   const out = {};
   for (const k of Object.keys(config)) {
     if (topStores.has(k)) continue;
@@ -131,10 +135,16 @@ function writeJsonAtomic(file, obj) {
   // Unique temp name per write (pid + counter) so two concurrent writers can't
   // clobber a shared "<file>.tmp" and corrupt each other's output.
   const tmp = `${file}.${process.pid}.${atomicWriteCounter += 1}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
   try {
+    // fsync the temp file's contents to disk BEFORE the atomic rename, so a power loss
+    // can't leave the renamed file present but with unflushed (empty/old) bytes — cheap
+    // durability insurance for irreplaceable data (the face DB, saved names).
+    const fd = fs.openSync(tmp, 'w');
+    try { fs.writeSync(fd, JSON.stringify(obj, null, 2)); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
     fs.renameSync(tmp, file);
   } catch (err) {
+    // Clean the temp on ANY failure (write, fsync, or rename) — not just rename.
     try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
     throw err;
   }
@@ -333,21 +343,6 @@ try {
 // ---------------------------------------------------------------------------
 if (!config.renameDrafts || typeof config.renameDrafts !== 'object') config.renameDrafts = {};
 
-// Read the on-disk config fresh (for draft ops), or null if unreadable.
-// We are the only writer (single-instance lock), so the in-memory `config` is
-// authoritative. Skip the expensive whole-file re-read unless the file was actually
-// changed by something ELSE since our last save — turning a ~600KB sync read+parse on
-// every draft/pref save into a cheap stat. Returns null when in-memory should be used.
-let lastSelfWriteMtimeMs = 0;
-function readConfigFresh() {
-  try {
-    const st = fs.statSync(USER_CONFIG);
-    if (lastSelfWriteMtimeMs && st.mtimeMs <= lastSelfWriteMtimeMs) return null;   // nothing external changed it
-  } catch { /* no file / stat failed → fall through and try a real read */ }
-  const j = readJsonRetry(USER_CONFIG);
-  return (j && typeof j === 'object') ? j : null;
-}
-
 // Load each sidecar store into config[key]. When a sidecar file is ABSENT but
 // config.json already carried the key (the old single-file format), we KEEP that
 // in-memory value so migrateStores() can write it to its new home — a non-destructive
@@ -435,7 +430,6 @@ function saveConfig() {
     // nested ones like ai.people) so a settings save no longer rewrites hundreds of KB of
     // drafts/versions/meta/ledger/face-descriptors.
     writeJsonAtomic(USER_CONFIG, stripStoresForWrite());
-    try { lastSelfWriteMtimeMs = fs.statSync(USER_CONFIG).mtimeMs; } catch { /* ignore */ }
   } catch (err) {
     console.error('Could not save config:', err.message);
   }

@@ -7,6 +7,24 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.27] — 2026-07-02
+
+### Fixed
+- **Re-tagging people across your clips is now saved.** After renaming/merging a person and
+  choosing to re-tag their clips, the updates weren't being written to disk (a regression
+  from the settings-file split) and would revert on restart. They now persist correctly.
+
+### Changed (reliability — hardening the components under the hood)
+- **Backups are verified more strictly.** A copied/backed-up file is now flushed to disk and
+  checked with a **full** content hash (not a sampled one) before it's trusted — this catches
+  a mid-file corruption or a copy interrupted by a NAS/USB drop that happens to keep the same
+  file size. A failed verify no longer leaves a half-written file behind.
+- **Your data can never end up in "no file."** If writing one of the separate data files
+  (face data, drafts, etc.) ever failed, that data now stays safely inside the main settings
+  file instead of being dropped from both. Settings/data writes are also flushed to disk so a
+  power loss can't leave an empty file.
+- Removed dead code left over from the settings-file split.
+
 ## [0.4.26] — 2026-07-02
 
 ### Changed (internal / performance)

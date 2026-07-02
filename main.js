@@ -108,9 +108,13 @@ function storeSet(key, val) {
 // Build the object to write to config.json: everything EXCEPT the sidecar stores. Nested
 // store keys (ai.people/ai.clipObs) clone their parent so the live config isn't mutated.
 function stripStoresForWrite() {
-  const topStores = new Set(Object.keys(STORE_FILES).filter((k) => !k.includes('.')));
+  // Only strip a store from config.json if its sidecar file actually EXISTS on disk. So if
+  // a sidecar write ever failed (disk full / AV lock during migration), the data stays
+  // INLINE in config.json rather than ending up in ZERO files — it can never be lost.
+  const existsOnDisk = (k) => { try { return fs.existsSync(STORE_FILES[k]); } catch { return false; } };
+  const topStores = new Set(Object.keys(STORE_FILES).filter((k) => !k.includes('.') && existsOnDisk(k)));
   const nestedByParent = {};
-  for (const k of Object.keys(STORE_FILES)) { if (k.includes('.')) { const [p, ...rest] = k.split('.'); (nestedByParent[p] = nestedByParent[p] || []).push(rest.join('.')); } }
+  for (const k of Object.keys(STORE_FILES)) { if (k.includes('.') && existsOnDisk(k)) { const [p, ...rest] = k.split('.'); (nestedByParent[p] = nestedByParent[p] || []).push(rest.join('.')); } }
   const out = {};
   for (const k of Object.keys(config)) {
     if (topStores.has(k)) continue;
@@ -133,10 +137,16 @@ function writeJsonAtomic(file, obj) {
   // Unique temp name per write (pid + counter) so two concurrent writers can't
   // clobber a shared "<file>.tmp" and corrupt each other's output.
   const tmp = `${file}.${process.pid}.${atomicWriteCounter += 1}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
   try {
+    // fsync the temp file's contents to disk BEFORE the atomic rename, so a power loss
+    // can't leave the renamed file present but with unflushed (empty/old) bytes — cheap
+    // durability insurance for irreplaceable data (the face DB, saved names).
+    const fd = fs.openSync(tmp, 'w');
+    try { fs.writeSync(fd, JSON.stringify(obj, null, 2)); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
     fs.renameSync(tmp, file);
   } catch (err) {
+    // Clean the temp on ANY failure (write, fsync, or rename) — not just rename.
     try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
     throw err;
   }
@@ -335,21 +345,6 @@ try {
 // ---------------------------------------------------------------------------
 if (!config.renameDrafts || typeof config.renameDrafts !== 'object') config.renameDrafts = {};
 
-// Read the on-disk config fresh (for draft ops), or null if unreadable.
-// We are the only writer (single-instance lock), so the in-memory `config` is
-// authoritative. Skip the expensive whole-file re-read unless the file was actually
-// changed by something ELSE since our last save — turning a ~600KB sync read+parse on
-// every draft/pref save into a cheap stat. Returns null when in-memory should be used.
-let lastSelfWriteMtimeMs = 0;
-function readConfigFresh() {
-  try {
-    const st = fs.statSync(USER_CONFIG);
-    if (lastSelfWriteMtimeMs && st.mtimeMs <= lastSelfWriteMtimeMs) return null;   // nothing external changed it
-  } catch { /* no file / stat failed → fall through and try a real read */ }
-  const j = readJsonRetry(USER_CONFIG);
-  return (j && typeof j === 'object') ? j : null;
-}
-
 // Load each sidecar store into config[key]. When a sidecar file is ABSENT but
 // config.json already carried the key (the old single-file format), we KEEP that
 // in-memory value so migrateStores() can write it to its new home — a non-destructive
@@ -437,7 +432,6 @@ function saveConfig() {
     // nested ones like ai.people) so a settings save no longer rewrites hundreds of KB of
     // drafts/versions/meta/ledger/face-descriptors.
     writeJsonAtomic(USER_CONFIG, stripStoresForWrite());
-    try { lastSelfWriteMtimeMs = fs.statSync(USER_CONFIG).mtimeMs; } catch { /* ignore */ }
   } catch (err) {
     console.error('Could not save config:', err.message);
   }
@@ -858,13 +852,24 @@ function csvCell(v) {
 // it matches the source, atomically rename it into place, and only THEN delete the
 // original. A failure or crash at any step leaves the SOURCE intact (a clip is never
 // lost) and never leaves a half-written file at the real destination path.
+// Best-effort flush of a just-written file's bytes to durable storage before we verify it,
+// so the post-copy fingerprint checks what's actually ON DISK, not the OS page cache. Without
+// this, a copy can "verify" against cached bytes and then a power loss / NAS disconnect leaves
+// the file short or empty — catastrophic for moveFileCrossDevice, which deletes the source
+// right after. Silently no-ops on filesystems that don't support fsync.
+async function flushToDisk(p) {
+  try { const fh = await fsp.open(p, 'r+'); try { await fh.datasync(); } finally { await fh.close(); } }
+  catch { /* best-effort */ }
+}
 async function moveFileCrossDevice(src, dest) {
   try { await fsp.rename(src, dest); return; }
   catch (err) { if (err.code !== 'EXDEV') throw err; }
   const tmp = `${dest}.part-${process.pid}-${Date.now()}`;
   try {
     await fsp.copyFile(src, tmp);
-    if (!(await fingerprintsMatch(src, tmp))) throw new Error('verify failed after cross-device copy');
+    await flushToDisk(tmp);
+    // FULL verify (not sampled) — we're about to delete the source, so prove the whole copy.
+    if (!(await fingerprintsMatch(src, tmp, { full: true }))) throw new Error('verify failed after cross-device copy');
     await fsp.rename(tmp, dest);
   } catch (err) {
     try { await fsp.unlink(tmp); } catch { /* best-effort cleanup of the temp copy */ }
@@ -891,10 +896,14 @@ async function copyFileVerified(src, dest, { retries = 1 } = {}) {
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
       await fsp.copyFile(src, dest);
-      if (await fingerprintsMatch(src, dest)) return 'copied';
+      await flushToDisk(dest);
+      if (await fingerprintsMatch(src, dest, { full: true })) return 'copied';   // FULL verify of the fresh copy
       lastErr = new Error('verification failed after copy');
     } catch (err) { lastErr = err; }
   }
+  // Every attempt failed — don't leave a known-corrupt file at dest where a future resume
+  // scan might trust it. Best-effort remove, then surface the failure.
+  try { await fsp.unlink(dest); } catch { /* may not exist */ }
   throw lastErr || new Error('copy failed');
 }
 
@@ -4744,7 +4753,10 @@ ipcMain.handle('clips:retagPerson', (_evt, payload) => {
   };
   apply(currentFinalMeta());
   apply(currentDrafts());
-  saveConfig();
+  // These are sidecar stores — persist them directly. (A plain saveConfig() would STRIP
+  // finalMeta/renameDrafts from config.json and never write the sidecars → retag lost.)
+  saveStore('finalMeta');
+  saveStore('renameDrafts');
   return { ok: true, changed };
 });
 
@@ -5231,7 +5243,7 @@ ipcMain.handle('rename:apply', async (_evt, payload) => {
 // Fast integrity fingerprint: size + SHA-256 of three 2 MB samples (head, middle,
 // tail). Catches truncation and the common corruption modes without reading a whole
 // 50 GB card. (Not a full-file hash — a deliberate speed/safety trade-off.)
-async function sampledFingerprint(filePath) {
+async function sampledFingerprint(filePath, { full = false } = {}) {
   const fh = await fsp.open(filePath, 'r');
   try {
     const st = await fh.stat();
@@ -5245,15 +5257,18 @@ async function sampledFingerprint(filePath) {
       const { bytesRead } = await fh.read(buf, 0, len, Math.max(0, pos));
       hash.update(buf.subarray(0, bytesRead));
     };
-    if (size <= CHUNK * 3) { await readAt(0, size); }
+    // full=true hashes the ENTIRE file (used to VERIFY a freshly-written copy — the sampled
+    // head/mid/tail can't catch a mid-file corruption that preserves length). Sampled stays
+    // the default for the resume/dedup pre-checks that scan whole cards.
+    if (full || size <= CHUNK * 3) { await readAt(0, size); }
     else { await readAt(0, CHUNK); await readAt(Math.floor(size / 2) - CHUNK / 2, CHUNK); await readAt(size - CHUNK, CHUNK); }
     return { size, hash: hash.digest('hex') };
   } finally { await fh.close(); }
 }
 // True when two files have the same size + sampled fingerprint (used for NAS
 // resume-dedup and post-copy verification). Best-effort: false on any read error.
-async function fingerprintsMatch(a, b) {
-  try { const [x, y] = await Promise.all([sampledFingerprint(a), sampledFingerprint(b)]); return x.size === y.size && x.hash === y.hash; }
+async function fingerprintsMatch(a, b, opts) {
+  try { const [x, y] = await Promise.all([sampledFingerprint(a, opts), sampledFingerprint(b, opts)]); return x.size === y.size && x.hash === y.hash; }
   catch { return false; }
 }
 // Verify each copied file against its source BEFORE the originals are deleted.

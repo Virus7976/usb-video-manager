@@ -479,7 +479,7 @@ ipcMain.handle('rename:apply', async (_evt, payload) => {
 // Fast integrity fingerprint: size + SHA-256 of three 2 MB samples (head, middle,
 // tail). Catches truncation and the common corruption modes without reading a whole
 // 50 GB card. (Not a full-file hash — a deliberate speed/safety trade-off.)
-async function sampledFingerprint(filePath) {
+async function sampledFingerprint(filePath, { full = false } = {}) {
   const fh = await fsp.open(filePath, 'r');
   try {
     const st = await fh.stat();
@@ -493,15 +493,18 @@ async function sampledFingerprint(filePath) {
       const { bytesRead } = await fh.read(buf, 0, len, Math.max(0, pos));
       hash.update(buf.subarray(0, bytesRead));
     };
-    if (size <= CHUNK * 3) { await readAt(0, size); }
+    // full=true hashes the ENTIRE file (used to VERIFY a freshly-written copy — the sampled
+    // head/mid/tail can't catch a mid-file corruption that preserves length). Sampled stays
+    // the default for the resume/dedup pre-checks that scan whole cards.
+    if (full || size <= CHUNK * 3) { await readAt(0, size); }
     else { await readAt(0, CHUNK); await readAt(Math.floor(size / 2) - CHUNK / 2, CHUNK); await readAt(size - CHUNK, CHUNK); }
     return { size, hash: hash.digest('hex') };
   } finally { await fh.close(); }
 }
 // True when two files have the same size + sampled fingerprint (used for NAS
 // resume-dedup and post-copy verification). Best-effort: false on any read error.
-async function fingerprintsMatch(a, b) {
-  try { const [x, y] = await Promise.all([sampledFingerprint(a), sampledFingerprint(b)]); return x.size === y.size && x.hash === y.hash; }
+async function fingerprintsMatch(a, b, opts) {
+  try { const [x, y] = await Promise.all([sampledFingerprint(a, opts), sampledFingerprint(b, opts)]); return x.size === y.size && x.hash === y.hash; }
   catch { return false; }
 }
 // Verify each copied file against its source BEFORE the originals are deleted.

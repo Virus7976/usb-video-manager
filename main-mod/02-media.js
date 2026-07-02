@@ -202,13 +202,24 @@ function csvCell(v) {
 // it matches the source, atomically rename it into place, and only THEN delete the
 // original. A failure or crash at any step leaves the SOURCE intact (a clip is never
 // lost) and never leaves a half-written file at the real destination path.
+// Best-effort flush of a just-written file's bytes to durable storage before we verify it,
+// so the post-copy fingerprint checks what's actually ON DISK, not the OS page cache. Without
+// this, a copy can "verify" against cached bytes and then a power loss / NAS disconnect leaves
+// the file short or empty — catastrophic for moveFileCrossDevice, which deletes the source
+// right after. Silently no-ops on filesystems that don't support fsync.
+async function flushToDisk(p) {
+  try { const fh = await fsp.open(p, 'r+'); try { await fh.datasync(); } finally { await fh.close(); } }
+  catch { /* best-effort */ }
+}
 async function moveFileCrossDevice(src, dest) {
   try { await fsp.rename(src, dest); return; }
   catch (err) { if (err.code !== 'EXDEV') throw err; }
   const tmp = `${dest}.part-${process.pid}-${Date.now()}`;
   try {
     await fsp.copyFile(src, tmp);
-    if (!(await fingerprintsMatch(src, tmp))) throw new Error('verify failed after cross-device copy');
+    await flushToDisk(tmp);
+    // FULL verify (not sampled) — we're about to delete the source, so prove the whole copy.
+    if (!(await fingerprintsMatch(src, tmp, { full: true }))) throw new Error('verify failed after cross-device copy');
     await fsp.rename(tmp, dest);
   } catch (err) {
     try { await fsp.unlink(tmp); } catch { /* best-effort cleanup of the temp copy */ }
@@ -235,10 +246,14 @@ async function copyFileVerified(src, dest, { retries = 1 } = {}) {
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
       await fsp.copyFile(src, dest);
-      if (await fingerprintsMatch(src, dest)) return 'copied';
+      await flushToDisk(dest);
+      if (await fingerprintsMatch(src, dest, { full: true })) return 'copied';   // FULL verify of the fresh copy
       lastErr = new Error('verification failed after copy');
     } catch (err) { lastErr = err; }
   }
+  // Every attempt failed — don't leave a known-corrupt file at dest where a future resume
+  // scan might trust it. Best-effort remove, then surface the failure.
+  try { await fsp.unlink(dest); } catch { /* may not exist */ }
   throw lastErr || new Error('copy failed');
 }
 

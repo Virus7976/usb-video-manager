@@ -660,7 +660,10 @@ ipcMain.handle('clips:retagPerson', (_evt, payload) => {
   };
   apply(currentFinalMeta());
   apply(currentDrafts());
-  saveConfig();
+  // These are sidecar stores — persist them directly. (A plain saveConfig() would STRIP
+  // finalMeta/renameDrafts from config.json and never write the sidecars → retag lost.)
+  saveStore('finalMeta');
+  saveStore('renameDrafts');
   return { ok: true, changed };
 });
 

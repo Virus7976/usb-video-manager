@@ -50,7 +50,7 @@ ipcMain.handle('compress:run', async (evt, payload) => {
   if (!Array.isArray(files) || !files.length) return { ok: false, error: 'No files to compress' };
   const out = outDir || config.finalizeSource;
   if (!out) return { ok: false, error: 'No output (Compressed) folder set' };
-  try { await fsp.mkdir(out, { recursive: true }); } catch (e) { return { ok: false, error: `Cannot create output folder: ${e.message}` }; }
+  try { await ensureDir(out); } catch (e) { return { ok: false, error: `Cannot create output folder: ${e.message}` }; }
   const s = compressSettings(payload && payload.settings);
   compressAborted = false;
   const results = [];
@@ -63,12 +63,13 @@ ipcMain.handle('compress:run', async (evt, payload) => {
     if (!src) { results.push({ name: f.name, ok: false, error: 'No source path' }); continue; }
     const base = path.basename(f.name || src).replace(/\.[^.]+$/, '');
     let outPath = path.join(out, `${base}.mp4`);
-    if (path.resolve(outPath) === path.resolve(src)) outPath = path.join(out, `${base}_compressed.mp4`);
+    if (pathsEqual(outPath, src)) outPath = path.join(out, `${base}_compressed.mp4`);
     // Two source clips that share a stem but differ in container (clip.mov + clip.mp4)
-    // would map to the same output — disambiguate so neither is lost/overwritten.
+    // would map to the same output — disambiguate so neither is lost/overwritten. Keyed
+    // case-insensitively so Clip.mp4/clip.mp4 collide on Windows (they're one file).
     let cn = 1;
-    while (produced.has(path.resolve(outPath))) { outPath = path.join(out, `${base} (${cn}).mp4`); cn += 1; }
-    produced.add(path.resolve(outPath));
+    while (produced.has(pathKey(outPath))) { outPath = path.join(out, `${base} (${cn}).mp4`); cn += 1; }
+    produced.add(pathKey(outPath));
     let inBytes = 0; try { inBytes = (await fsp.stat(src)).size; } catch { /* ignore */ }
     let durationSec = 0; try { durationSec = (await probeMeta(src)).durationSec || 0; } catch { /* ignore */ }
     if (s.skipExisting) { try { const st = await fsp.stat(outPath); if (st.size > 0) { results.push({ name: f.name, ok: true, skipped: true, outPath, inBytes, outBytes: st.size }); send({ index: i, total: files.length, name: f.name, pct: 100, phase: 'skipped' }); continue; } } catch { /* not there */ } }

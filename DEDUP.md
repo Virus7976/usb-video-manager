@@ -106,7 +106,14 @@ cacheTag/err-msg helpers.
    `patchConfig`/`saveKeys` accessor + call-site migration once the check-primitives guard
    lands (so scattered `config.x=;saveConfig()` can't come back).
 3. **P4 streamSpawn** (fixes the MTP-hang) + **P5 scanDir**/regex single-source.
-4. **P6 paths** + **P7 ensureDir** + the Round-5 mechanical batch (memory/rules/list dedup).
+4. **P6 paths + P7 ensureDir — DONE + VERIFIED (v0.4.22, 2026-07-02).** Added
+   `pathsEqual`/`pathKey` (filesystem-case-aware) in 01-core; fixed the compress
+   collision bug (09:66/71 compared case-SENSITIVELY → `Clip.mp4`/`clip.mp4` could
+   overwrite on Windows) and routed `organizeMove`'s hand-rolled case-fold compare
+   through it. Burned down `mkdir`: 7 async sites → `ensureDir` (baseline 12→5; the
+   remaining 5 = the two sync config writers, the sync MTP Promise-executor, and
+   `ensureDir`'s own definition — all legit). Boot-verified on 0.4.22.
+   The Round-5 mechanical batch (memory/rules/list dedup) is still pending.
 5. **Relocate components:** lift `ai-client` and `media` out of 06 into their own modules;
    thin the `finalize:run`/`copy:start`/`prefs:set` mega-handlers onto L1 calls.
 

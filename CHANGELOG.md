@@ -7,6 +7,23 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.22] — 2026-07-02
+
+### Fixed
+- **Compressing two clips with the same name but different case no longer risks one
+  silently overwriting the other** (or ffmpeg reading and writing the same file). On
+  Windows the filesystem treats `Clip.MP4` and `clip.mp4` as the same file; the collision
+  check now compares paths case-insensitively (new shared `pathsEqual` helper), so
+  same-name outputs are disambiguated correctly.
+
+### Changed (internal / maintainability)
+- One `pathsEqual`/`pathKey` path-identity helper now backs the compress collision check
+  and the organize "already in place?" check (was two hand-rolled comparisons, one of them
+  case-blind).
+- Routed 7 more directory-creation sites through the shared `ensureDir` helper (primitive
+  burn-down; the guard baseline drops from 12 raw `mkdir` to 5 — the rest are the config
+  writers + `ensureDir` itself).
+
 ## [0.4.21] — 2026-07-01
 
 ### Fixed (data integrity)

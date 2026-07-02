@@ -233,8 +233,8 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
   const photos = items.filter((it) => it.kind !== 'video');
   const videos = items.filter((it) => it.kind === 'video');
   const vDest = videoDest || photoDest;
-  try { await fsp.mkdir(photoDest, { recursive: true }); } catch { /* ignore */ }
-  try { await fsp.mkdir(vDest, { recursive: true }); } catch { /* ignore */ }
+  try { await ensureDir(photoDest); } catch { /* ignore */ }
+  try { await ensureDir(vDest); } catch { /* ignore */ }
   const sender = evt.sender;
   const staged = [];
   const total = items.length; let done = 0;
@@ -412,7 +412,7 @@ async function adbScanMedia(serial, albums) {
   return { ok: true, media };
 }
 async function adbPullToDest(serial, items, dest, onName) {
-  try { fs.mkdirSync(dest, { recursive: true }); } catch { /* ignore */ }
+  try { await ensureDir(dest); } catch { /* ignore */ }
   const results = [];
   for (const it of items) {
     if (phoneAbort) break;   // Cancel pressed — stop pulling
@@ -544,7 +544,7 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       const src = j.src || (j.phoneRef && j.phoneRef.abs) || '';
       let hasSrc = false; try { hasSrc = !!(src && (await fsp.stat(src)).size > 0); } catch { /* not local */ }
       if (hasSrc) {
-        await fsp.mkdir(path.dirname(j.dest), { recursive: true });
+        await ensureDir(path.dirname(j.dest));
         // verify-before-destroy move: on a cross-drive copy it fingerprints the copy
         // before deleting the source, so a truncated copy can't lose the only good file.
         try { await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
@@ -560,13 +560,13 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
   for (const [device, list] of realByDevice) {
     if (phoneAbort) break;
     const tmp = path.join(app.getPath('temp'), `phonevid_${Date.now()}`);
-    try { await fsp.mkdir(tmp, { recursive: true }); } catch { /* ignore */ }
+    try { await ensureDir(tmp); } catch { /* ignore */ }
     const mtp = await mtpCopyToDest(device, list.map((j) => j.phoneRef), tmp, (name) => prog(name));
     const failSet = new Set((mtp.results || []).filter((r) => r.status === 'FAIL').map((r) => r.name));
     for (const j of list) {
       if (failSet.has(j.phoneRef.name)) { failed += 1; continue; }
       const src = path.join(tmp, j.phoneRef.name);
-      try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
+      try { await ensureDir(path.dirname(j.dest)); await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
       catch { failed += 1; }   // verify-before-destroy (never deletes an unverified source)
     }
   }

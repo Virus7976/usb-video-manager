@@ -369,6 +369,15 @@ const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.heic', '.heif', '.dng', '
 function isImagePath(p) { return IMAGE_EXTS.has(path.extname(String(p || '')).toLowerCase()); }
 const THUMB_DIR = path.join(app.getPath('temp'), 'usb-auto-action-thumbs');
 
+// Path identity, filesystem-case-aware. Windows (and default macOS) are case-INSENSITIVE,
+// so "Clip.MP4" and "clip.mp4" are the SAME file — compare case-folded there; compare
+// exactly on case-sensitive filesystems. Use pathsEqual()/pathKey() instead of a raw
+// `path.resolve(a) === path.resolve(b)`, which misses Windows case-dup collisions (two
+// clips could map to one output and silently overwrite, or a src==dest check could miss).
+const PATHS_CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin';
+function pathKey(p) { const r = path.resolve(String(p || '')); return PATHS_CASE_INSENSITIVE ? r.toLowerCase() : r; }
+function pathsEqual(a, b) { return pathKey(a) === pathKey(b); }
+
 function saveConfig() {
   // Guard: if we failed to read an existing config this launch, don't clobber it
   // with our defaults-only in-memory copy.
@@ -849,7 +858,7 @@ async function copyFileVerified(src, dest, { retries = 1 } = {}) {
 async function organizeMove(srcPath, targetDir, fileName) {
   await ensureDir(targetDir);
   const targetPath = path.join(targetDir, fileName);
-  if (path.resolve(srcPath).toLowerCase() === path.resolve(targetPath).toLowerCase()) {
+  if (pathsEqual(srcPath, targetPath)) {
     return { action: 'in-place', path: targetPath };
   }
   let existing = null;
@@ -1966,8 +1975,8 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
   const photos = items.filter((it) => it.kind !== 'video');
   const videos = items.filter((it) => it.kind === 'video');
   const vDest = videoDest || photoDest;
-  try { await fsp.mkdir(photoDest, { recursive: true }); } catch { /* ignore */ }
-  try { await fsp.mkdir(vDest, { recursive: true }); } catch { /* ignore */ }
+  try { await ensureDir(photoDest); } catch { /* ignore */ }
+  try { await ensureDir(vDest); } catch { /* ignore */ }
   const sender = evt.sender;
   const staged = [];
   const total = items.length; let done = 0;
@@ -2145,7 +2154,7 @@ async function adbScanMedia(serial, albums) {
   return { ok: true, media };
 }
 async function adbPullToDest(serial, items, dest, onName) {
-  try { fs.mkdirSync(dest, { recursive: true }); } catch { /* ignore */ }
+  try { await ensureDir(dest); } catch { /* ignore */ }
   const results = [];
   for (const it of items) {
     if (phoneAbort) break;   // Cancel pressed — stop pulling
@@ -2277,7 +2286,7 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       const src = j.src || (j.phoneRef && j.phoneRef.abs) || '';
       let hasSrc = false; try { hasSrc = !!(src && (await fsp.stat(src)).size > 0); } catch { /* not local */ }
       if (hasSrc) {
-        await fsp.mkdir(path.dirname(j.dest), { recursive: true });
+        await ensureDir(path.dirname(j.dest));
         // verify-before-destroy move: on a cross-drive copy it fingerprints the copy
         // before deleting the source, so a truncated copy can't lose the only good file.
         try { await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
@@ -2293,13 +2302,13 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
   for (const [device, list] of realByDevice) {
     if (phoneAbort) break;
     const tmp = path.join(app.getPath('temp'), `phonevid_${Date.now()}`);
-    try { await fsp.mkdir(tmp, { recursive: true }); } catch { /* ignore */ }
+    try { await ensureDir(tmp); } catch { /* ignore */ }
     const mtp = await mtpCopyToDest(device, list.map((j) => j.phoneRef), tmp, (name) => prog(name));
     const failSet = new Set((mtp.results || []).filter((r) => r.status === 'FAIL').map((r) => r.name));
     for (const j of list) {
       if (failSet.has(j.phoneRef.name)) { failed += 1; continue; }
       const src = path.join(tmp, j.phoneRef.name);
-      try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
+      try { await ensureDir(path.dirname(j.dest)); await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
       catch { failed += 1; }   // verify-before-destroy (never deletes an unverified source)
     }
   }
@@ -4700,7 +4709,7 @@ ipcMain.handle('compress:run', async (evt, payload) => {
   if (!Array.isArray(files) || !files.length) return { ok: false, error: 'No files to compress' };
   const out = outDir || config.finalizeSource;
   if (!out) return { ok: false, error: 'No output (Compressed) folder set' };
-  try { await fsp.mkdir(out, { recursive: true }); } catch (e) { return { ok: false, error: `Cannot create output folder: ${e.message}` }; }
+  try { await ensureDir(out); } catch (e) { return { ok: false, error: `Cannot create output folder: ${e.message}` }; }
   const s = compressSettings(payload && payload.settings);
   compressAborted = false;
   const results = [];
@@ -4713,12 +4722,13 @@ ipcMain.handle('compress:run', async (evt, payload) => {
     if (!src) { results.push({ name: f.name, ok: false, error: 'No source path' }); continue; }
     const base = path.basename(f.name || src).replace(/\.[^.]+$/, '');
     let outPath = path.join(out, `${base}.mp4`);
-    if (path.resolve(outPath) === path.resolve(src)) outPath = path.join(out, `${base}_compressed.mp4`);
+    if (pathsEqual(outPath, src)) outPath = path.join(out, `${base}_compressed.mp4`);
     // Two source clips that share a stem but differ in container (clip.mov + clip.mp4)
-    // would map to the same output — disambiguate so neither is lost/overwritten.
+    // would map to the same output — disambiguate so neither is lost/overwritten. Keyed
+    // case-insensitively so Clip.mp4/clip.mp4 collide on Windows (they're one file).
     let cn = 1;
-    while (produced.has(path.resolve(outPath))) { outPath = path.join(out, `${base} (${cn}).mp4`); cn += 1; }
-    produced.add(path.resolve(outPath));
+    while (produced.has(pathKey(outPath))) { outPath = path.join(out, `${base} (${cn}).mp4`); cn += 1; }
+    produced.add(pathKey(outPath));
     let inBytes = 0; try { inBytes = (await fsp.stat(src)).size; } catch { /* ignore */ }
     let durationSec = 0; try { durationSec = (await probeMeta(src)).durationSec || 0; } catch { /* ignore */ }
     if (s.skipExisting) { try { const st = await fsp.stat(outPath); if (st.size > 0) { results.push({ name: f.name, ok: true, skipped: true, outPath, inBytes, outBytes: st.size }); send({ index: i, total: files.length, name: f.name, pct: 100, phase: 'skipped' }); continue; } } catch { /* not there */ } }

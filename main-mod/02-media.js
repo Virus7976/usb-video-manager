@@ -250,7 +250,7 @@ async function copyFileVerified(src, dest, { retries = 1 } = {}) {
 async function organizeMove(srcPath, targetDir, fileName) {
   await ensureDir(targetDir);
   const targetPath = path.join(targetDir, fileName);
-  if (path.resolve(srcPath).toLowerCase() === path.resolve(targetPath).toLowerCase()) {
+  if (pathsEqual(srcPath, targetPath)) {
     return { action: 'in-place', path: targetPath };
   }
   let existing = null;

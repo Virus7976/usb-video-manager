@@ -367,6 +367,15 @@ const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.heic', '.heif', '.dng', '
 function isImagePath(p) { return IMAGE_EXTS.has(path.extname(String(p || '')).toLowerCase()); }
 const THUMB_DIR = path.join(app.getPath('temp'), 'usb-auto-action-thumbs');
 
+// Path identity, filesystem-case-aware. Windows (and default macOS) are case-INSENSITIVE,
+// so "Clip.MP4" and "clip.mp4" are the SAME file — compare case-folded there; compare
+// exactly on case-sensitive filesystems. Use pathsEqual()/pathKey() instead of a raw
+// `path.resolve(a) === path.resolve(b)`, which misses Windows case-dup collisions (two
+// clips could map to one output and silently overwrite, or a src==dest check could miss).
+const PATHS_CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin';
+function pathKey(p) { const r = path.resolve(String(p || '')); return PATHS_CASE_INSENSITIVE ? r.toLowerCase() : r; }
+function pathsEqual(a, b) { return pathKey(a) === pathKey(b); }
+
 function saveConfig() {
   // Guard: if we failed to read an existing config this launch, don't clobber it
   // with our defaults-only in-memory copy.

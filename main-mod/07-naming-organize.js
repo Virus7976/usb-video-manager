@@ -6,7 +6,10 @@
 // ---------------------------------------------------------------------------
 const motionCache = new Map();   // srcPath -> string ('' = unknown)
 let motionCounter = 0;
-function runCapture(cmd, args, timeoutMs = 20000) {
+// Single spawn-and-capture-stdout helper. Returns the captured stdout as a STRING;
+// the '' empty-string sentinel means "no usable output" (spawn threw, timed out, errored,
+// or — with onlyOnSuccess — the process exited non-zero). Callers test `if (out)`.
+function runCapture(cmd, args, { timeoutMs = 20000, onlyOnSuccess = false } = {}) {
   return new Promise((resolve) => {
     let out = ''; let done = false;
     let proc; try { proc = spawn(cmd, args, { windowsHide: true }); } catch { resolve(''); return; }
@@ -14,7 +17,8 @@ function runCapture(cmd, args, timeoutMs = 20000) {
     const t = setTimeout(() => { try { proc.kill(); } catch { /* ignore */ } finish(''); }, timeoutMs);
     proc.stdout.on('data', (d) => { out += d.toString(); });
     proc.on('error', () => finish(''));
-    proc.on('close', () => finish(out));
+    // onlyOnSuccess: discard partial output from a non-zero exit (e.g. ffprobe failure).
+    proc.on('close', (code) => finish(onlyOnSuccess && code !== 0 ? '' : out));
   });
 }
 function classifyGyro(meanMag) {
@@ -25,7 +29,7 @@ function classifyGyro(meanMag) {
 }
 // Find the GoPro GPMF telemetry stream index ('gpmd' codec tag), or -1.
 async function gpmfIndex(srcPath) {
-  const out = await runCapture(config.ffprobePath, ['-v', 'error', '-show_entries', 'stream=index,codec_tag_string', '-of', 'csv=p=0', srcPath], 15000);
+  const out = await runCapture(config.ffprobePath, ['-v', 'error', '-show_entries', 'stream=index,codec_tag_string', '-of', 'csv=p=0', srcPath], { timeoutMs: 15000 });
   for (const line of out.split(/\r?\n/)) {
     const parts = line.split(',');
     if ((parts[1] || '').trim() === 'gpmd') return Number(parts[0]);

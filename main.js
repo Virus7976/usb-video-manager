@@ -2167,8 +2167,10 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       let hasSrc = false; try { hasSrc = !!(src && (await fsp.stat(src)).size > 0); } catch { /* not local */ }
       if (hasSrc) {
         await fsp.mkdir(path.dirname(j.dest), { recursive: true });
-        try { await fsp.rename(src, j.dest); done += 1; okDests.push(j.dest); }
-        catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; okDests.push(j.dest); } catch { failed += 1; } }   // cross-drive
+        // verify-before-destroy move: on a cross-drive copy it fingerprints the copy
+        // before deleting the source, so a truncated copy can't lose the only good file.
+        try { await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
+        catch { failed += 1; }
         prog(path.basename(j.dest));
       } else if (j.phoneRef && !j.phoneRef.sim && j.phoneRef.device && j.phoneRef.rel) {
         // Legacy safety: a video that's still only on the phone — pull it now.
@@ -2186,8 +2188,8 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
     for (const j of list) {
       if (failSet.has(j.phoneRef.name)) { failed += 1; continue; }
       const src = path.join(tmp, j.phoneRef.name);
-      try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await fsp.rename(src, j.dest); done += 1; okDests.push(j.dest); }
-      catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; okDests.push(j.dest); } catch { failed += 1; } }
+      try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
+      catch { failed += 1; }   // verify-before-destroy (never deletes an unverified source)
     }
   }
   return { ok: true, copied: done, failed, total, okDests, cancelled: phoneAbort };
@@ -2332,18 +2334,14 @@ function extractFrame(srcPath, ss, outPath, scale, timeout = 60000) {
   });
 }
 
+// Delegates to the shared runCapture (main-mod/07). onlyOnSuccess mirrors the old
+// "null on non-zero exit" gate via the '' sentinel; probeMeta tests `if (out)`.
 function runFfprobeJson(srcPath) {
-  return new Promise((resolve) => {
-    const proc = killAfter(spawn(config.ffprobePath, [
-      '-v', 'error',
-      '-show_entries', 'format=duration:format_tags=creation_time',
-      '-of', 'json', srcPath
-    ], { windowsHide: true }), 30000);
-    let out = '';
-    proc.stdout.on('data', (d) => { out += d.toString(); });
-    proc.on('error', () => resolve(null));
-    proc.on('close', (code) => resolve(code === 0 ? out : null));
-  });
+  return runCapture(config.ffprobePath, [
+    '-v', 'error',
+    '-show_entries', 'format=duration:format_tags=creation_time',
+    '-of', 'json', srcPath
+  ], { timeoutMs: 30000, onlyOnSuccess: true });
 }
 
 async function probeMeta(srcPath) {
@@ -3058,7 +3056,10 @@ async function getContactSheet(srcPath, n) {
 // ---------------------------------------------------------------------------
 const motionCache = new Map();   // srcPath -> string ('' = unknown)
 let motionCounter = 0;
-function runCapture(cmd, args, timeoutMs = 20000) {
+// Single spawn-and-capture-stdout helper. Returns the captured stdout as a STRING;
+// the '' empty-string sentinel means "no usable output" (spawn threw, timed out, errored,
+// or — with onlyOnSuccess — the process exited non-zero). Callers test `if (out)`.
+function runCapture(cmd, args, { timeoutMs = 20000, onlyOnSuccess = false } = {}) {
   return new Promise((resolve) => {
     let out = ''; let done = false;
     let proc; try { proc = spawn(cmd, args, { windowsHide: true }); } catch { resolve(''); return; }
@@ -3066,7 +3067,8 @@ function runCapture(cmd, args, timeoutMs = 20000) {
     const t = setTimeout(() => { try { proc.kill(); } catch { /* ignore */ } finish(''); }, timeoutMs);
     proc.stdout.on('data', (d) => { out += d.toString(); });
     proc.on('error', () => finish(''));
-    proc.on('close', () => finish(out));
+    // onlyOnSuccess: discard partial output from a non-zero exit (e.g. ffprobe failure).
+    proc.on('close', (code) => finish(onlyOnSuccess && code !== 0 ? '' : out));
   });
 }
 function classifyGyro(meanMag) {
@@ -3077,7 +3079,7 @@ function classifyGyro(meanMag) {
 }
 // Find the GoPro GPMF telemetry stream index ('gpmd' codec tag), or -1.
 async function gpmfIndex(srcPath) {
-  const out = await runCapture(config.ffprobePath, ['-v', 'error', '-show_entries', 'stream=index,codec_tag_string', '-of', 'csv=p=0', srcPath], 15000);
+  const out = await runCapture(config.ffprobePath, ['-v', 'error', '-show_entries', 'stream=index,codec_tag_string', '-of', 'csv=p=0', srcPath], { timeoutMs: 15000 });
   for (const line of out.split(/\r?\n/)) {
     const parts = line.split(',');
     if ((parts[1] || '').trim() === 'gpmd') return Number(parts[0]);

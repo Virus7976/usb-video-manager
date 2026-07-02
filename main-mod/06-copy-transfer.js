@@ -26,18 +26,14 @@ function extractFrame(srcPath, ss, outPath, scale, timeout = 60000) {
   });
 }
 
+// Delegates to the shared runCapture (main-mod/07). onlyOnSuccess mirrors the old
+// "null on non-zero exit" gate via the '' sentinel; probeMeta tests `if (out)`.
 function runFfprobeJson(srcPath) {
-  return new Promise((resolve) => {
-    const proc = killAfter(spawn(config.ffprobePath, [
-      '-v', 'error',
-      '-show_entries', 'format=duration:format_tags=creation_time',
-      '-of', 'json', srcPath
-    ], { windowsHide: true }), 30000);
-    let out = '';
-    proc.stdout.on('data', (d) => { out += d.toString(); });
-    proc.on('error', () => resolve(null));
-    proc.on('close', (code) => resolve(code === 0 ? out : null));
-  });
+  return runCapture(config.ffprobePath, [
+    '-v', 'error',
+    '-show_entries', 'format=duration:format_tags=creation_time',
+    '-of', 'json', srcPath
+  ], { timeoutMs: 30000, onlyOnSuccess: true });
 }
 
 async function probeMeta(srcPath) {

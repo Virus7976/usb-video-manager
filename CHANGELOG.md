@@ -7,6 +7,33 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.19] — 2026-07-01
+
+### Fixed (reliability / safety)
+- **Phone video back-up now verifies before it deletes.** When a phone video had to be
+  copied across drives into the intake folder, the app used to copy then delete the
+  original with no check — a truncated copy could destroy the only good file. It now uses
+  the same "copy → fingerprint-verify → then delete source" path as the rest of the app,
+  so an interrupted cross-drive move never loses footage. (Two spots in the phone copy
+  step.)
+
+### Changed (internal / maintainability — no behavior change)
+- **De-dup round 4** (see [`DEDUP.md`](DEDUP.md)): collapsed the three remaining
+  behavioral-divergence duplicates into one implementation each, keeping the safer
+  behavior: (1) the unsafe cross-drive move now routes through the verified move helper
+  (above); (2) the two `ffprobe`/spawn "capture stdout" helpers are unified into a single
+  `runCapture` with a consistent empty-string "no output" sentinel; (3) the menu-bar and
+  right-click **submenu builders** (~55 near-identical lines each) now share one superset
+  renderer, so submenu fixes happen in one place.
+
+## [0.4.16–0.4.18] — 2026-07-01
+
+### Changed (internal / maintainability — no behavior change)
+- **De-dup rounds 1–3** (see [`DEDUP.md`](DEDUP.md)): single-sourced the video-extension
+  list, `addUnique`, `personThumbHTML`, the Ollama endpoint constant, `canon` /
+  `phoneVisibleMedia`; replaced five near-identical ffmpeg frame-grab copies with one
+  `extractFrame`; and unified the progress-percent math into one clamped `pctOf()`.
+
 ## [0.4.15] — 2026-07-01
 
 ### Changed (internal / maintainability)

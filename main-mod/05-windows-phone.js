@@ -545,8 +545,10 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       let hasSrc = false; try { hasSrc = !!(src && (await fsp.stat(src)).size > 0); } catch { /* not local */ }
       if (hasSrc) {
         await fsp.mkdir(path.dirname(j.dest), { recursive: true });
-        try { await fsp.rename(src, j.dest); done += 1; okDests.push(j.dest); }
-        catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; okDests.push(j.dest); } catch { failed += 1; } }   // cross-drive
+        // verify-before-destroy move: on a cross-drive copy it fingerprints the copy
+        // before deleting the source, so a truncated copy can't lose the only good file.
+        try { await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
+        catch { failed += 1; }
         prog(path.basename(j.dest));
       } else if (j.phoneRef && !j.phoneRef.sim && j.phoneRef.device && j.phoneRef.rel) {
         // Legacy safety: a video that's still only on the phone — pull it now.
@@ -564,8 +566,8 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
     for (const j of list) {
       if (failSet.has(j.phoneRef.name)) { failed += 1; continue; }
       const src = path.join(tmp, j.phoneRef.name);
-      try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await fsp.rename(src, j.dest); done += 1; okDests.push(j.dest); }
-      catch { try { await fsp.copyFile(src, j.dest); await fsp.rm(src, { force: true }); done += 1; okDests.push(j.dest); } catch { failed += 1; } }
+      try { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
+      catch { failed += 1; }   // verify-before-destroy (never deletes an unverified source)
     }
   }
   return { ok: true, copied: done, failed, total, okDests, cancelled: phoneAbort };

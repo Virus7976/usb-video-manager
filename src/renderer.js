@@ -4897,6 +4897,60 @@ function togglePref(key) {
   window.api.setUiPref(key, uiPrefs[key]);
 }
 
+// Resolve a value that may be a function (label/checked/header/submenu can each be lazy).
+const val = (v) => (typeof v === 'function' ? v() : v);
+
+// One flyout SUBMENU builder shared by the menu bar (openMenu) and the right-click
+// context menu (showContextMenu). It renders the SUPERSET of both callers' item features
+// — sep, header, desc (two-line), danger, disabled, check/radio marks — which stays
+// behavior-identical for each caller because menu-bar submenu items never set
+// danger/disabled and context items never set header/desc. Positions the sub as a fixed
+// body child hugging `menuEl`'s right edge, and returns the element so the caller can
+// track it as its own activeSub. Hover in/out is wired to the caller's close-timer.
+function buildSubmenuFlyout(opts, anchorBtn, menuEl, cancelCloseSub, scheduleCloseSub) {
+  const sub = document.createElement('div');
+  sub.className = 'flyout dropdown-menu submenu';
+  sub.dataset.for = anchorBtn.dataset.key || '';
+  const subHasChecks = opts.some((o) => o.type === 'check');   // toggle list → show ✓ column
+  for (const o of opts) {
+    if (o.sep) { const s = document.createElement('div'); s.className = 'flyout-sep'; sub.appendChild(s); continue; }
+    if (o.header) { const h = document.createElement('div'); h.className = 'flyout-header'; h.textContent = val(o.header); sub.appendChild(h); continue; }
+    const oc = val(o.checked);
+    const si = document.createElement('button');
+    // Check-type items show a ✓ column; radio-style items (speed/date) stay highlighted.
+    si.className = 'flyout-item' + (o.type !== 'check' && oc ? ' selected' : '') + (o.desc ? ' has-desc' : '') + (o.danger ? ' danger' : '') + (o.disabled ? ' disabled' : '');
+    let inner = '';
+    if (subHasChecks) inner += `<span class="flyout-check">${o.type === 'check' && oc ? '✓' : ''}</span>`;
+    // A `desc` gives the item a second muted line explaining what it does — used to
+    // disambiguate similar AI actions (analyze vs improve vs auto-name).
+    inner += o.desc
+      ? `<span class="flyout-stack"><span class="flyout-label">${escapeHtml(val(o.label))}</span><span class="flyout-desc">${escapeHtml(o.desc)}</span></span>`
+      : `<span class="flyout-label">${escapeHtml(val(o.label))}</span>`;
+    si.innerHTML = inner;
+    if (!o.disabled) si.addEventListener('click', () => { closePopover(); if (o.action) o.action(); });
+    sub.appendChild(si);
+  }
+  sub.addEventListener('mouseenter', cancelCloseSub);
+  sub.addEventListener('mouseleave', scheduleCloseSub);
+  sub.style.position = 'fixed';
+  sub.style.visibility = 'hidden';
+  // Append to <body>, NOT the menu: the menu's backdrop-filter makes it the containing
+  // block for fixed children (breaking viewport coords) and nesting backdrop-filter
+  // renders see-through. Body keeps it aligned + opaque.
+  document.body.appendChild(sub);
+  const mr = menuEl.getBoundingClientRect();
+  const r = anchorBtn.getBoundingClientRect();
+  const sr = sub.getBoundingClientRect();
+  let left = mr.right - 3;               // hug the menu's right edge (slight overlap bridges hover)
+  if (left + sr.width > window.innerWidth - 8) left = mr.left - sr.width + 3;
+  let top = r.top - 5;
+  if (top + sr.height > window.innerHeight - 8) top = window.innerHeight - sr.height - 8;
+  sub.style.left = `${Math.max(8, left)}px`;
+  sub.style.top = `${Math.max(8, top)}px`;
+  sub.style.visibility = 'visible';
+  return sub;
+}
+
 function openMenu(trigger) {
   const items = MENUS[trigger.dataset.menu] || [];
   const hasChecks = items.some((it) => it.type === 'check');
@@ -4912,48 +4966,8 @@ function openMenu(trigger) {
     cancelCloseSub();
     if (activeSub && activeSub.dataset.for === anchorBtn.dataset.key) return; // already open
     closeSub();
-    const opts = typeof item.submenu === 'function' ? item.submenu() : item.submenu;
-    const sub = document.createElement('div');
-    sub.className = 'flyout dropdown-menu submenu';
-    sub.dataset.for = anchorBtn.dataset.key || '';
-    const subHasChecks = opts.some((o) => o.type === 'check');   // toggle list → show ✓ column
-    for (const o of opts) {
-      if (o.sep) { const s = document.createElement('div'); s.className = 'flyout-sep'; sub.appendChild(s); continue; }
-      if (o.header) { const h = document.createElement('div'); h.className = 'flyout-header'; h.textContent = typeof o.header === 'function' ? o.header() : o.header; sub.appendChild(h); continue; }
-      const si = document.createElement('button');
-      // Check-type items show a ✓ column; radio-style items (speed/date) stay highlighted.
-      si.className = 'flyout-item' + (o.type !== 'check' && o.checked ? ' selected' : '') + (o.desc ? ' has-desc' : '');
-      const olabel = escapeHtml(typeof o.label === 'function' ? o.label() : o.label);
-      let inner = '';
-      if (subHasChecks) inner += `<span class="flyout-check">${o.type === 'check' && o.checked ? '✓' : ''}</span>`;
-      // A `desc` gives the item a second muted line explaining what it does — used to
-      // disambiguate similar AI actions (analyze vs improve vs auto-name).
-      inner += o.desc
-        ? `<span class="flyout-stack"><span class="flyout-label">${olabel}</span><span class="flyout-desc">${escapeHtml(o.desc)}</span></span>`
-        : `<span class="flyout-label">${olabel}</span>`;
-      si.innerHTML = inner;
-      si.addEventListener('click', () => { closePopover(); o.action(); });
-      sub.appendChild(si);
-    }
-    sub.addEventListener('mouseenter', cancelCloseSub);
-    sub.addEventListener('mouseleave', scheduleCloseSub);
-    sub.style.position = 'fixed';
-    sub.style.visibility = 'hidden';
-    // Append to <body>, NOT the menu: the menu's backdrop-filter makes it the
-    // containing block for fixed children (breaking viewport coords) and nesting
-    // backdrop-filter renders see-through. Body keeps it aligned + opaque.
-    document.body.appendChild(sub);
-    const mr = menu.getBoundingClientRect();
-    const r = anchorBtn.getBoundingClientRect();
-    const sr = sub.getBoundingClientRect();
-    let left = mr.right - 3;               // hug the menu's right edge (slight overlap bridges hover)
-    if (left + sr.width > window.innerWidth - 8) left = mr.left - sr.width + 3;
-    let top = r.top - 5;
-    if (top + sr.height > window.innerHeight - 8) top = window.innerHeight - sr.height - 8;
-    sub.style.left = `${Math.max(8, left)}px`;
-    sub.style.top = `${Math.max(8, top)}px`;
-    sub.style.visibility = 'visible';
-    activeSub = sub;
+    const opts = (val(item.submenu) || []).filter(Boolean);
+    activeSub = buildSubmenuFlyout(opts, anchorBtn, menu, cancelCloseSub, scheduleCloseSub);
   }
 
   let keyN = 0;
@@ -5019,37 +5033,12 @@ function showContextMenu(x, y, items) {
   const closeSub = () => { if (activeSub) { activeSub.remove(); activeSub = null; } };
   const scheduleCloseSub = () => { clearTimeout(subTimer); subTimer = setTimeout(closeSub, 600); };
   const cancelCloseSub = () => clearTimeout(subTimer);
-  const val = (v) => (typeof v === 'function' ? v() : v);
   function openSub(anchorBtn, item) {
     cancelCloseSub();
     if (activeSub && activeSub.dataset.for === anchorBtn.dataset.key) return;
     closeSub();
     const opts = (val(item.submenu) || []).filter(Boolean);
-    const sub = document.createElement('div');
-    sub.className = 'flyout dropdown-menu submenu';
-    sub.dataset.for = anchorBtn.dataset.key || '';
-    const subHasChecks = opts.some((o) => o.type === 'check');
-    for (const o of opts) {
-      if (o.sep) { const s = document.createElement('div'); s.className = 'flyout-sep'; sub.appendChild(s); continue; }
-      const oc = val(o.checked);
-      const si = document.createElement('button');
-      si.className = 'flyout-item' + (o.type !== 'check' && oc ? ' selected' : '') + (o.danger ? ' danger' : '') + (o.disabled ? ' disabled' : '');
-      let inner = '';
-      if (subHasChecks) inner += `<span class="flyout-check">${o.type === 'check' && oc ? '✓' : ''}</span>`;
-      inner += `<span class="flyout-label">${escapeHtml(val(o.label))}</span>`;
-      si.innerHTML = inner;
-      if (!o.disabled) si.addEventListener('click', () => { closePopover(); if (o.action) o.action(); });
-      sub.appendChild(si);
-    }
-    sub.addEventListener('mouseenter', cancelCloseSub);
-    sub.addEventListener('mouseleave', scheduleCloseSub);
-    sub.style.position = 'fixed'; sub.style.visibility = 'hidden';
-    document.body.appendChild(sub);
-    const mr = menu.getBoundingClientRect(); const r = anchorBtn.getBoundingClientRect(); const sr = sub.getBoundingClientRect();
-    let left = mr.right - 3; if (left + sr.width > window.innerWidth - 8) left = mr.left - sr.width + 3;
-    let top = r.top - 5; if (top + sr.height > window.innerHeight - 8) top = window.innerHeight - sr.height - 8;
-    sub.style.left = `${Math.max(8, left)}px`; sub.style.top = `${Math.max(8, top)}px`; sub.style.visibility = 'visible';
-    activeSub = sub;
+    activeSub = buildSubmenuFlyout(opts, anchorBtn, menu, cancelCloseSub, scheduleCloseSub);
   }
   let keyN = 0;
   for (const it of items) {

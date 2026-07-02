@@ -51,7 +51,7 @@ ipcMain.handle('people:save', (_e, payload) => {
   if (!descriptors.length && thumb) p.faces.push({ d: null, t: thumb, confirmed });
   if (p.faces.length > 80) p.faces = p.faces.slice(-80);
   if (thumb && confirmed && !p.thumb) p.thumb = thumb;
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true, id: p.id };
 });
 // Promote an unconfirmed face to confirmed.
@@ -61,7 +61,7 @@ ipcMain.handle('people:confirmFace', (_e, payload) => {
   if (!p || !p.faces || !(idx >= 0 && idx < p.faces.length)) return { ok: false };
   p.faces[idx].confirmed = true;
   if (!p.thumb && p.faces[idx].t) p.thumb = p.faces[idx].t;
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true };
 });
 // Move a face into the global Ignored bin (won't be suggested as a person again).
@@ -75,7 +75,7 @@ ipcMain.handle('faces:ignore', (_e, payload) => {
     ig.push({ d: payload.descriptor, t: String(payload.thumb || ''), confirmed: false });
   }
   if (ig.length > 200) config.ai.ignored = ig.slice(-200);
-  saveConfig();
+  saveStore('ai.people'); saveConfig();
   return { ok: true };
 });
 // Move one face from person `fromId` to a (possibly new) person `toName` — for
@@ -96,13 +96,13 @@ ipcMain.handle('people:reassignFace', (_e, payload) => {
   if (!(to.faces || []).some((f) => f.d && faceDist(f.d, face.d) < 0.2)) to.faces.push({ d: face.d, t: face.t, confirmed: true });
   if (face.t && !to.thumb) to.thumb = face.t;
   if (to.faces.length > 80) to.faces = to.faces.slice(-80);
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true, toId: to.id, toName: to.name };
 });
 ipcMain.handle('faces:listIgnored', () => aiIgnoredFaces().map((f, i) => ({ i, t: f.t || '' })));
 ipcMain.handle('faces:unignore', (_e, idx) => { const ig = aiIgnoredFaces(); const i = Number(idx); if (i >= 0 && i < ig.length) { ig.splice(i, 1); saveConfig(); } return { ok: true }; });
-ipcMain.handle('people:rename', (_e, payload) => { const p = aiPeople().find((x) => x.id === (payload && payload.id)); if (p) { p.name = String(payload.name || p.name).trim() || p.name; saveConfig(); } return { ok: true }; });
-ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveConfig(); return { ok: true }; });
+ipcMain.handle('people:rename', (_e, payload) => { const p = aiPeople().find((x) => x.id === (payload && payload.id)); if (p) { p.name = String(payload.name || p.name).trim() || p.name; saveStore('ai.people'); } return { ok: true }; });
+ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveStore('ai.people'); return { ok: true }; });
 // Merge `fromId` into `intoId` (combines faces, deletes the source) — for fixing
 // the same person split across two names.
 ipcMain.handle('people:merge', (_e, payload) => {
@@ -111,7 +111,7 @@ ipcMain.handle('people:merge', (_e, payload) => {
   if (!into || !from || into === from) return { ok: false };
   into.faces = [...(into.faces || []), ...(from.faces || [])].slice(-60);
   config.ai.people = aiPeople().filter((x) => x.id !== from.id);
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true };
 });
 // Remove one face (a wrong crop) from a person.
@@ -121,14 +121,14 @@ ipcMain.handle('people:removeFace', (_e, payload) => {
   if (!p || !Array.isArray(p.faces) || !(idx >= 0 && idx < p.faces.length)) return { ok: false };
   p.faces.splice(idx, 1);
   if (p.thumb && !(p.faces || []).some((f) => f.t === p.thumb)) p.thumb = personCover(p);
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true, faces: (p.faces || []).map((f, i) => ({ i, t: f.t || '' })) };
 });
 ipcMain.handle('people:setCover', (_e, payload) => {
   const p = aiPeople().find((x) => x.id === (payload && payload.id));
   const t = String((payload && payload.thumb) || '');
   if (!p || !t) return { ok: false };
-  p.thumb = t; saveConfig(); return { ok: true };
+  p.thumb = t; saveStore('ai.people'); return { ok: true };
 });
 // Given a face descriptor, return the best-matching known person (or null).
 ipcMain.handle('people:match', (_e, payload) => {

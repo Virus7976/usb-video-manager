@@ -7,6 +7,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.26] — 2026-07-02
+
+### Changed (internal / performance)
+- **The app opens and saves much faster, especially with lots of tagged people.** The face
+  data (recognition descriptors for the People feature) was by far the biggest thing in the
+  settings file — often hundreds of KB — and the whole settings file was rewritten on every
+  little change, so each save re-wrote all of it. Face data now lives in its own file
+  (`people.json`) and saves on its own, and the AI clip-observation cache likewise. On a
+  typical setup the main settings file drops from ~330KB to ~12KB, so ordinary settings
+  saves are near-instant. Existing face data migrates automatically on first launch
+  (non-destructive — nothing is removed until it's safely moved). Completes the ConfigStore
+  split started in 0.4.20.
+
 ## [0.4.25] — 2026-07-02
 
 ### Changed (internal / maintainability)

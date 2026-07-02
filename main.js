@@ -75,14 +75,53 @@ const USER_CONFIG = path.join(ROAMING_DIR, 'USB SD Auto-Action', 'config.json');
 // existing reader is unchanged) but persisted INDEPENDENTLY via saveStore(key). One
 // writer per file (single-instance lock) makes a fresh re-read cheap and race-free.
 const STORE_DIR = path.join(ROAMING_DIR, 'USB SD Auto-Action');
+// A store key may be a top-level config key OR a dotted path into it ('ai.people'). The
+// big one is ai.people — face descriptors that used to be ~95% of config.json, so every
+// settings toggle re-serialized hundreds of KB of face data. Split out, config.json is tiny.
 const STORE_FILES = {
   renameDrafts:   path.join(STORE_DIR, 'drafts.json'),
   finalMeta:      path.join(STORE_DIR, 'final-meta.json'),
   renameVersions: path.join(STORE_DIR, 'versions.json'),
   projectLedger:  path.join(STORE_DIR, 'project-ledger.json'),
+  'ai.people':    path.join(STORE_DIR, 'people.json'),
+  'ai.clipObs':   path.join(STORE_DIR, 'clip-observations.json'),
 };
-const STORE_DEFAULT = { renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [] };
+const STORE_DEFAULT = {
+  renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [],
+  'ai.people': () => [], 'ai.clipObs': () => ({}),
+};
 const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
+
+// Read/write a store's value by key, where key may be dotted ('ai.people').
+function storeGet(key) {
+  if (!key.includes('.')) return config[key];
+  let o = config;
+  for (const p of key.split('.')) { if (o == null || typeof o !== 'object') return undefined; o = o[p]; }
+  return o;
+}
+function storeSet(key, val) {
+  if (!key.includes('.')) { config[key] = val; return; }
+  const parts = key.split('.'); let o = config;
+  for (let i = 0; i < parts.length - 1; i += 1) { if (o[parts[i]] == null || typeof o[parts[i]] !== 'object') o[parts[i]] = {}; o = o[parts[i]]; }
+  o[parts[parts.length - 1]] = val;
+}
+// Build the object to write to config.json: everything EXCEPT the sidecar stores. Nested
+// store keys (ai.people/ai.clipObs) clone their parent so the live config isn't mutated.
+function stripStoresForWrite() {
+  const topStores = new Set(Object.keys(STORE_FILES).filter((k) => !k.includes('.')));
+  const nestedByParent = {};
+  for (const k of Object.keys(STORE_FILES)) { if (k.includes('.')) { const [p, ...rest] = k.split('.'); (nestedByParent[p] = nestedByParent[p] || []).push(rest.join('.')); } }
+  const out = {};
+  for (const k of Object.keys(config)) {
+    if (topStores.has(k)) continue;
+    if (nestedByParent[k] && config[k] && typeof config[k] === 'object') {
+      const clone = { ...config[k] };
+      for (const leaf of nestedByParent[k]) delete clone[leaf];   // single-level nesting
+      out[k] = clone;
+    } else out[k] = config[k];
+  }
+  return out;
+}
 
 // Atomic JSON write: write a temp file, then rename it over the target. Rename is
 // atomic, so a concurrent reader (e.g. a relaunching instance during quit) always
@@ -320,10 +359,10 @@ function loadStores() {
     const file = STORE_FILES[key];
     const j = readJsonRetry(file);
     if (j !== null && j !== undefined) {
-      config[key] = j;                                            // sidecar wins
+      storeSet(key, j);                                           // sidecar wins
       try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
-    } else if (config[key] === undefined) {
-      config[key] = STORE_DEFAULT[key]();
+    } else if (storeGet(key) === undefined) {
+      storeSet(key, STORE_DEFAULT[key]());
     } // else keep the config.json-sourced value as the migration source
   }
 }
@@ -347,7 +386,8 @@ function saveStore(key) {
   if (config_readFailed) return;   // same guard as saveConfig — don't clobber unread data
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const val = (config[key] === undefined || config[key] === null) ? STORE_DEFAULT[key]() : config[key];
+    const cur = storeGet(key);
+    const val = (cur === undefined || cur === null) ? STORE_DEFAULT[key]() : cur;
     writeJsonAtomic(file, val);
     try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
   } catch (err) { console.error(`Could not save store ${key}:`, err.message); }
@@ -364,11 +404,11 @@ function freshStore(key) {
     try { mtime = fs.statSync(file).mtimeMs; } catch { exists = false; }   // no file yet → in-memory
     if (exists && !(storeSelfMtimeMs[key] && mtime <= storeSelfMtimeMs[key])) {
       const j = readJsonRetry(file);
-      if (j !== null && j !== undefined) { config[key] = j; storeSelfMtimeMs[key] = mtime; }
+      if (j !== null && j !== undefined) { storeSet(key, j); storeSelfMtimeMs[key] = mtime; }
     }
   }
-  if (config[key] === undefined || config[key] === null) config[key] = (STORE_DEFAULT[key] || (() => ({})))();
-  return config[key];
+  if (storeGet(key) === undefined || storeGet(key) === null) storeSet(key, (STORE_DEFAULT[key] || (() => ({})))());
+  return storeGet(key);
 }
 
 const VIDEO_EXTS = new Set(config.videoExtensions.map((e) => e.toLowerCase()));
@@ -393,11 +433,10 @@ function saveConfig() {
   if (config_readFailed) { console.error('Skipping config save (read had failed this launch).'); return; }
   try {
     fs.mkdirSync(path.dirname(USER_CONFIG), { recursive: true });
-    // The sidecar stores persist to their own files (saveStore) — strip them here so a
-    // settings save no longer rewrites hundreds of KB of drafts/versions/meta/ledger.
-    const toWrite = {};
-    for (const k of Object.keys(config)) if (!STORE_FILES[k]) toWrite[k] = config[k];
-    writeJsonAtomic(USER_CONFIG, toWrite);
+    // The sidecar stores persist to their own files (saveStore) — strip them here (incl.
+    // nested ones like ai.people) so a settings save no longer rewrites hundreds of KB of
+    // drafts/versions/meta/ledger/face-descriptors.
+    writeJsonAtomic(USER_CONFIG, stripStoresForWrite());
     try { lastSelfWriteMtimeMs = fs.statSync(USER_CONFIG).mtimeMs; } catch { /* ignore */ }
   } catch (err) {
     console.error('Could not save config:', err.message);
@@ -1587,7 +1626,7 @@ ipcMain.handle('clipObs:save', (_e, payload) => {
   // Cap to 4000 most-recent observations.
   const keys = Object.keys(store);
   if (keys.length > 4000) { keys.sort((a, b) => (store[a].ts || 0) - (store[b].ts || 0)); for (const k of keys.slice(0, keys.length - 4000)) delete store[k]; }
-  saveConfig();
+  saveStore('ai.clipObs');
   return true;
 });
 
@@ -4096,7 +4135,7 @@ ipcMain.handle('people:save', (_e, payload) => {
   if (!descriptors.length && thumb) p.faces.push({ d: null, t: thumb, confirmed });
   if (p.faces.length > 80) p.faces = p.faces.slice(-80);
   if (thumb && confirmed && !p.thumb) p.thumb = thumb;
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true, id: p.id };
 });
 // Promote an unconfirmed face to confirmed.
@@ -4106,7 +4145,7 @@ ipcMain.handle('people:confirmFace', (_e, payload) => {
   if (!p || !p.faces || !(idx >= 0 && idx < p.faces.length)) return { ok: false };
   p.faces[idx].confirmed = true;
   if (!p.thumb && p.faces[idx].t) p.thumb = p.faces[idx].t;
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true };
 });
 // Move a face into the global Ignored bin (won't be suggested as a person again).
@@ -4120,7 +4159,7 @@ ipcMain.handle('faces:ignore', (_e, payload) => {
     ig.push({ d: payload.descriptor, t: String(payload.thumb || ''), confirmed: false });
   }
   if (ig.length > 200) config.ai.ignored = ig.slice(-200);
-  saveConfig();
+  saveStore('ai.people'); saveConfig();
   return { ok: true };
 });
 // Move one face from person `fromId` to a (possibly new) person `toName` — for
@@ -4141,13 +4180,13 @@ ipcMain.handle('people:reassignFace', (_e, payload) => {
   if (!(to.faces || []).some((f) => f.d && faceDist(f.d, face.d) < 0.2)) to.faces.push({ d: face.d, t: face.t, confirmed: true });
   if (face.t && !to.thumb) to.thumb = face.t;
   if (to.faces.length > 80) to.faces = to.faces.slice(-80);
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true, toId: to.id, toName: to.name };
 });
 ipcMain.handle('faces:listIgnored', () => aiIgnoredFaces().map((f, i) => ({ i, t: f.t || '' })));
 ipcMain.handle('faces:unignore', (_e, idx) => { const ig = aiIgnoredFaces(); const i = Number(idx); if (i >= 0 && i < ig.length) { ig.splice(i, 1); saveConfig(); } return { ok: true }; });
-ipcMain.handle('people:rename', (_e, payload) => { const p = aiPeople().find((x) => x.id === (payload && payload.id)); if (p) { p.name = String(payload.name || p.name).trim() || p.name; saveConfig(); } return { ok: true }; });
-ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveConfig(); return { ok: true }; });
+ipcMain.handle('people:rename', (_e, payload) => { const p = aiPeople().find((x) => x.id === (payload && payload.id)); if (p) { p.name = String(payload.name || p.name).trim() || p.name; saveStore('ai.people'); } return { ok: true }; });
+ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveStore('ai.people'); return { ok: true }; });
 // Merge `fromId` into `intoId` (combines faces, deletes the source) — for fixing
 // the same person split across two names.
 ipcMain.handle('people:merge', (_e, payload) => {
@@ -4156,7 +4195,7 @@ ipcMain.handle('people:merge', (_e, payload) => {
   if (!into || !from || into === from) return { ok: false };
   into.faces = [...(into.faces || []), ...(from.faces || [])].slice(-60);
   config.ai.people = aiPeople().filter((x) => x.id !== from.id);
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true };
 });
 // Remove one face (a wrong crop) from a person.
@@ -4166,14 +4205,14 @@ ipcMain.handle('people:removeFace', (_e, payload) => {
   if (!p || !Array.isArray(p.faces) || !(idx >= 0 && idx < p.faces.length)) return { ok: false };
   p.faces.splice(idx, 1);
   if (p.thumb && !(p.faces || []).some((f) => f.t === p.thumb)) p.thumb = personCover(p);
-  saveConfig();
+  saveStore('ai.people');
   return { ok: true, faces: (p.faces || []).map((f, i) => ({ i, t: f.t || '' })) };
 });
 ipcMain.handle('people:setCover', (_e, payload) => {
   const p = aiPeople().find((x) => x.id === (payload && payload.id));
   const t = String((payload && payload.thumb) || '');
   if (!p || !t) return { ok: false };
-  p.thumb = t; saveConfig(); return { ok: true };
+  p.thumb = t; saveStore('ai.people'); return { ok: true };
 });
 // Given a face descriptor, return the best-matching known person (or null).
 ipcMain.handle('people:match', (_e, payload) => {

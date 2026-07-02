@@ -542,7 +542,7 @@ ipcMain.handle('clipObs:save', (_e, payload) => {
   // Cap to 4000 most-recent observations.
   const keys = Object.keys(store);
   if (keys.length > 4000) { keys.sort((a, b) => (store[a].ts || 0) - (store[b].ts || 0)); for (const k of keys.slice(0, keys.length - 4000)) delete store[k]; }
-  saveConfig();
+  saveStore('ai.clipObs');
   return true;
 });
 

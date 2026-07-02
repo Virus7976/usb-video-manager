@@ -100,11 +100,17 @@ cacheTag/err-msg helpers.
    correct counts; **config.json 1073KB → 385KB (−64%)**; settings intact; drafts/versions/
    finalMeta/ledger round-trips pass via CDP. *Vestigial now: `readConfigFresh` +
    `lastSelfWriteMtimeMs` (no callers) — remove in a later pass.*
-   **STEP 2 (next):** the `config.ai` nested stores (`ai.memories`, `ai.clipObs` capped
-   4000, `ai.styleExamples`, `ai.feedbackLog`) are the remaining amplifiers inside the now
-   385KB config.json — split `ai.clipObs`/`ai.memories` out the same way. Optional
-   `patchConfig`/`saveKeys` accessor + call-site migration once the check-primitives guard
-   lands (so scattered `config.x=;saveConfig()` can't come back).
+   **STEP 2 — DONE + VERIFIED (v0.4.26, 2026-07-02).** Extended the sidecar mechanism to
+   NESTED keys (`storeGet`/`storeSet` dotted-path + `stripStoresForWrite` that clones the
+   parent so the live config isn't mutated) and split `ai.people` (face descriptors — the
+   real monster) + `ai.clipObs` into `people.json`/`clip-observations.json`. Rewired all 9
+   `ai.people` mutation handlers (08) + clipObs:set (03) to `saveStore`; `faces:ignore` does
+   both (people→sidecar, ignored stays in config); `faces:unignore`/`ai:replaceMemories`
+   stay `saveConfig`. **On-disk verified:** non-destructive migration wrote people.json
+   (356KB, 2 people, 19+8 faces intact) + clip-observations.json; **config.json 385KB → 10KB
+   (−97%)**; ai.memories/enabled/ui preserved; CDP peopleCount=2. Unit-tested the nested
+   helpers incl. strip-non-mutation. Remaining ai.* am(memories/styleExamples/feedbackLog)
+   are tiny — not worth splitting.
 3. **P4 streamSpawn — DONE + VERIFIED (v0.4.23, 2026-07-02).** Added `streamSpawn(cmd,
    args,{onLine,onData,idleMs,timeoutMs,env})` in 07 (streaming sibling of `runCapture`)
    with an IDLE watchdog (resets on each output chunk, so a slow-but-progressing job isn't

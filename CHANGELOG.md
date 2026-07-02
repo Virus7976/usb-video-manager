@@ -7,6 +7,21 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.21] — 2026-07-01
+
+### Fixed (data integrity)
+- **Backups are now verified before they're trusted.** Every backup copy — the NAS mirror
+  at import, the NAS mirror at Finalize, and the flat photo backup to your computer/NAS —
+  now copies then **fingerprint-checks the result** (with one automatic retry) before
+  counting it as done. Previously the photo backup trusted a copy if the file size merely
+  looked right, so a truncated/interrupted network copy could be silently accepted and the
+  original later deleted. One shared `copyFileVerified` primitive now backs all three, so
+  they can't drift apart (the two NAS mirrors had quietly diverged in how they decided a
+  file was "already there").
+- **Photo backup no longer reports success when photos failed.** The flat backup returned
+  "OK" unconditionally; it now reports the real copied/failed counts and the summary shows
+  "N/M photos … ⚠ K failed to copy" so a partial backup can't look complete.
+
 ## [0.4.20] — 2026-07-01
 
 ### Changed (internal / performance — no behavior change)

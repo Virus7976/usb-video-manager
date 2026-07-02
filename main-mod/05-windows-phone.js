@@ -581,14 +581,16 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   const sender = evt.sender; let done = 0; const total = jobs.length; const errors = [];
   for (const j of jobs) {
     try {
-      let dst = null; try { dst = await fsp.stat(j.dest); } catch { /* not there */ }
-      const src = await fsp.stat(j.src);
-      if (!dst || dst.size !== src.size) { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await fsp.copyFile(j.src, j.dest); }  // skip if already there
+      // Verified copy: fingerprint-checks the result before trusting it (a truncated
+      // network copy of the right byte-count is no longer silently accepted as done).
+      await copyFileVerified(j.src, j.dest);
       done += 1;
     } catch (e) { errors.push((e && e.message) || String(e)); }
     try { sender.send('phone:copy-progress', { done, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
   }
-  return { ok: true, copied: done, total, error: errors[0] || '' };
+  // ok reflects reality — false when any file failed (was unconditionally true, so a
+  // partial backup with dropped photos reported success).
+  return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, error: errors[0] || '' };
 });
 
 // ---------------------------------------------------------------------------

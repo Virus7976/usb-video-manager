@@ -426,21 +426,9 @@ ipcMain.handle('copy:start', async (evt, payload) => {
       if (nasRoot) {
         try {
           const nasTarget = path.join(nasRoot, path.basename(destPath));
-          let need = true;
-          try {
-            const st = await fsp.stat(nasTarget);
-            if (st.size === (f.size || 0) && await fingerprintsMatch(destPath, nasTarget)) need = false;
-          } catch { /* not there yet */ }
-          if (need) {
-            await fsp.copyFile(destPath, nasTarget);
-            if (!await fingerprintsMatch(destPath, nasTarget)) {
-              await fsp.copyFile(destPath, nasTarget);   // one retry
-              if (!await fingerprintsMatch(destPath, nasTarget)) throw new Error('verification failed after copy');
-            }
-            nasSummary.verified = (nasSummary.verified || 0) + 1;
-          } else {
-            nasSummary.skipped = (nasSummary.skipped || 0) + 1;
-          }
+          const r = await copyFileVerified(destPath, nasTarget);   // copy → fingerprint-verify → retry
+          if (r === 'skipped') nasSummary.skipped = (nasSummary.skipped || 0) + 1;
+          else nasSummary.verified = (nasSummary.verified || 0) + 1;
           nasSummary.ok += 1;
         } catch (err) {
           nasSummary.failed += 1;

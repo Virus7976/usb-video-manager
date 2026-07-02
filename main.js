@@ -816,6 +816,31 @@ async function moveFileCrossDevice(src, dest) {
   await fsp.unlink(src);
 }
 
+// Verified COPY — the sibling of moveFileCrossDevice (which verifies then deletes the
+// source). Copy src → dest and PROVE it landed intact before trusting it: if a
+// byte-identical file is already there, skip; otherwise copy → fingerprint-verify → one
+// retry → throw on a final mismatch. A truncated/interrupted copy is NEVER silently
+// accepted as done. fingerprintsMatch already compares size, so there's no separate
+// size pre-check (a size-only or stale scan-time-size check was the bug that let the two
+// hand-rolled NAS mirrors diverge and let phone backups trust a truncated copy).
+// Returns 'copied' | 'skipped'. Throws on failure so callers count it as failed.
+async function copyFileVerified(src, dest, { retries = 1 } = {}) {
+  await ensureDir(path.dirname(dest));
+  try {
+    await fsp.stat(dest);
+    if (await fingerprintsMatch(src, dest)) return 'skipped';   // already there, identical
+  } catch { /* not there yet → copy it */ }
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      await fsp.copyFile(src, dest);
+      if (await fingerprintsMatch(src, dest)) return 'copied';
+      lastErr = new Error('verification failed after copy');
+    } catch (err) { lastErr = err; }
+  }
+  throw lastErr || new Error('copy failed');
+}
+
 // Move a file into targetDir, idempotently:
 //  - already at the target path           → 'in-place' (skip)
 //  - a byte-identical file already there   → 'skip-dup' (true duplicate / re-run, skip)
@@ -2289,14 +2314,16 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   const sender = evt.sender; let done = 0; const total = jobs.length; const errors = [];
   for (const j of jobs) {
     try {
-      let dst = null; try { dst = await fsp.stat(j.dest); } catch { /* not there */ }
-      const src = await fsp.stat(j.src);
-      if (!dst || dst.size !== src.size) { await fsp.mkdir(path.dirname(j.dest), { recursive: true }); await fsp.copyFile(j.src, j.dest); }  // skip if already there
+      // Verified copy: fingerprint-checks the result before trusting it (a truncated
+      // network copy of the right byte-count is no longer silently accepted as done).
+      await copyFileVerified(j.src, j.dest);
       done += 1;
     } catch (e) { errors.push((e && e.message) || String(e)); }
     try { sender.send('phone:copy-progress', { done, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
   }
-  return { ok: true, copied: done, total, error: errors[0] || '' };
+  // ok reflects reality — false when any file failed (was unconditionally true, so a
+  // partial backup with dropped photos reported success).
+  return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, error: errors[0] || '' };
 });
 
 // ---------------------------------------------------------------------------
@@ -2820,21 +2847,9 @@ ipcMain.handle('copy:start', async (evt, payload) => {
       if (nasRoot) {
         try {
           const nasTarget = path.join(nasRoot, path.basename(destPath));
-          let need = true;
-          try {
-            const st = await fsp.stat(nasTarget);
-            if (st.size === (f.size || 0) && await fingerprintsMatch(destPath, nasTarget)) need = false;
-          } catch { /* not there yet */ }
-          if (need) {
-            await fsp.copyFile(destPath, nasTarget);
-            if (!await fingerprintsMatch(destPath, nasTarget)) {
-              await fsp.copyFile(destPath, nasTarget);   // one retry
-              if (!await fingerprintsMatch(destPath, nasTarget)) throw new Error('verification failed after copy');
-            }
-            nasSummary.verified = (nasSummary.verified || 0) + 1;
-          } else {
-            nasSummary.skipped = (nasSummary.skipped || 0) + 1;
-          }
+          const r = await copyFileVerified(destPath, nasTarget);   // copy → fingerprint-verify → retry
+          if (r === 'skipped') nasSummary.skipped = (nasSummary.skipped || 0) + 1;
+          else nasSummary.verified = (nasSummary.verified || 0) + 1;
           nasSummary.ok += 1;
         } catch (err) {
           nasSummary.failed += 1;
@@ -4994,24 +5009,10 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       emit(i, it.name, 'backup');
       try {
         const nasDir = path.join(nasRoot, ...parts);
-        await ensureDir(nasDir);
         const nasTarget = path.join(nasDir, finalFileName);
-        // Skip only if the NAS copy already matches by CONTENT (not just size), and
-        // VERIFY after copying with one retry — same integrity guarantee as the
-        // import-time NAS mirror, so a truncated/corrupt backup is never trusted.
-        let need = true;
-        try {
-          const a = await fsp.stat(nasTarget); const b = await fsp.stat(curPath);
-          if (a.size === b.size && await fingerprintsMatch(curPath, nasTarget)) need = false;
-        } catch { /* not there */ }
-        if (need) {
-          await fsp.copyFile(curPath, nasTarget);
-          if (!await fingerprintsMatch(curPath, nasTarget)) {
-            await fsp.copyFile(curPath, nasTarget);   // one retry
-            if (!await fingerprintsMatch(curPath, nasTarget)) throw new Error('NAS verify failed after copy');
-          }
-          summary.backedUp += 1;
-        }
+        // Same verified-copy path as the import-time NAS mirror — one shared primitive,
+        // so a truncated/corrupt backup is never trusted (and the two can't drift).
+        if (await copyFileVerified(curPath, nasTarget) === 'copied') summary.backedUp += 1;
       } catch (err) { summary.errors.push(`Backup ${it.name}: ${err.message}`); }
     }
 

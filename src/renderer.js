@@ -9517,10 +9517,13 @@ async function distributeFlowPhotos() {
   const { jobs, routedN } = buildPhotoJobs(photos, true);
   if (!jobs.length) return '';
   $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
-  let copied = 0;
-  try { const r = await window.api.distributePhotos({ jobs }); copied = (r && r.copied) || 0; } catch { /* non-fatal */ }
+  let copied = 0; let failed = 0;
+  try { const r = await window.api.distributePhotos({ jobs }); copied = (r && r.copied) || 0; failed = (r && r.failed) || 0; } catch { failed = jobs.length; }
   const names = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ') || 'Photos Temp';
-  return `${photos.length} photo${photos.length !== 1 ? 's' : ''} → ${names}${routedN ? ` (${routedN} into Projects)` : ''}`;
+  // Surface partial failures instead of implying every photo copied (the copy is now
+  // fingerprint-verified, so "failed" means a real, unverifiable copy — worth showing).
+  const warn = failed ? ` — ⚠ ${failed} failed to copy` : '';
+  return `${copied}/${photos.length} photo${photos.length !== 1 ? 's' : ''} → ${names}${routedN ? ` (${routedN} into Projects)` : ''}${warn}`;
 }
 
 // Phone backup copy step: photos are ALREADY in "04 - Photos Temp"; here we copy the

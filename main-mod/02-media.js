@@ -217,6 +217,31 @@ async function moveFileCrossDevice(src, dest) {
   await fsp.unlink(src);
 }
 
+// Verified COPY — the sibling of moveFileCrossDevice (which verifies then deletes the
+// source). Copy src → dest and PROVE it landed intact before trusting it: if a
+// byte-identical file is already there, skip; otherwise copy → fingerprint-verify → one
+// retry → throw on a final mismatch. A truncated/interrupted copy is NEVER silently
+// accepted as done. fingerprintsMatch already compares size, so there's no separate
+// size pre-check (a size-only or stale scan-time-size check was the bug that let the two
+// hand-rolled NAS mirrors diverge and let phone backups trust a truncated copy).
+// Returns 'copied' | 'skipped'. Throws on failure so callers count it as failed.
+async function copyFileVerified(src, dest, { retries = 1 } = {}) {
+  await ensureDir(path.dirname(dest));
+  try {
+    await fsp.stat(dest);
+    if (await fingerprintsMatch(src, dest)) return 'skipped';   // already there, identical
+  } catch { /* not there yet → copy it */ }
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      await fsp.copyFile(src, dest);
+      if (await fingerprintsMatch(src, dest)) return 'copied';
+      lastErr = new Error('verification failed after copy');
+    } catch (err) { lastErr = err; }
+  }
+  throw lastErr || new Error('copy failed');
+}
+
 // Move a file into targetDir, idempotently:
 //  - already at the target path           → 'in-place' (skip)
 //  - a byte-identical file already there   → 'skip-dup' (true duplicate / re-run, skip)

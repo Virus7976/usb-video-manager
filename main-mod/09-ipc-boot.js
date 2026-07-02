@@ -359,24 +359,10 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       emit(i, it.name, 'backup');
       try {
         const nasDir = path.join(nasRoot, ...parts);
-        await ensureDir(nasDir);
         const nasTarget = path.join(nasDir, finalFileName);
-        // Skip only if the NAS copy already matches by CONTENT (not just size), and
-        // VERIFY after copying with one retry — same integrity guarantee as the
-        // import-time NAS mirror, so a truncated/corrupt backup is never trusted.
-        let need = true;
-        try {
-          const a = await fsp.stat(nasTarget); const b = await fsp.stat(curPath);
-          if (a.size === b.size && await fingerprintsMatch(curPath, nasTarget)) need = false;
-        } catch { /* not there */ }
-        if (need) {
-          await fsp.copyFile(curPath, nasTarget);
-          if (!await fingerprintsMatch(curPath, nasTarget)) {
-            await fsp.copyFile(curPath, nasTarget);   // one retry
-            if (!await fingerprintsMatch(curPath, nasTarget)) throw new Error('NAS verify failed after copy');
-          }
-          summary.backedUp += 1;
-        }
+        // Same verified-copy path as the import-time NAS mirror — one shared primitive,
+        // so a truncated/corrupt backup is never trusted (and the two can't drift).
+        if (await copyFileVerified(curPath, nasTarget) === 'copied') summary.backedUp += 1;
       } catch (err) { summary.errors.push(`Backup ${it.name}: ${err.message}`); }
     }
 

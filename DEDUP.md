@@ -78,9 +78,17 @@ route `subjects`/`locations` through the existing `makeListHandlers` factory; sm
 cacheTag/err-msg helpers.
 
 **Staged plan — each stage independently ships + CDP-verifies; ordered by bug-prevention:**
-1. **P1 + P2** (data integrity): add `copyFileVerified`, route both NAS mirrors + phone
-   copies through it, adopt the result convention on the copy/backup handlers. Fixes real
-   silent-data-loss + false-success bugs. *Do carefully, CDP-verify NAS mirror + resume.*
+1. **P1 + P2 — DONE + VERIFIED (v0.4.21, 2026-07-01).** Added `copyFileVerified(src,dest)`
+   in 02-media.js (ensureDir → skip-if-fingerprint-identical → copy → verify → 1 retry →
+   throw; returns 'copied'|'skipped'). Routed the import NAS mirror (06:429), the finalize
+   NAS mirror (09:365), and `phone:distribute` (05:586) through it — the two NAS mirrors no
+   longer diverge, and the size-only phone copy is now content-verified. P2:
+   `phone:distribute` returns `{ok:!failed, copied, failed, errors[]}` (was `ok:true`
+   always) and the renderer shows `N/M photos … ⚠ K failed`. **Verified:** control-flow
+   unit test (fresh→copied, rerun→skipped, **same-size-different-content→re-copied not
+   skipped**, missing-src→throws) all pass; live 0.4.21 boots healthy, store round-trips
+   still pass. NOTE: real NAS/phone hardware not exercised from here — the primitive's
+   logic is proven, the wiring is syntactic + boot-verified.
 2. **P3 ConfigStore — STEP 1 DONE + VERIFIED (v0.4.20, 2026-07-01).** Split the four
    top-level append stores (`renameDrafts`/`finalMeta`/`renameVersions`/`projectLedger`)
    into their own sidecar files (`drafts.json`/`final-meta.json`/`versions.json`/

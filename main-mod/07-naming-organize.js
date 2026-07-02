@@ -21,6 +21,40 @@ function runCapture(cmd, args, { timeoutMs = 20000, onlyOnSuccess = false } = {}
     proc.on('close', (code) => finish(onlyOnSuccess && code !== 0 ? '' : out));
   });
 }
+
+// STREAMING spawn — for long jobs whose stdout is parsed line-by-line as it runs (vs
+// runCapture, which buffers then returns). Streams each stdout line to onLine, captures
+// stderr, and supports an IDLE watchdog: if the child produces NO output for idleMs it's
+// assumed hung (e.g. an MTP CopyHere stuck in a COM call on a yanked phone) and killed —
+// unlike killAfter's fixed deadline, the idle timer RESETS on every chunk, so a genuinely
+// long-but-progressing transfer is never killed. Resolves {code, out, err, timedOut}.
+function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env } = {}) {
+  return new Promise((resolve) => {
+    let proc;
+    try { proc = spawn(cmd, args, { windowsHide: true, ...(env ? { env } : {}) }); }
+    catch (e) { resolve({ code: -1, out: '', err: (e && e.message) || String(e), timedOut: false }); return; }
+    let out = ''; let err = ''; let buf = ''; let done = false; let timedOut = false;
+    let idleTimer = null; let hardTimer = null;
+    const kill = () => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } };
+    const resetIdle = () => { if (!idleMs) return; clearTimeout(idleTimer); idleTimer = setTimeout(() => { timedOut = true; kill(); }, idleMs); };
+    const finish = (code) => {
+      if (done) return; done = true;
+      clearTimeout(idleTimer); clearTimeout(hardTimer);
+      if (onLine && buf) onLine(buf);   // flush a trailing partial line
+      resolve({ code, out, err, timedOut });
+    };
+    if (timeoutMs) hardTimer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
+    resetIdle();
+    proc.stdout.on('data', (d) => {
+      const s = d.toString(); out += s; resetIdle();
+      if (onData) onData(s);
+      if (onLine) { buf += s; let nl; while ((nl = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, nl).replace(/\r$/, '')); buf = buf.slice(nl + 1); } }
+    });
+    proc.stderr.on('data', (d) => { err += d.toString(); resetIdle(); });
+    proc.on('error', (e) => { err += (e && e.message) || String(e); finish(-1); });
+    proc.on('close', (code) => finish(code));
+  });
+}
 function classifyGyro(meanMag) {
   if (meanMag < 0.05) return 'locked off / static (tripod or set down)';
   if (meanMag < 0.5) return 'handheld with small movement';

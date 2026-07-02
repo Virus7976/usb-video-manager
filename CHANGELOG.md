@@ -7,6 +7,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.23] — 2026-07-02
+
+### Fixed
+- **A phone that stalls or is unplugged mid-transfer can no longer hang the app forever.**
+  The MTP (Windows) phone copy could get stuck inside a system call on a disconnected
+  phone and leave a background process running with no way out. It now has an idle
+  watchdog: if the copy makes no progress for 8 minutes it's stopped cleanly (a
+  legitimately slow-but-progressing transfer keeps resetting the timer, so it's never
+  interrupted). Built on a new shared `streamSpawn` helper.
+
 ## [0.4.22] — 2026-07-02
 
 ### Fixed

@@ -105,7 +105,17 @@ cacheTag/err-msg helpers.
    385KB config.json — split `ai.clipObs`/`ai.memories` out the same way. Optional
    `patchConfig`/`saveKeys` accessor + call-site migration once the check-primitives guard
    lands (so scattered `config.x=;saveConfig()` can't come back).
-3. **P4 streamSpawn** (fixes the MTP-hang) + **P5 scanDir**/regex single-source.
+3. **P4 streamSpawn — DONE + VERIFIED (v0.4.23, 2026-07-02).** Added `streamSpawn(cmd,
+   args,{onLine,onData,idleMs,timeoutMs,env})` in 07 (streaming sibling of `runCapture`)
+   with an IDLE watchdog (resets on each output chunk, so a slow-but-progressing job isn't
+   killed — unlike killAfter's fixed deadline). Fixed the MTP-hang: `mtpCopyViaMtp` (05)
+   spawned PowerShell `CopyHere` with NO timeout, so a phone yanked mid-COM-call left an
+   orphan forever; now killed after 8 min of total silence (its per-file PS wait is bounded
+   to ~300s, so 8 min = genuinely wedged). Unit-tested (line-stream, idle-kill, progress
+   resets timer); boot-verified on 0.4.23. Other 05 spawns (`runPwshScript`, `runAdb`)
+   already had timeouts. *Follow-up: `runPwshScript`/`runAdb`/compress could delegate their
+   spawn scaffolding to `streamSpawn` (D5) — not done (return-shape adapters, low urgency).*
+   **P5 scanDir**/regex single-source next.
 4. **P6 paths + P7 ensureDir — DONE + VERIFIED (v0.4.22, 2026-07-02).** Added
    `pathsEqual`/`pathKey` (filesystem-case-aware) in 01-core; fixed the compress
    collision bug (09:66/71 compared case-SENSITIVELY → `Clip.mp4`/`clip.mp4` could

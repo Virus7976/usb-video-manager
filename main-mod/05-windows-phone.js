@@ -505,20 +505,25 @@ foreach ($entry in $items) {
 }
 `;
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
-      { windowsHide: true, env: { ...process.env, MTP_DEVICE: device, MTP_DEST: dest, MTP_LIST: listFile } });
-    let buf = '';
     const results = [];   // [{ name, status: OK|SKIP|FAIL }]
-    ps.stdout.on('data', (d) => {
-      buf += d.toString(); let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
-        const p = line.match(/^PROGRESS \d+ (.*)$/); if (p && onName) { onName(p[1]); continue; }
+    // The PS script emits a PROGRESS line after every file (each file's own copy wait is
+    // bounded to ~300s), so >8 min of TOTAL silence means PowerShell is wedged inside a COM
+    // call on a disconnected phone — the idle watchdog kills it instead of leaking an orphan
+    // that never resolves. A genuinely slow-but-progressing transfer keeps resetting the timer.
+    streamSpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+      env: { ...process.env, MTP_DEVICE: device, MTP_DEST: dest, MTP_LIST: listFile },
+      idleMs: 8 * 60 * 1000,
+      onLine: (raw) => {
+        const line = raw.trim();
+        const p = line.match(/^PROGRESS \d+ (.*)$/); if (p && onName) { onName(p[1]); return; }
         const r = line.match(/^RESULT (OK|SKIP|FAIL) (.*)$/); if (r) results.push({ status: r[1], name: r[2] });
-      }
+      },
+    }).then((res) => {
+      try { fs.rmSync(listFile, { force: true }); } catch { /* ignore */ }
+      // ok=false only when we couldn't spawn (-1) or killed it for hanging; a normal exit
+      // (even non-zero) is ok — the per-file RESULT lines carry the real success/fail.
+      resolve({ ok: res.code !== -1 && !res.timedOut, results, timedOut: res.timedOut });
     });
-    ps.on('error', () => { try { fs.rmSync(listFile, { force: true }); } catch { /* ignore */ } resolve({ ok: false, results }); });
-    ps.on('close', () => { try { fs.rmSync(listFile, { force: true }); } catch { /* ignore */ } resolve({ ok: true, results }); });
   });
 }
 

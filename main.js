@@ -2247,20 +2247,25 @@ foreach ($entry in $items) {
 }
 `;
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
-      { windowsHide: true, env: { ...process.env, MTP_DEVICE: device, MTP_DEST: dest, MTP_LIST: listFile } });
-    let buf = '';
     const results = [];   // [{ name, status: OK|SKIP|FAIL }]
-    ps.stdout.on('data', (d) => {
-      buf += d.toString(); let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
-        const p = line.match(/^PROGRESS \d+ (.*)$/); if (p && onName) { onName(p[1]); continue; }
+    // The PS script emits a PROGRESS line after every file (each file's own copy wait is
+    // bounded to ~300s), so >8 min of TOTAL silence means PowerShell is wedged inside a COM
+    // call on a disconnected phone — the idle watchdog kills it instead of leaking an orphan
+    // that never resolves. A genuinely slow-but-progressing transfer keeps resetting the timer.
+    streamSpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+      env: { ...process.env, MTP_DEVICE: device, MTP_DEST: dest, MTP_LIST: listFile },
+      idleMs: 8 * 60 * 1000,
+      onLine: (raw) => {
+        const line = raw.trim();
+        const p = line.match(/^PROGRESS \d+ (.*)$/); if (p && onName) { onName(p[1]); return; }
         const r = line.match(/^RESULT (OK|SKIP|FAIL) (.*)$/); if (r) results.push({ status: r[1], name: r[2] });
-      }
+      },
+    }).then((res) => {
+      try { fs.rmSync(listFile, { force: true }); } catch { /* ignore */ }
+      // ok=false only when we couldn't spawn (-1) or killed it for hanging; a normal exit
+      // (even non-zero) is ok — the per-file RESULT lines carry the real success/fail.
+      resolve({ ok: res.code !== -1 && !res.timedOut, results, timedOut: res.timedOut });
     });
-    ps.on('error', () => { try { fs.rmSync(listFile, { force: true }); } catch { /* ignore */ } resolve({ ok: false, results }); });
-    ps.on('close', () => { try { fs.rmSync(listFile, { force: true }); } catch { /* ignore */ } resolve({ ok: true, results }); });
   });
 }
 
@@ -3179,6 +3184,40 @@ function runCapture(cmd, args, { timeoutMs = 20000, onlyOnSuccess = false } = {}
     proc.on('error', () => finish(''));
     // onlyOnSuccess: discard partial output from a non-zero exit (e.g. ffprobe failure).
     proc.on('close', (code) => finish(onlyOnSuccess && code !== 0 ? '' : out));
+  });
+}
+
+// STREAMING spawn — for long jobs whose stdout is parsed line-by-line as it runs (vs
+// runCapture, which buffers then returns). Streams each stdout line to onLine, captures
+// stderr, and supports an IDLE watchdog: if the child produces NO output for idleMs it's
+// assumed hung (e.g. an MTP CopyHere stuck in a COM call on a yanked phone) and killed —
+// unlike killAfter's fixed deadline, the idle timer RESETS on every chunk, so a genuinely
+// long-but-progressing transfer is never killed. Resolves {code, out, err, timedOut}.
+function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env } = {}) {
+  return new Promise((resolve) => {
+    let proc;
+    try { proc = spawn(cmd, args, { windowsHide: true, ...(env ? { env } : {}) }); }
+    catch (e) { resolve({ code: -1, out: '', err: (e && e.message) || String(e), timedOut: false }); return; }
+    let out = ''; let err = ''; let buf = ''; let done = false; let timedOut = false;
+    let idleTimer = null; let hardTimer = null;
+    const kill = () => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } };
+    const resetIdle = () => { if (!idleMs) return; clearTimeout(idleTimer); idleTimer = setTimeout(() => { timedOut = true; kill(); }, idleMs); };
+    const finish = (code) => {
+      if (done) return; done = true;
+      clearTimeout(idleTimer); clearTimeout(hardTimer);
+      if (onLine && buf) onLine(buf);   // flush a trailing partial line
+      resolve({ code, out, err, timedOut });
+    };
+    if (timeoutMs) hardTimer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
+    resetIdle();
+    proc.stdout.on('data', (d) => {
+      const s = d.toString(); out += s; resetIdle();
+      if (onData) onData(s);
+      if (onLine) { buf += s; let nl; while ((nl = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, nl).replace(/\r$/, '')); buf = buf.slice(nl + 1); } }
+    });
+    proc.stderr.on('data', (d) => { err += d.toString(); resetIdle(); });
+    proc.on('error', (e) => { err += (e && e.message) || String(e); finish(-1); });
+    proc.on('close', (code) => finish(code));
   });
 }
 function classifyGyro(meanMag) {

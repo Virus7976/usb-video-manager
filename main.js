@@ -3091,6 +3091,13 @@ function aiExtractStrings(val) {
 // Like aiExtractStrings but keeps an optional example with each rule. Accepts
 // {rule|text, example|eg} objects, bare strings, or arrays/objects of those.
 // Returns [{text, example}] so memories are never vague ("e.g. …").
+// Unwrap the learned rules/memories out of a model's JSON — which may return the array
+// directly, or wrapped as {memories:[...]} / {rules:[...]} — then normalize via
+// aiExtractRules. One place so the ~6 call sites can't unwrap inconsistently (drift-proofing
+// the exact `!== undefined` guard, which one hand-rolled copy is easy to get subtly wrong).
+function extractRulesFrom(o, key = 'memories') {
+  return aiExtractRules((o && o[key] !== undefined) ? o[key] : o);
+}
 function aiExtractRules(val) {
   const out = [];
   const push = (text, example) => {
@@ -3777,7 +3784,7 @@ ipcMain.handle('ai:feedback', async (evt, payload) => {
       const ex = (payload && payload.example) ? ` about the clip description "${payload.example}"` : '';
       const prompt = `Convert this user feedback about how AI should name video clips into 1-2 short, standalone preference rules. Feedback${ex}: "${fb}". Reply with STRICT JSON only: {"memories": [{"rule": "...", "example": "..."}]}. Each rule is a concise imperative ≤ 12 words; each example is a SHORT concrete illustration of the rule (e.g. a sample subject/description). Use 1 rule unless the feedback clearly covers two separate points.`;
       const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.3, timeout: 120000 }));
-      newItems = aiExtractRules((o && o.memories !== undefined) ? o.memories : o).slice(0, 3);
+      newItems = extractRulesFrom(o).slice(0, 3);
     }
   } catch { /* fall back below */ }
   if (!newItems.length) newItems = [{ text: fb, example: String((payload && payload.example) || '') }];   // no model → store raw
@@ -3833,7 +3840,7 @@ ipcMain.handle('ai:learnEdits', async (_evt, payload) => {
     if (aiTextModel()) {
       const prompt = `An AI suggested names for video clips, but the user corrected them:\n${lines}\n\nInfer 1-3 short, standalone preference rules the AI should follow so it makes these corrections itself next time (about wording, length, format, or subject choice). Ignore one-off changes that aren't a pattern. Reply with STRICT JSON only: {"memories": [{"rule": "...", "example": "..."}]}. Each rule is a concise imperative ≤ 12 words; each example is a SHORT concrete illustration (e.g. the corrected wording).`;
       const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.3, timeout: 120000 }));
-      proposed = aiExtractRules((o && o.memories !== undefined) ? o.memories : o).slice(0, 3);
+      proposed = extractRulesFrom(o).slice(0, 3);
     }
   } catch { /* no model / parse failure → nothing to propose */ }
   // Drop rules already in memory so we don't ask about ones we've learned.
@@ -3930,7 +3937,7 @@ ipcMain.handle('ai:importDoc', async (_evt, payload) => {
   try {
     const prompt = `The following is a videographer's notes/SOP. Extract EVERY concrete, reusable fact or rule that would help an AI name, tag, organize, or file their video clips — including: naming format, wording/casing, keywords or tags, folder and location conventions, storage paths, and any specific values mentioned (folder names, drive paths, etc.). Capture specifics verbatim where useful. Ignore only pure prose/boilerplate. If a line states a concrete convention, it IS a rule. Reply with STRICT JSON only: {"memories": [{"rule": "...", "example": "..."}]} — up to 15 rules, each ≤ 18 words, example a SHORT illustration or the concrete value (may be "").\n\nNOTES:\n${text}`;
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.2, timeout: 180000 }));
-    const proposed = aiExtractRules((o && o.memories !== undefined) ? o.memories : o).slice(0, 12);
+    const proposed = extractRulesFrom(o).slice(0, 12);
     return { ok: true, proposed };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
 });
@@ -3967,7 +3974,7 @@ ipcMain.handle('ai:learnNames', async (_evt, payload) => {
     if (aiTextModel()) {
       const prompt = `Here is how a videographer names their own video clips, as "subject / description" pairs (${sample.length} examples):\n${sample.join('\n')}\n\nStudy their STYLE in depth and summarise it into 5-10 short imperative rules an AI should follow to name clips exactly the same way — cover word count, format/casing, what they consistently include or omit, how they phrase subjects vs descriptions, and any recurring vocabulary. Reply with STRICT JSON only: {"rules": [{"rule": "...", "example": "..."}]}. Each rule ≤ 14 words; each example is a REAL pair from the list above that illustrates the rule.`;
       const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.3, timeout: 180000 }));
-      rules = aiExtractRules((o && o.rules !== undefined) ? o.rules : o).slice(0, 10);
+      rules = extractRulesFrom(o, 'rules').slice(0, 10);
     }
   } catch { /* keep examples even if rule distillation fails */ }
 
@@ -4022,7 +4029,7 @@ async function maybeAutoConsolidate() {
     const list = mems.map((m, i) => `${i + 1}. ${m.text}${m.example ? ` (e.g. ${m.example})` : ''}`).join('\n');
     const prompt = `Here are preference rules (oldest first) for an AI that names & organizes video clips. Clean them into a tight, NON-CONTRADICTORY set:\n- MERGE overlapping/duplicate rules into fewer well-grouped ones.\n- If two rules CONFLICT (say opposite things), DROP the older one and keep the newer (later-numbered) rule — it is the user's more recent preference.\n- DELETE anything redundant, vague, or now contradicted. Do not invent new rules.\n- PRESERVE every distinct concrete requirement + one short example.\nAim for ≤ 18 rules. Reply STRICT JSON only: {"memories":[{"rule":"...","example":"..."}]}.\n\nRULES:\n${list}`;
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.2, timeout: 180000 }));
-    const merged = aiExtractRules((o && o.memories !== undefined) ? o.memories : o).slice(0, 60);
+    const merged = extractRulesFrom(o).slice(0, 60);
     const before = mems.map((m) => (m.text || '').toLowerCase().trim()).join('|');
     const after = merged.map((r) => (r.text || '').toLowerCase().trim()).join('|');
     // Apply when the set actually changed and didn't GROW (merges, conflict-drops, edits).
@@ -4283,7 +4290,7 @@ ipcMain.handle('ai:consolidateMemories', async (_evt) => {
   try {
     const prompt = `Here is a list of preference rules for an AI that names and organizes video clips. Many are tiny or overlapping. Merge closely-related rules into fewer, well-grouped rules; combine duplicates; keep genuinely distinct rules separate. PRESERVE every concrete requirement and keep one good example per rule. Prefer a handful of clear grouped rules over many tiny ones. Reply STRICT JSON only: {"memories":[{"rule":"...","example":"..."}]}.\n\nRULES:\n${list}`;
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.2, timeout: 180000 }));
-    const merged = aiExtractRules((o && o.memories !== undefined) ? o.memories : o);
+    const merged = extractRulesFrom(o);
     if (!merged.length) return { ok: false, error: 'No result from the model' };
     return { ok: true, proposed: merged, before: mems.length };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }

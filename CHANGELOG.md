@@ -7,6 +7,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.4.25] — 2026-07-02
+
+### Changed (internal / maintainability)
+- Consolidated 6 copies of the "unwrap the model's rules/memories JSON" logic into one
+  `extractRulesFrom` helper, so the exact unwrap guard can't drift between call sites.
+
 ## [0.4.24] — 2026-07-02
 
 ### Fixed

@@ -648,6 +648,13 @@ function aiExtractStrings(val) {
 // Like aiExtractStrings but keeps an optional example with each rule. Accepts
 // {rule|text, example|eg} objects, bare strings, or arrays/objects of those.
 // Returns [{text, example}] so memories are never vague ("e.g. …").
+// Unwrap the learned rules/memories out of a model's JSON — which may return the array
+// directly, or wrapped as {memories:[...]} / {rules:[...]} — then normalize via
+// aiExtractRules. One place so the ~6 call sites can't unwrap inconsistently (drift-proofing
+// the exact `!== undefined` guard, which one hand-rolled copy is easy to get subtly wrong).
+function extractRulesFrom(o, key = 'memories') {
+  return aiExtractRules((o && o[key] !== undefined) ? o[key] : o);
+}
 function aiExtractRules(val) {
   const out = [];
   const push = (text, example) => {

@@ -245,7 +245,7 @@ ipcMain.handle('ai:consolidateMemories', async (_evt) => {
   try {
     const prompt = `Here is a list of preference rules for an AI that names and organizes video clips. Many are tiny or overlapping. Merge closely-related rules into fewer, well-grouped rules; combine duplicates; keep genuinely distinct rules separate. PRESERVE every concrete requirement and keep one good example per rule. Prefer a handful of clear grouped rules over many tiny ones. Reply STRICT JSON only: {"memories":[{"rule":"...","example":"..."}]}.\n\nRULES:\n${list}`;
     const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.2, timeout: 180000 }));
-    const merged = aiExtractRules((o && o.memories !== undefined) ? o.memories : o);
+    const merged = extractRulesFrom(o);
     if (!merged.length) return { ok: false, error: 'No result from the model' };
     return { ok: true, proposed: merged, before: mems.length };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }

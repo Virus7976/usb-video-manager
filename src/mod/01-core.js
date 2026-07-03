@@ -172,6 +172,7 @@ let cfg = null;
   if (cfg.ui) Object.assign(uiPrefs, cfg.ui);
   applyUiPrefs();
   if (cfg.previewWidth) applyPreviewWidth(cfg.previewWidth);
+  if (cfg.previewGrid) previewGridState = { ...previewGridState, ...cfg.previewGrid };
   if (cfg.phoneThumb) applyPhThumb(cfg.phoneThumb);
   loadImportedSet();   // remember what's been imported before (duplicate detection)
   if (cfg.hotkeys) hotkeys = { ...hotkeys, ...cfg.hotkeys };

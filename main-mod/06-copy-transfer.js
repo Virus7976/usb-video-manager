@@ -116,6 +116,7 @@ ipcMain.handle('config:get', () => ({
   autoPoll: !!config.autoPoll,
   ui: { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, ...(config.ui || {}) },
   previewWidth: Number(config.previewWidth) || 248,
+  previewGrid: { mode: 'mirror', source: 'selected', tile: 200, playVideos: false, muted: true, ...(config.previewGrid || {}) },
   hotkeys: { jumpUnnamed: 'F2', captureMacro: 'Ctrl+Shift+S', ...(config.hotkeys || {}) },
   textMacros: Array.isArray(config.textMacros) ? config.textMacros : [],
   copyDateMode: ['always', 'ask', 'never'].includes(config.copyDateMode) ? config.copyDateMode : 'always',

@@ -3,7 +3,18 @@
 // currently being worked on (handy in the compact/zoomed-out rename view).
 // ---------------------------------------------------------------------------
 let previewWindow = null;
-let lastPreview = null; // { url, name }
+let lastPreview = null; // mirror mode: { url, name, kind, muted, speed }
+let lastList = null;    // grid mode: { clips: [...] }
+const DEFAULT_PREVIEW_GRID = { mode: 'mirror', source: 'selected', tile: 200, playVideos: false, muted: true };
+function previewGridCfg() { return { ...DEFAULT_PREVIEW_GRID, ...(config.previewGrid || {}) }; }
+function previewIsOpen() { return !!(previewWindow && !previewWindow.isDestroyed()); }
+// Send the current view config to both windows (preview reacts visually; the main
+// window uses it to decide which clips to push for the grid).
+function broadcastPreviewConfig() {
+  const cfg = previewGridCfg();
+  if (previewIsOpen()) previewWindow.webContents.send('preview:config', cfg);
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('preview:config', cfg);
+}
 function createPreviewWindow() {
   previewWindow = new BrowserWindow({
     width: 540, height: 360, minWidth: 280, minHeight: 180,
@@ -19,30 +30,90 @@ function createPreviewWindow() {
   previewWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   previewWindow.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file://')) e.preventDefault(); });
   previewWindow.loadFile(path.join(__dirname, 'src', 'preview.html'));
-  previewWindow.webContents.on('did-finish-load', () => {
-    if (lastPreview && previewWindow) previewWindow.webContents.send('preview:update', lastPreview);
-  });
+  previewWindow.webContents.on('did-finish-load', () => sendPreviewState());
   previewWindow.on('closed', () => {
     previewWindow = null;
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('preview:closed');
   });
 }
+// Push everything the preview window needs to render its current state.
+function sendPreviewState() {
+  if (!previewIsOpen()) return;
+  const cfg = previewGridCfg();
+  previewWindow.webContents.send('preview:config', cfg);
+  if (cfg.mode === 'grid') {
+    if (lastList) previewWindow.webContents.send('preview:list', lastList);
+    // Ask the main window to (re)compute the clip list for the current scope.
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('preview:config', cfg);
+  } else if (lastPreview) {
+    previewWindow.webContents.send('preview:update', lastPreview);
+  }
+}
 
 ipcMain.handle('preview:toggle', () => {
-  if (previewWindow && !previewWindow.isDestroyed()) { previewWindow.close(); previewWindow = null; return { open: false }; }
+  if (previewIsOpen()) { previewWindow.close(); previewWindow = null; return { open: false }; }
   createPreviewWindow();
-  return { open: true };
+  return { open: true, config: previewGridCfg() };
 });
-ipcMain.handle('preview:state', () => ({ open: !!(previewWindow && !previewWindow.isDestroyed()) }));
+ipcMain.handle('preview:state', () => ({ open: previewIsOpen(), config: previewGridCfg() }));
+ipcMain.handle('preview:ready', () => { sendPreviewState(); return true; });
 ipcMain.handle('preview:set', (_evt, payload) => {
   if (!payload || !payload.path) return false;
+  const ext = path.extname(payload.path).toLowerCase();
+  const kind = payload.kind || (IMAGE_EXTS.has(ext) ? 'photo' : 'video');
   lastPreview = {
     url: fileUrl(payload.path),
     name: payload.name || '',
+    kind,
     muted: payload.muted !== false,        // default muted, like the in-card previews
     speed: Number(payload.speed) || 1
   };
-  if (previewWindow && !previewWindow.isDestroyed()) previewWindow.webContents.send('preview:update', lastPreview);
+  if (previewIsOpen() && previewGridCfg().mode !== 'grid') previewWindow.webContents.send('preview:update', lastPreview);
+  return true;
+});
+// Grid wall: the main window sends the clips in scope; we resolve file URLs here.
+ipcMain.handle('preview:list', (_evt, payload) => {
+  const clips = (payload && Array.isArray(payload.clips) ? payload.clips : [])
+    .filter((c) => c && c.path)
+    .map((c) => ({
+      i: c.i,
+      name: c.name || '',
+      kind: c.kind === 'photo' ? 'photo' : 'video',
+      named: !!c.named,
+      url: fileUrl(c.path)
+    }));
+  lastList = { clips };
+  if (previewIsOpen() && previewGridCfg().mode === 'grid') previewWindow.webContents.send('preview:list', lastList);
+  return true;
+});
+// View config change (from either window) → persist + re-broadcast to both.
+ipcMain.handle('preview:config', (_evt, patch) => {
+  const cur = previewGridCfg();
+  const next = { ...cur };
+  if (patch && typeof patch === 'object') {
+    if (typeof patch.source === 'string') next.source = patch.source;
+    if (typeof patch.tile === 'number' && isFinite(patch.tile)) next.tile = Math.max(100, Math.min(600, Math.round(patch.tile)));
+    if (typeof patch.playVideos === 'boolean') next.playVideos = patch.playVideos;
+    if (typeof patch.muted === 'boolean') next.muted = patch.muted;
+    if (patch.mode === 'mirror' || patch.mode === 'grid') next.mode = patch.mode;
+  }
+  config.previewGrid = next;
+  saveConfig();
+  broadcastPreviewConfig();
+  return next;
+});
+ipcMain.handle('preview:mode', (_evt, mode) => {
+  const m = mode === 'grid' ? 'grid' : 'mirror';
+  config.previewGrid = { ...previewGridCfg(), mode: m };
+  saveConfig();
+  broadcastPreviewConfig();
+  // Re-push the right content for the new mode.
+  sendPreviewState();
+  return config.previewGrid;
+});
+// A grid tile was clicked in the preview window → focus that clip in the main window.
+ipcMain.handle('preview:jump', (_evt, i) => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('preview:jump', Number(i));
   return true;
 });
 

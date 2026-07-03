@@ -227,6 +227,8 @@ function loadConfig() {
     renameDrafts: {},
     defaultSpeed: 1,
     previewWidth: 248,
+    // Pop-out preview window: mirror one clip, or a grid wall of clips in scope.
+    previewGrid: { mode: 'mirror', source: 'selected', tile: 200, playVideos: false, muted: true },
     hotkeys: { jumpUnnamed: 'F2', captureMacro: 'Ctrl+Shift+S' },
     textMacros: [],
     copyDateMode: 'always',

@@ -4320,19 +4320,67 @@ ipcMain.handle('people:setCover', (_e, payload) => {
   if (!p || !t) return { ok: false };
   p.thumb = t; saveStore('ai.people'); return { ok: true };
 });
-// Given a face descriptor, return the best-matching known person (or null).
+// Face-recognition decision thresholds (euclidean distance on face-api's 128-d
+// embeddings). Deliberately STRICT — the app must not pretend an unknown face is a
+// match. Tunable via config.ai.faceThreshold (a digiKam-style sensitivity ceiling).
+const FACE_CONFIRM_T = 0.46;   // <= this AND unambiguous → CONFIDENT (safe to auto-tag)
+const FACE_SUGGEST_T = 0.54;   // <= this → worth SUGGESTING (ask the user); above → unknown
+const FACE_MARGIN = 0.04;      // the winner must beat the nearest OTHER person by this
+const FACE_KNN = 5;            // vote among the K nearest confirmed faces (robust to one outlier)
+
+// PURE decision (no electron/config deps → unit-testable). Given a query descriptor,
+// a list of CONFIRMED enrolled faces `[{id,name,d}]`, the IGNORED faces `[{d}]`, and a
+// suggest ceiling, decide who (if anyone) it is — digiKam-style:
+//   • Only CONFIRMED faces vote (caller filters) — an unconfirmed guess never drives a match.
+//   • k-nearest-neighbour PLURALITY vote so one noisy descriptor can't win.
+//   • Require an ambiguity MARGIN over the 2nd-closest *different* person.
+//   • Nothing within suggestT → null (genuinely unknown; never pretend).
+// Returns { match, dist, confidence(0..1), confident } — `confident` gates auto-tagging.
+function faceDecide(desc, confirmed, ignored, suggestT) {
+  if (!desc) return { match: null, dist: Infinity };
+  let ignD = Infinity;
+  for (const f of (ignored || [])) { if (f && f.d) { const d = faceDist(desc, f.d); if (d < ignD) ignD = d; } }
+  const scored = [];
+  for (const f of (confirmed || [])) { if (f && f.d) scored.push({ id: f.id, name: f.name, dist: faceDist(desc, f.d) }); }
+  if (!scored.length) return { match: null, dist: Infinity };
+  scored.sort((a, b) => a.dist - b.dist);
+  const bestD = scored[0].dist;
+  if (ignD <= bestD && ignD <= suggestT) return { match: null, dist: bestD, ignored: true };
+  if (bestD > suggestT) return { match: null, dist: bestD };
+
+  const knn = scored.slice(0, FACE_KNN);
+  const votes = new Map();
+  for (const s of knn) { const v = votes.get(s.id) || { count: 0 }; v.count += 1; votes.set(s.id, v); }
+  const winnerId = scored[0].id;
+  let topId = winnerId; let topCount = -1;
+  for (const [id, v] of votes) { if (v.count > topCount) { topCount = v.count; topId = id; } }
+  const winsVote = topId === winnerId;
+
+  const other = scored.find((s) => s.id !== winnerId);
+  const margin = (other ? other.dist : Infinity) - bestD;
+  const ambiguous = margin < FACE_MARGIN;
+
+  const distScore = Math.max(0, Math.min(1, (suggestT - bestD) / (suggestT - 0.30)));
+  const voteScore = (votes.get(winnerId) ? votes.get(winnerId).count : 1) / FACE_KNN;
+  const marginScore = Math.max(0, Math.min(1, margin / 0.15));
+  const confidence = +(0.5 * distScore + 0.25 * voteScore + 0.25 * marginScore).toFixed(3);
+
+  if ((ambiguous || !winsVote) && bestD > FACE_CONFIRM_T) return { match: null, dist: bestD, ambiguous };
+  const confident = bestD <= FACE_CONFIRM_T && winsVote && !ambiguous;
+  return { match: { id: scored[0].id, name: scored[0].name, dist: bestD }, dist: bestD, confidence, confident };
+}
+// Given a face descriptor, decide who (if anyone) it is. Builds the CONFIRMED-only
+// enrolled set + ignored bin, then defers to faceDecide (above).
 ipcMain.handle('people:match', (_e, payload) => {
   const desc = Array.isArray(payload && payload.descriptor) ? payload.descriptor : null;
-  const threshold = Number(payload && payload.threshold) || 0.52;
-  if (!desc) return { ok: true, match: null };
-  // If the face is closest to an IGNORED face, treat it as a non-match (digiKam's
-  // "Ignored" bin — stops suggesting people you've told it to skip).
-  let ignD = Infinity;
-  for (const f of aiIgnoredFaces()) { if (!f.d) continue; const dist = faceDist(desc, f.d); if (dist < ignD) ignD = dist; }
-  let best = null; let bestD = Infinity;
-  for (const p of aiPeople()) { for (const f of (p.faces || [])) { if (!f.d) continue; const dist = faceDist(desc, f.d); if (dist < bestD) { bestD = dist; best = p; } } }
-  if (ignD < bestD && ignD <= threshold) return { ok: true, match: null, dist: bestD, ignored: true };
-  return { ok: true, match: (best && bestD <= threshold) ? { id: best.id, name: best.name, dist: bestD } : null, dist: bestD };
+  if (!desc) return { ok: true, match: null, dist: Infinity };
+  const cfgT = Number(config.ai && config.ai.faceThreshold);
+  const suggestT = Math.min(Number(payload && payload.threshold) || FACE_SUGGEST_T,
+    (isFinite(cfgT) && cfgT > 0) ? cfgT : FACE_SUGGEST_T);
+  const confirmed = [];
+  for (const p of aiPeople()) { for (const f of (p.faces || [])) { if (f.d && f.confirmed) confirmed.push({ id: p.id, name: p.name, d: f.d }); } }
+  const r = faceDecide(desc, confirmed, aiIgnoredFaces(), suggestT);
+  return { ok: true, ...r };
 });
 
 // Extract a single large frame (960px wide) for face detection — much better than a

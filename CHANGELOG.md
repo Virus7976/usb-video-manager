@@ -7,6 +7,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- **Face recognition no longer guesses.** The matcher was picking the single nearest
+  face out of *everything it had stored* — including its own unconfirmed guesses — with
+  a loose threshold and no tie-breaking, so it would confidently mislabel a stranger or
+  flip-flop between two people. Rebuilt digiKam-style: it now matches **only against
+  faces you've confirmed**, takes a **k-nearest-neighbour vote** (one bad crop can't win),
+  requires the winner to clearly beat the runner-up (**ambiguity margin**), and — the key
+  change — **returns "unknown" when nothing is a confident match instead of pretending**.
+  Auto-tagging now fires only on confident matches; anything unsure goes to the Review
+  grid for you to confirm. Sensitivity is tunable via `config.ai.faceThreshold`.
+- **Face-confirm buttons were unreadable.** "✓ Yes" was crammed into a small round button
+  and the label wrapped onto the dark card in near-black text. Yes/No are now proper
+  labelled pills.
+
 ## [0.4.28] — 2026-07-02
 
 ### Changed (reliability — hardening the components under the hood)

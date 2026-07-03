@@ -982,11 +982,15 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .fgc-chip { font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--stroke); background: var(--control); color: var(--text-2); cursor: pointer; transition: background var(--motion), color var(--motion); }
 .fgc-chip:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .fgc-btns { display: flex; gap: 10px; margin-top: 2px; }
-.fgc-yes, .fgc-no, .fgc-save, .fgc-skip { width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer; font-size: 16px; display: grid; place-items: center; transition: transform var(--motion), opacity var(--motion); }
+/* Yes/No are labelled PILLS (icon + word). They used to be fixed 34px circles, so
+   "✓ Yes" overflowed: the label wrapped onto the dark card where --accent-fg
+   (near-black on a light system accent) made it unreadable — the reported bug. */
+.fgc-yes, .fgc-no { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 32px; padding: 0 15px; border-radius: 999px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; line-height: 1; white-space: nowrap; transition: transform var(--motion), opacity var(--motion); }
+.fgc-save, .fgc-skip { width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer; font-size: 16px; display: grid; place-items: center; transition: transform var(--motion), opacity var(--motion); }
 .fgc-yes, .fgc-save { background: var(--accent); color: var(--accent-fg); }
-.fgc-no, .fgc-skip { background: var(--control); border: 1px solid var(--stroke); color: var(--text-2); }
-.fgc-yes:hover, .fgc-save:hover { opacity: 0.88; transform: scale(1.08); }
-.fgc-no:hover, .fgc-skip:hover { background: var(--subtle-hover); transform: scale(1.08); }
+.fgc-no, .fgc-skip { background: var(--control); border: 1px solid var(--stroke); color: var(--text); }
+.fgc-yes:hover, .fgc-save:hover { opacity: 0.88; transform: scale(1.05); }
+.fgc-no:hover, .fgc-skip:hover { background: var(--subtle-hover); transform: scale(1.05); }
 .fgc-undo { background: none; border: none; color: var(--text-3); font-size: 11px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .fgc-undo:hover { color: var(--text-1); }
 /* DigiKam-style People DASHBOARD — fills the window, robust CSS-grid body */

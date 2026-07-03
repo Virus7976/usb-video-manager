@@ -7718,7 +7718,7 @@ async function collectClipFaces(clip, clusters, keys) {
     let m = null;
     try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ }
     const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
-    const matched = m && m.match && dist <= FACE_SUGGEST_DIST;
+    const matched = !!(m && m.match);   // backend already applied the strict gate
     // Cluster the face (recognized or not) for the Review grid — never auto-apply.
     let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
     if (!c) {
@@ -7761,8 +7761,9 @@ async function scanFacesAuto(clipList) {
     for (const f of (fr && fr.faces) || []) {
       let m = null;
       try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ }
-      const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
-      if (m && m.match && m.match.name && dist <= FACE_SUGGEST_DIST) {
+      // Auto mode tags SILENTLY, so only act on CONFIDENT matches (close + unambiguous +
+      // vote-backed). A mere suggestion is left for the Review grid, never auto-applied.
+      if (m && m.match && m.confident && m.match.name) {
         names.add(m.match.name);
         // Save this face onto that person as UNCONFIRMED (a guess), so it shows on their
         // profile for review and improves future matching — never auto-confirmed.
@@ -7837,7 +7838,8 @@ function dmapFolderIcon(dated, depth) { return dated ? '📅' : (depth === 0 ? '
 // for the digiKam-style confirm grid. Confirming there grows each person so
 // recognition gets better the more you review (learns as it grows).
 const FACE_CONFIRM_DIST = 0.46;   // <= this: auto-tag, very confident
-const FACE_SUGGEST_DIST = 0.60;   // <= this: suggest the person, ask to confirm
+const FACE_SUGGEST_DIST = 0.54;   // ceiling passed to people:match; the backend applies
+                                  // the strict digiKam-style vote/margin gate (see people:match)
 async function scanFacesForClips(clipList, opts = {}) {
   if (!clipList || !clipList.length) { showToast('Select some clips first'); return; }
   // Skip clips already scanned in a previous (or interrupted) run — face scanning is
@@ -7874,7 +7876,7 @@ async function scanFacesForClips(clipList, opts = {}) {
       // eslint-disable-next-line no-await-in-loop
       const m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST });
       const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
-      const matched = m && m.match && dist <= FACE_SUGGEST_DIST;
+      const matched = !!(m && m.match);   // backend already applied the strict gate
       // NEVER auto-tag or auto-confirm. Recognized faces become SUGGESTIONS you confirm
       // in the Review grid, and are saved to the person's profile as UNCONFIRMED.
       let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
@@ -7955,7 +7957,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
         <div class="fgc-photo">${thumb}</div>
         <div class="fgc-q">Is this <b>${escapeHtml(cl.suggest.name)}</b>?</div>
         <div class="fgc-sub muted small">${seen}</div>
-        <div class="fgc-btns"><button class="fgc-yes" title="Yes — confirm">✓ Yes</button><button class="fgc-no" title="No">✗</button></div>
+        <div class="fgc-btns"><button class="fgc-yes" title="Yes — confirm">✓ Yes</button><button class="fgc-no" title="No — not them">✗ No</button></div>
         <input type="text" class="ai-input fgc-input" placeholder="or type the right name…" autocomplete="off"/>
         ${othChips ? `<div class="fgc-chips compact">${othChips}</div>` : ''}
       </div>`;

@@ -4747,22 +4747,48 @@ ipcMain.handle('drafts:get', () => currentDrafts());
 // is the crucial guard: a session showing blank fields auto-saves an empty map,
 // which now writes NOTHING — so it can never wipe previously-saved names.
 // Removal happens solely via drafts:clear (when footage is copied).
+// Fields that hold user work we must NEVER silently destroy. An incoming save that
+// carries an EMPTY value for one of these can only be a stale/flag-only write (a
+// face-scan flush, or a save that fired before restore re-applied the drafts) — it
+// must not erase a name you already saved. This is the guard that makes a repeat of
+// the "reopened and all my renames were gone" data loss impossible.
+const DRAFT_CONTENT_FIELDS = ['subject', 'description', 'location', 'context', 'shotType', 'observation', 'date', 'category', 'project'];
+const DRAFT_ARRAY_FIELDS = ['people', 'peopleAuto', 'tags'];
+const draftNonEmpty = (val) => (Array.isArray(val) ? val.length > 0 : !!val);
+function draftIsNamed(v) { return !!(v && (v.subject || v.description || v.location)); }
+// Merge an incoming draft onto the stored one WITHOUT ever blanking saved content.
+function mergeDraft(prev, incoming) {
+  const merged = { ...(prev || {}), ...incoming };
+  for (const f of DRAFT_CONTENT_FIELDS) { if (!draftNonEmpty(incoming[f]) && draftNonEmpty(prev && prev[f])) merged[f] = prev[f]; }
+  for (const f of DRAFT_ARRAY_FIELDS) {
+    const iv = Array.isArray(incoming[f]) ? incoming[f] : [];
+    const pv = Array.isArray(prev && prev[f]) ? prev[f] : [];
+    if (!iv.length && pv.length) merged[f] = pv;   // an empty array never wipes a saved one
+  }
+  return merged;
+}
 ipcMain.handle('drafts:save', (_evt, map) => {
   if (!map || typeof map !== 'object') return false;
-  // A draft carries real data if ANY of its values (besides the timestamp) is
-  // non-empty — covers subject/description/date + any custom organizing field.
-  const hasData = (v) => v && Object.entries(v).some(([k, val]) => k !== 'ts' && val);
+  const hasData = (v) => v && Object.entries(v).some(([k, val]) => k !== 'ts' && draftNonEmpty(val));
   const additions = Object.entries(map).filter(([, v]) => hasData(v));
   if (!additions.length) return true;
   const drafts = currentDrafts();
   const now = Date.now();
-  for (const [k, v] of additions) drafts[k] = { ...v, ts: now };
-  // Prune: drop entries older than 60 days, then cap to the 4000 most recent.
+  // NON-DESTRUCTIVE upsert: set/update fields, but never overwrite saved content with
+  // an empty value. A save can add a name; it can never blank one out.
+  for (const [k, v] of additions) drafts[k] = { ...mergeDraft(drafts[k], v), ts: now };
+  // Prune: drop entries older than 60 days; cap generously (users have thousands of
+  // clips) and — crucially — NEVER evict a NAMED draft to make room for a flag-only one.
   const MAX_AGE = 60 * 24 * 3600 * 1000;
+  const CAP = 10000;   // each draft is ~230B → ~2.3MB in its own file; fine
   let entries = Object.entries(drafts).filter(([, v]) => v && (now - (v.ts || 0)) < MAX_AGE);
-  if (entries.length > 1000) {   // each draft is ~230B; 1000 is plenty and keeps config small
-    entries.sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
-    entries = entries.slice(0, 1000);
+  if (entries.length > CAP) {
+    entries.sort((a, b) => {
+      const na = draftIsNamed(a[1]); const nb = draftIsNamed(b[1]);
+      if (na !== nb) return na ? -1 : 1;              // named drafts are kept over flag-only ones
+      return (b[1].ts || 0) - (a[1].ts || 0);         // then most-recent
+    });
+    entries = entries.slice(0, CAP);
   }
   config.renameDrafts = Object.fromEntries(entries);
   saveStore('renameDrafts');

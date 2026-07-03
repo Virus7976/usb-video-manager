@@ -965,6 +965,17 @@ function flushDraftSave() {
   clearTimeout(draftSaveTimer);
   if (state.scannedFiles.length) window.api.saveDrafts(buildDraftMap());
 }
+// Safety net: the app HIDES to the tray when you close its window (it stays resident),
+// so a debounced draft save could still be pending. Flush immediately whenever the
+// window is hidden, blurred, or unloaded — belt-and-suspenders against losing the last
+// few edits. (The main-process save is non-destructive, so an extra flush is harmless.)
+(function wireDraftSafetyFlush() {
+  const flush = () => { try { flushDraftSave(); } catch { /* ignore */ } };
+  window.addEventListener('beforeunload', flush);
+  window.addEventListener('pagehide', flush);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+  window.addEventListener('blur', flush);
+})();
 
 // After a fresh scan, if saved drafts exist for these clips, ASK whether to
 // restore them (auto-fill the fields) or start fresh — rather than silently

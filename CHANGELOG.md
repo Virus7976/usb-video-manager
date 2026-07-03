@@ -8,6 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Fixed
+- **Your renames can never be silently wiped again (data-loss fix).** Reopening the app
+  after naming clips could come back with everything blank. Cause: draft-saving replaced
+  each clip's whole saved entry, and a face-scan/reopen write (which carries an *empty*
+  subject for clips it hasn't restored yet) counted as "data" and overwrote your saved
+  names — and the small 1000-entry cap then evicted named drafts in favour of
+  scanned-flag-only ones. Draft saving is now **non-destructive**: a save can add or
+  update a name but an empty value can **never** blank a saved one, named drafts are
+  **never evicted** to make room for flag-only entries, and the cap is raised for large
+  libraries. Plus the app now flushes drafts the instant its window hides/closes.
 - **Face recognition no longer guesses.** The matcher was picking the single nearest
   face out of *everything it had stored* — including its own unconfirmed guesses — with
   a loose threshold and no tie-breaking, so it would confidently mislabel a stranger or

@@ -170,18 +170,9 @@
       <div id="step2" class="step-panel hidden up-screen">
         <div class="up-hero">
           <span class="illo up-hero-illo"><svg viewBox="0 0 120 96" fill="none" aria-hidden="true">
+            <rect class="il-acc-fill" x="48" y="16" width="24" height="16" rx="2"/><rect class="il-acc" x="48" y="16" width="24" height="16" rx="2"/>
+            <path class="il-acc" d="M60 34v14m-7-7 7 7 7-7"/>
             <path class="il-st" d="M28 60a5 5 0 0 1 5-5h20l7 8h32a5 5 0 0 1 5 5v20a5 5 0 0 1-5 5H33a5 5 0 0 1-5-5z"/>
-            <g opacity="0">
-              <animateTransform attributeName="transform" type="translate" values="0 -18;0 16" dur="2s" repeatCount="indefinite"/>
-              <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.2;0.7;1" dur="2s" repeatCount="indefinite"/>
-              <rect class="il-acc-fill" x="48" y="20" width="24" height="16" rx="2"/><rect class="il-acc" x="48" y="20" width="24" height="16" rx="2"/>
-            </g>
-            <g opacity="0">
-              <animateTransform attributeName="transform" type="translate" values="0 -18;0 16" dur="2s" begin="0.75s" repeatCount="indefinite"/>
-              <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.2;0.7;1" dur="2s" begin="0.75s" repeatCount="indefinite"/>
-              <rect class="il-acc-fill" x="48" y="20" width="24" height="16" rx="2"/><rect class="il-acc" x="48" y="20" width="24" height="16" rx="2"/>
-            </g>
-            <path class="il-spark2" d="M88 26l1.6 4.8 4.8 1.6-4.8 1.6L88 40l-1.6-4.8-4.8-1.6 4.8-1.6z"><animate attributeName="opacity" values="0.2;1;0.2" dur="1.7s" repeatCount="indefinite"/></path>
           </svg></span>
           <div class="up-hero-text">
             <h2>Copy your footage to your computer</h2>
@@ -219,33 +210,12 @@
       <div id="step3" class="step-panel hidden del-screen">
         <div class="del-hero">
           <span class="illo del-hero-illo"><svg viewBox="0 0 134 104" fill="none" aria-hidden="true">
-            <!-- freed-space sparkles -->
-            <path class="il-spark2" d="M108 18l1.6 4.8 4.8 1.6-4.8 1.6L108 32l-1.6-4.8-4.8-1.6 4.8-1.6z"><animate attributeName="opacity" values="0.2;1;0.2" dur="1.7s" repeatCount="indefinite"/></path>
-            <path class="il-spark2" d="M22 30l1.2 3.6 3.6 1.2-3.6 1.2L22 41l-1.2-3.6-3.6-1.2 3.6-1.2z"><animate attributeName="opacity" values="1;0.25;1" dur="2.1s" repeatCount="indefinite"/></path>
-            <!-- files lifting off the card and dissolving (staggered) -->
-            <g opacity="0">
-              <animateTransform attributeName="transform" type="translate" values="0 0;-5 -30" dur="2.6s" repeatCount="indefinite"/>
-              <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.55;1" dur="2.6s" repeatCount="indefinite"/>
-              <rect class="il-acc-fill" x="46" y="54" width="22" height="15" rx="2"/><rect class="il-acc" x="46" y="54" width="22" height="15" rx="2"/>
-            </g>
-            <g opacity="0">
-              <animateTransform attributeName="transform" type="translate" values="0 0;7 -27" dur="2.6s" begin="0.85s" repeatCount="indefinite"/>
-              <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.55;1" dur="2.6s" begin="0.85s" repeatCount="indefinite"/>
-              <rect class="il-acc-fill" x="54" y="54" width="20" height="14" rx="2"/><rect class="il-acc" x="54" y="54" width="20" height="14" rx="2"/>
-            </g>
-            <g opacity="0">
-              <animateTransform attributeName="transform" type="translate" values="0 0;1 -23" dur="2.6s" begin="1.7s" repeatCount="indefinite"/>
-              <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.55;1" dur="2.6s" begin="1.7s" repeatCount="indefinite"/>
-              <rect class="il-acc-fill" x="50" y="56" width="18" height="13" rx="2"/><rect class="il-acc" x="50" y="56" width="18" height="13" rx="2"/>
-            </g>
             <!-- SD card -->
-            <path class="il-st" d="M42 50h26l8 8v32a4 4 0 0 1-4 4H42a4 4 0 0 1-4-4V54a4 4 0 0 1 4-4z"/>
-            <line class="il-st il-thin" x1="48" y1="57" x2="48" y2="64"/><line class="il-st il-thin" x1="54" y1="57" x2="54" y2="64"/><line class="il-st il-thin" x1="60" y1="57" x2="60" y2="64"/>
-            <!-- verify scan-line sweeping the card -->
-            <line class="scan-line" x1="40" x2="74" y1="62" y2="62"><animate attributeName="y1" values="52;92;52" dur="2.2s" repeatCount="indefinite"/><animate attributeName="y2" values="52;92;52" dur="2.2s" repeatCount="indefinite"/></line>
-            <!-- "verified" check badge that draws itself in (next to the card) -->
-            <circle cx="92" cy="66" r="11" fill="color-mix(in srgb, var(--ok, #3fb950) 18%, transparent)" stroke="var(--ok, #3fb950)" stroke-width="2"/>
-            <path d="M87 66l4 4 7-8" fill="none" stroke="var(--ok, #3fb950)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="20"><animate attributeName="stroke-dashoffset" values="20;20;0;0;20" keyTimes="0;0.25;0.5;0.85;1" dur="2.6s" repeatCount="indefinite"/></path>
+            <path class="il-st" d="M46 46h26l8 8v40a4 4 0 0 1-4 4H46a4 4 0 0 1-4-4V50a4 4 0 0 1 4-4z"/>
+            <line class="il-st il-thin" x1="52" y1="53" x2="52" y2="60"/><line class="il-st il-thin" x1="58" y1="53" x2="58" y2="60"/><line class="il-st il-thin" x1="64" y1="53" x2="64" y2="60"/>
+            <!-- "verified" check badge (static) -->
+            <circle cx="98" cy="72" r="13" fill="color-mix(in srgb, var(--ok) 18%, transparent)" stroke="var(--ok)" stroke-width="2"/>
+            <path d="M92 72l4 4 8-9" fill="none" stroke="var(--ok)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
           </svg></span>
           <div class="del-hero-text">
             <h2>Clear space on your card</h2>

@@ -2638,3 +2638,95 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .am-toggle input[type="checkbox"]:hover { border-color: var(--text-2); }
 .am-toggle input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
 .am-toggle input[type="checkbox"]:checked::before { transform: translateX(19px); width: 12px; height: 12px; top: 2px; left: 3px; background: #fff; }
+
+/* ======================================================================
+   COHESION PASS — make it feel like ONE connected app.
+   Appended last so it wins by source order. Four goals:
+     1. Fill in CSS variables that were used but never defined.
+     2. Repair the motion engine (was circular → all motion was dead).
+     3. One action bar on every screen so the primary button never moves.
+     4. One header rhythm + calm, consistent motion.
+   ====================================================================== */
+
+/* 1) VARIABLES that were referenced but never defined. The big one:
+      var(--text-1) is used 32× with NO fallback → invalid color → text fell
+      back to whatever it inherited (the "black font in the wrong place" bug).
+      --warn/--fg/--card-2/--cat-* were also only half-defined. */
+:root {
+  --text-1: var(--text);
+  --text-0: var(--text);
+  --fg: var(--text-2);
+  --bg: var(--bg-fallback);
+  --card-2: var(--control);
+  --warn: #d98324;
+  --cat: var(--accent);
+  --cat-personal: #45c07a;
+  --cat-client:   #4aa3df;
+  --cat-social:   #b57be0;
+  --cat-other:    #e0a458;
+}
+:root[data-theme="light"] { --warn: #9a5b00; }
+
+/* 2) MOTION ENGINE — the source had `--motion: var(--motion)` (a self-reference),
+      which is invalid at computed-value time, so every `transition/animation …
+      var(--motion) …` silently collapsed to 0s. Give the whole app ONE gentle,
+      consistent Fluent tempo instead. */
+:root {
+  --motion-fast: 90ms;
+  --motion:      150ms;
+  --motion-slow: 260ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-fast: 1ms; --motion: 1ms; --motion-slow: 1ms; }
+}
+
+/* 3) ONE ACTION BAR on every screen. Today Continue/Back/Run/Delete land in
+      different spots per screen, so you relearn the layout each page. Pin the
+      bar to the bottom of the panel, add a hairline above it, and place buttons
+      by ROLE (not DOM order): the primary/destructive action is always on the
+      left, Back/secondary always on the right, utilities furthest right. */
+.step-panel:not(.done-panel) > .row-actions,
+.finalize .row-actions,
+.phone .row-actions { margin-top: auto; }          /* stick to the bottom of the flex column */
+.row-actions {
+  gap: 8px; margin-top: 16px; padding-top: 13px;
+  border-top: 1px solid var(--divider);
+  flex-wrap: wrap;
+}
+.row-actions > .btn { order: 4; }                             /* neutral middle */
+.row-actions > .btn.primary,
+.row-actions > .btn.danger { order: 1; }                      /* main action → left */
+.row-actions > .btn.ghost  { order: 6; }                      /* Back / dismiss → right */
+.row-actions > .btn.subtle { order: 8; }                      /* utilities → far right */
+.row-actions > .btn.ghost,
+.row-actions > .btn.subtle { margin-left: auto; }             /* right-align the escape group */
+.row-actions > .btn.ghost ~ .btn.subtle,
+.row-actions > .btn.subtle ~ .btn.ghost { margin-left: 0; }   /* only the first gets the gap */
+.row-actions > :not(.btn) { order: 20; }                      /* progress/meta text parks last */
+
+/* 4a) HEADER RHYTHM — the per-screen "hero" headers used three different sizes.
+       Give them one size, one spacing, and a calm (not oversized) illustration,
+       so every screen opens the same way. */
+.up-hero, .del-hero, .fin-head.with-illo { align-items: center; gap: 14px; margin: 2px 0 16px; }
+.up-hero-illo svg, .del-hero-illo svg, .fin-head-illo svg { width: 46px; height: 46px; }
+.up-hero-text h2, .del-hero-text h2, .fin-head-text h2 {
+  font-size: 18px; font-weight: 600; margin: 0 0 3px;
+}
+.up-hero-text p, .del-hero-text p, .fin-head-text p {
+  margin: 0; font-size: 12.5px; color: var(--text-3); max-width: 560px; line-height: 1.5;
+}
+/* Dialog headers (AI panel / People dashboard) share the same title size + a
+   consistent square accent icon, so modals read as the same family too. */
+.ai-hd-text h3, .pd-hd-tx h3 { font-size: 18px; font-weight: 600; }
+.ai-hd-icon, .pd-hd-icon { width: 38px; height: 38px; min-width: 38px; border-radius: var(--radius-sm); font-size: 19px; }
+/* Consistent step-panel title */
+.step-panel h2 { font-size: 18px; }
+
+/* 4b) Consistent reading width so the layout doesn't jump between task screens. */
+.up-screen, .del-screen { max-width: 760px; }
+
+/* 4c) CALM MOTION — kill the remaining looping decorative animation. The floating
+       "files" and sparkles on the Copy/Delete screens are stripped in markup; this
+       also silences the empty-drive pulse ring and any residual SVG loop so nothing
+       twitches while you work. Functional spinners/progress keep moving. */
+.dl-empty-dot { animation: none; }

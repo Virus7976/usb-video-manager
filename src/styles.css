@@ -45,6 +45,7 @@
   --danger: #ff99a4;
   --ok: #6ccb5f;
   --acrylic: rgba(45, 45, 45, 0.78);   /* Fluent Acrylic command bar/footer */
+  --menu-solid: #2b2b2b;               /* OPAQUE menu/combobox surface — see .subject-combo */
   --check-border: rgba(255, 255, 255, 0.6);
 }
 
@@ -69,6 +70,7 @@
   --danger: #c42b1c;
   --ok: #0f7b0f;
   --acrylic: rgba(243, 243, 243, 0.82);
+  --menu-solid: #f4f4f4;               /* OPAQUE menu/combobox surface — see .subject-combo */
   --check-border: rgba(0, 0, 0, 0.55);
 }
 
@@ -2159,7 +2161,17 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .rb-x { flex: 0 0 auto; width: 26px; height: 26px; border: none; background: none; color: var(--text-3); border-radius: 50%; cursor: pointer; font-size: 12px; }
 .rb-x:hover { background: var(--subtle-hover); color: var(--text-1); }
 .submenu { z-index: 2600; }
-.subject-combo { max-height: 240px; overflow-y: auto; }
+/* The autocomplete dropdown must be OPAQUE: it renders above the batch-dialog
+   modal-card, which itself has backdrop-filter. Two stacked backdrop-filter
+   layers hit a Chromium/GPU bug that paints the upper one invisible on some
+   machines — so the dropdown silently vanished inside the Name-batch dialog
+   (but worked on the per-clip fields, which have no blurred ancestor). Using a
+   solid fill with no backdrop-filter makes it render everywhere. */
+.subject-combo {
+  max-height: 240px; overflow-y: auto;
+  background: var(--menu-solid);
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
 
 /* Inline ghost-text autocomplete for the subject combobox */
 .combo-wrap { position: relative; display: inline-block; width: 150px; flex: 0 0 auto; min-width: 0; }

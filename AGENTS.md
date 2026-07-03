@@ -242,6 +242,29 @@ Setup `.exe` with `/S`).
   `src/index.html` and bundled via `build.files`). Don't edit a root-level `renderer.js`.
 - **Analyze speed:** full multi-pass per clip is slow (hours for hundreds of clips). ⚡ Quick is
   the answer; keep it the default.
+- **Never stack `backdrop-filter` over `backdrop-filter`.** A translucent surface that relies on
+  `backdrop-filter` (e.g. `--acrylic`) becomes **invisible on some GPUs** when it paints over
+  *another* blurred element. This bit the autocomplete flyout: it showed fine over normal
+  content (per-clip rename fields) but vanished when opened inside the **Name-batch modal**,
+  whose `.modal-card` is also blurred. Fix: the combobox dropdown (`.subject-combo`) uses a
+  **solid** `--menu-solid` background with `backdrop-filter: none`. If a menu/flyout can ever
+  appear above a modal, make it opaque. (Note: this is invisible to headless render tests —
+  `getBoundingClientRect`/`elementFromPoint` still report the element as present.)
+
+## 6a. Pop-out preview window (`src/preview.html`)
+
+A second `BrowserWindow` (created in `main.js` → `createPreviewWindow`) with **two modes**,
+persisted in `config.previewGrid` (`{ mode, source, tile, playVideos, muted }`):
+- **mirror** — one clip, `<video>` for footage or `<img>` for photos. `preview:set` carries a
+  `kind` (`photo`/`video`, inferred from `IMAGE_EXTS` if absent).
+- **grid** — a wall of every clip in scope (`selected`/`all`/`unnamed`). The **main window owns
+  the clip list** (`renderer.js` → `pushPreviewGrid`, debounced, hooked into `updateBatchBar`);
+  it sends paths via `preview:list` and main resolves `file://` URLs. Clicking a tile fires
+  `preview:jump` → main → main window → `focusClipFromPreview`.
+- Config is the single source of truth in **main**; either window can change it (`preview:config`
+  / `preview:mode`) and main persists + **re-broadcasts to both** so they stay in lockstep.
+  New preload channels: `previewList / previewConfig / previewMode / previewJump / previewReady`
+  and `onPreviewList / onPreviewConfig / onPreviewJump`.
 
 ## 7. How to add a screenshot to the README
 

@@ -504,6 +504,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   backup**, pick/enable a local **AI vision model** (with a Browse-&-download shortcut), and run
   a **face-recognition check** — then hands off to the tour. Re-runnable anytime from
   **Help → Setup wizard…**, the Settings hub, and the command palette.
+- **Pop-out preview, upgraded.** The preview window now shows **photos** (not just video),
+  and gains a **Grid wall** mode: a live wall of every clip in scope (**Selected / All /
+  Unnamed**) with an adjustable tile size and optional video playback — made for a second
+  monitor, so you can eyeball all the footage on the big screen while you rename on the
+  small one. **Click any tile to jump** to that clip on the Rename screen. Mode + settings
+  are remembered between sessions.
 
 ### Changed
 - **Organize, rebuilt as one screen.** The destination map is now a single **Plan** view that
@@ -556,6 +562,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
   safely versioned instead of being skipped. Cross-drive moves copy → **verify** → then
   delete the original, so a crash or error mid-move always leaves the source intact and never
   leaves a half-written file at the destination.
+- **Autocomplete dropdown vanishing in the Name-batch dialog.** The subject/description
+  suggestion list depended on a translucent acrylic background + `backdrop-filter`; stacked
+  over the batch dialog's own blurred card it hit a Chromium/GPU nested-backdrop-filter bug
+  that painted it invisible (it worked fine on the per-clip fields, which have no blurred
+  ancestor). The combobox dropdown is now drawn with a solid, opaque surface so it shows
+  everywhere.
 
 ### Known issues
 - Vision models can hallucinate a subject → mis-placement (use 🎬 Sort with me / manual rename).

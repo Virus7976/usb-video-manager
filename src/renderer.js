@@ -174,6 +174,7 @@ let cfg = null;
   if (cfg.ui) Object.assign(uiPrefs, cfg.ui);
   applyUiPrefs();
   if (cfg.previewWidth) applyPreviewWidth(cfg.previewWidth);
+  if (cfg.previewGrid) previewGridState = { ...previewGridState, ...cfg.previewGrid };
   if (cfg.phoneThumb) applyPhThumb(cfg.phoneThumb);
   loadImportedSet();   // remember what's been imported before (duplicate detection)
   if (cfg.hotkeys) hotkeys = { ...hotkeys, ...cfg.hotkeys };
@@ -3905,6 +3906,7 @@ function updateBatchBar() {
     setDateField($('batchDate'), sel[0].date);
   }
   renderCheckedStrip();
+  refreshPreviewGrid();   // keep the pop-out grid wall in sync with the selection
 }
 
 async function applyBatch() {
@@ -4416,31 +4418,90 @@ $('rpJumpBtn').addEventListener('click', jumpNextUnnamed);
 $('checkedClearBtn').addEventListener('click', clearSelection);
 
 // ---------------------------------------------------------------------------
-// Pop-out preview window — mirrors the clip you're currently working on
+// Pop-out preview window — two modes:
+//   • mirror: shows the single clip you're working on (video or photo)
+//   • grid:   a wall of every clip in scope (selected / all / unnamed) — handy on
+//             a second monitor while you rename on the main one; click a tile to jump.
+// The window owns its own toolbar; main persists the view config and hands it back
+// here (previewGridState) so we know which clips to push for the grid.
 // ---------------------------------------------------------------------------
 let previewOpen = false;
 let lastPreviewIndex = null;
+let previewGridState = { mode: 'mirror', source: 'selected', tile: 200, playVideos: false, muted: true };
+function isClipNamed(c) { return !!(c && (c.subject || c.description)); }
 function maybePreview(i) {
   lastPreviewIndex = i;
-  if (!previewOpen) return;
+  if (!previewOpen || previewGridState.mode === 'grid') return;
   const clip = state.scannedFiles[i];
   // Mirror the in-card preview: muted unless "Play audio on hover" is on, same speed.
-  if (clip) window.api.previewSet(clip.sourcePath, clip.name, { muted: !uiPrefs.autoplayAudio, speed: currentSpeed });
+  if (clip) {
+    window.api.previewSet(clip.sourcePath, clip.name, {
+      kind: isPhotoClip(clip) ? 'photo' : 'video',
+      muted: !uiPrefs.autoplayAudio,
+      speed: currentSpeed
+    });
+  }
 }
 // Re-push the current clip when the mute/speed settings change.
 function refreshPreview() { if (previewOpen && lastPreviewIndex != null) maybePreview(lastPreviewIndex); }
+// Build + send the clip list for the grid wall (debounced — selection/naming can
+// change in bursts). Only clips with a local file are shown.
+let pushGridTimer = null;
+function pushPreviewGrid() {
+  if (!previewOpen || previewGridState.mode !== 'grid') return;
+  clearTimeout(pushGridTimer);
+  pushGridTimer = setTimeout(() => {
+    const src = previewGridState.source;
+    const clips = [];
+    (state.scannedFiles || []).forEach((c, i) => {
+      if (!c || !c.sourcePath) return;
+      if (src === 'selected' && !c.selected) return;
+      if (src === 'unnamed' && isClipNamed(c)) return;
+      clips.push({ i, path: c.sourcePath, name: c.name || '', kind: isPhotoClip(c) ? 'photo' : 'video', named: isClipNamed(c) });
+    });
+    window.api.previewList(clips);
+  }, 80);
+}
+// Something in the clip list changed (selection ticked, a name applied, a rescan) —
+// keep the grid wall in sync if it's showing.
+function refreshPreviewGrid() { pushPreviewGrid(); }
 async function togglePreviewWindow() {
   const r = await window.api.togglePreview();
   previewOpen = !!(r && r.open);
+  if (r && r.config) previewGridState = { ...previewGridState, ...r.config };
   if (previewOpen) {
+    if (previewGridState.mode === 'grid') { pushPreviewGrid(); return; }
     const card = document.activeElement && document.activeElement.closest
       && document.activeElement.closest('.rename-card');
     if (card) maybePreview(Number(card.dataset.i));
     else if (state.scannedFiles.length) maybePreview(0);
   }
 }
+// Focus + scroll to a clip when its grid tile is clicked in the preview window.
+function focusClipFromPreview(i) {
+  const card = document.querySelector(`.rename-card[data-i="${i}"]`);
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const subj = card.querySelector('.f-subject');
+  if (subj) { try { subj.focus(); } catch { /* ignore */ } }
+  card.classList.add('analyzing');
+  setTimeout(() => card.classList.remove('analyzing'), 1200);
+}
 window.api.onPreviewClosed(() => { previewOpen = false; });
-window.api.previewState().then((s) => { previewOpen = !!(s && s.open); });
+window.api.onPreviewJump((i) => focusClipFromPreview(Number(i)));
+// Main re-broadcasts the view config whenever it changes (mode toggle, tile size,
+// source dropdown). React: repaint the grid if we just entered/updated grid mode.
+window.api.onPreviewConfig((c) => {
+  if (!c) return;
+  const wasGrid = previewGridState.mode === 'grid';
+  previewGridState = { ...previewGridState, ...c };
+  if (previewGridState.mode === 'grid') pushPreviewGrid();
+  else if (wasGrid && lastPreviewIndex != null) maybePreview(lastPreviewIndex);
+});
+window.api.previewState().then((s) => {
+  previewOpen = !!(s && s.open);
+  if (s && s.config) previewGridState = { ...previewGridState, ...s.config };
+});
 
 // ---------------------------------------------------------------------------
 // Configurable in-app hotkeys (rename screen)

@@ -241,10 +241,34 @@ contextBridge.exposeInMainWorld('api', {
   togglePreview: () => ipcRenderer.invoke('preview:toggle'),
   previewState: () => ipcRenderer.invoke('preview:state'),
   previewSet: (filePath, name, opts) => ipcRenderer.invoke('preview:set', { path: filePath, name, ...(opts || {}) }),
+  // Grid-wall mode: the main window pushes the list of clips in scope.
+  previewList: (clips) => ipcRenderer.invoke('preview:list', { clips }),
+  // View config (mode / tile size / source / play-videos / mute) — persisted by main.
+  previewConfig: (patch) => ipcRenderer.invoke('preview:config', patch || {}),
+  previewMode: (mode) => ipcRenderer.invoke('preview:mode', mode),
+  // Preview window → main window: focus/scroll to a clip when a grid tile is clicked.
+  previewJump: (i) => ipcRenderer.invoke('preview:jump', i),
+  // Preview window announces it has (re)loaded and wants the current state.
+  previewReady: () => ipcRenderer.invoke('preview:ready'),
   onPreviewUpdate: (cb) => {
     const listener = (_evt, d) => cb(d);
     ipcRenderer.on('preview:update', listener);
     return () => ipcRenderer.removeListener('preview:update', listener);
+  },
+  onPreviewList: (cb) => {
+    const listener = (_evt, d) => cb(d);
+    ipcRenderer.on('preview:list', listener);
+    return () => ipcRenderer.removeListener('preview:list', listener);
+  },
+  onPreviewConfig: (cb) => {
+    const listener = (_evt, d) => cb(d);
+    ipcRenderer.on('preview:config', listener);
+    return () => ipcRenderer.removeListener('preview:config', listener);
+  },
+  onPreviewJump: (cb) => {
+    const listener = (_evt, i) => cb(i);
+    ipcRenderer.on('preview:jump', listener);
+    return () => ipcRenderer.removeListener('preview:jump', listener);
   },
   onPreviewClosed: (cb) => {
     const listener = () => cb();

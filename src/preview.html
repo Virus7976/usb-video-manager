@@ -5,40 +5,186 @@
   <title>Preview</title>
   <style>
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
-      font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; }
-    #v { width: 100%; height: 100%; object-fit: contain; background: #000; display: none; }
+      font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; color: #fff; }
+    body { display: flex; flex-direction: column; }
+
+    /* Auto-hiding toolbar (slides in when the cursor nears the top) */
+    #bar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+      display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+      background: rgba(20, 20, 20, 0.92); border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      transform: translateY(-100%); transition: transform .16s ease; font-size: 12px;
+    }
+    #bar.show { transform: translateY(0); }
+    #hotzone { position: fixed; top: 0; left: 0; right: 0; height: 14px; z-index: 19; }
+    .seg { display: inline-flex; background: #2b2b2b; border: 1px solid #3a3a3a; border-radius: 7px; overflow: hidden; }
+    .seg button { border: 0; background: transparent; color: #cfcfcf; font: inherit; font-size: 12px; padding: 4px 12px; cursor: pointer; }
+    .seg button.on { background: #3f8cff; color: #fff; font-weight: 600; }
+    .bar-grp { display: inline-flex; align-items: center; gap: 6px; color: #bdbdbd; }
+    .bar-grp.hidden { display: none; }
+    #bar select, #bar input[type=range] { font: inherit; }
+    #bar select { background: #2b2b2b; color: #eee; border: 1px solid #3a3a3a; border-radius: 6px; padding: 3px 6px; }
+    .chk { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+    .spacer { flex: 1 1 auto; }
+
+    /* Mirror mode */
+    #mirror { flex: 1 1 auto; position: relative; display: none; }
+    #mirror.on { display: block; }
+    #v, #img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+    #v { display: none; }
+    #img { display: none; }
     #name {
       position: fixed; left: 0; right: 0; bottom: 0; padding: 7px 12px;
       color: #fff; font-size: 12px; text-align: center;
       background: linear-gradient(transparent, rgba(0, 0, 0, .72));
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; z-index: 5;
     }
+
+    /* Grid mode */
+    #grid { flex: 1 1 auto; display: none; overflow-y: auto; padding: 10px; align-content: start;
+      grid-template-columns: repeat(auto-fill, minmax(var(--tile, 200px), 1fr)); gap: 10px; }
+    #grid.on { display: grid; }
+    .cell { position: relative; background: #111; border: 1px solid rgba(255,255,255,0.07); border-radius: 8px;
+      overflow: hidden; cursor: pointer; aspect-ratio: 16 / 10; }
+    .cell:hover { border-color: #3f8cff; }
+    .cell.named::after { content: "✓"; position: absolute; top: 5px; right: 6px; z-index: 2;
+      font-size: 11px; color: #fff; background: #2ea043; border-radius: 999px; width: 16px; height: 16px;
+      display: grid; place-items: center; }
+    .cell video, .cell img { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
+    .cell .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 7px; font-size: 11px;
+      background: linear-gradient(transparent, rgba(0,0,0,.8)); white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; }
+    .cell .badge { position: absolute; top: 5px; left: 6px; z-index: 2; font-size: 9px; text-transform: uppercase;
+      letter-spacing: .04em; background: rgba(0,0,0,.6); padding: 1px 5px; border-radius: 4px; color: #cfe; }
+
     #empty { position: absolute; inset: 0; display: grid; place-items: center;
       color: #8a8a8a; font-size: 13px; padding: 16px; text-align: center; }
+    #empty.hidden { display: none; }
   </style>
 </head>
 <body>
-  <div id="empty">Focus a clip on the Rename screen to preview it here.</div>
-  <video id="v" controls autoplay loop></video>
-  <div id="name"></div>
+  <div id="hotzone"></div>
+  <div id="bar">
+    <span class="seg" id="modeSeg">
+      <button data-mode="mirror" class="on">Mirror</button>
+      <button data-mode="grid">Grid wall</button>
+    </span>
+    <span class="bar-grp" id="mirrorOpts">
+      <label class="chk"><input type="checkbox" id="mMute" checked /> Mute</label>
+    </span>
+    <span class="bar-grp hidden" id="gridOpts">
+      <select id="gSource" title="Which clips to show">
+        <option value="selected">Selected</option>
+        <option value="all">All</option>
+        <option value="unnamed">Unnamed</option>
+      </select>
+      <label class="chk">Size <input type="range" id="gTile" min="120" max="420" step="10" value="200" /></label>
+      <label class="chk"><input type="checkbox" id="gPlay" /> Play videos</label>
+    </span>
+    <span class="spacer"></span>
+    <span id="count" style="color:#9a9a9a"></span>
+  </div>
+
+  <div id="mirror" class="on">
+    <div id="empty">Focus a clip on the Rename screen to preview it here.</div>
+    <video id="v" controls autoplay loop></video>
+    <img id="img" alt="" />
+    <div id="name"></div>
+  </div>
+
+  <div id="grid"></div>
+
   <script>
-    const v = document.getElementById('v');
-    const nm = document.getElementById('name');
-    const em = document.getElementById('empty');
+    const $ = (id) => document.getElementById(id);
+    const bar = $('bar'), v = $('v'), img = $('img'), nm = $('name'), em = $('empty');
+    const mirror = $('mirror'), grid = $('grid');
     let curSpeed = 1;
+    // Local view config (mirrored from main; changes are persisted through main).
+    let cfg = { mode: 'mirror', source: 'selected', tile: 200, playVideos: false, muted: true };
+
+    // ---- toolbar auto-hide ----
+    $('hotzone').addEventListener('mouseenter', () => bar.classList.add('show'));
+    bar.addEventListener('mouseleave', () => bar.classList.remove('show'));
+    document.addEventListener('mousemove', (e) => { if (e.clientY > 64 && !bar.matches(':hover')) bar.classList.remove('show'); });
+
+    function applyCfg() {
+      $('gTile').value = cfg.tile;
+      $('gSource').value = cfg.source;
+      $('gPlay').checked = !!cfg.playVideos;
+      $('mMute').checked = cfg.muted !== false;
+      grid.style.setProperty('--tile', cfg.tile + 'px');
+      const isGrid = cfg.mode === 'grid';
+      mirror.classList.toggle('on', !isGrid);
+      grid.classList.toggle('on', isGrid);
+      $('mirrorOpts').classList.toggle('hidden', isGrid);
+      $('gridOpts').classList.toggle('hidden', !isGrid);
+      document.querySelectorAll('#modeSeg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === cfg.mode));
+      if (!isGrid) v.muted = cfg.muted !== false;
+    }
+
+    // ---- mode + option changes → tell main (which persists + re-broadcasts) ----
+    document.querySelectorAll('#modeSeg button').forEach((b) => {
+      b.addEventListener('click', () => { window.api.previewMode(b.dataset.mode); });
+    });
+    $('mMute').addEventListener('change', () => window.api.previewConfig({ muted: $('mMute').checked }));
+    $('gSource').addEventListener('change', () => window.api.previewConfig({ source: $('gSource').value }));
+    $('gTile').addEventListener('input', () => { cfg.tile = +$('gTile').value; grid.style.setProperty('--tile', cfg.tile + 'px'); });
+    $('gTile').addEventListener('change', () => window.api.previewConfig({ tile: +$('gTile').value }));
+    $('gPlay').addEventListener('change', () => window.api.previewConfig({ playVideos: $('gPlay').checked }));
+
+    // ---- mirror mode: one clip (video OR image) ----
     window.api.onPreviewUpdate((d) => {
       if (!d || !d.url) return;
-      em.style.display = 'none';
-      v.style.display = 'block';
-      v.muted = d.muted !== false;       // honor the app's mute/“play audio on hover” setting
-      curSpeed = d.speed || 1;
-      if (v.src !== d.url) { v.src = d.url; v.play().catch(() => {}); }
-      v.playbackRate = curSpeed;
+      em.classList.add('hidden');
       nm.textContent = d.name || '';
+      if (d.kind === 'photo') {
+        v.pause(); v.removeAttribute('src'); v.load(); v.style.display = 'none';
+        img.style.display = 'block';
+        if (img.src !== d.url) img.src = d.url;
+      } else {
+        img.style.display = 'none'; img.removeAttribute('src');
+        v.style.display = 'block';
+        v.muted = d.muted !== false;
+        curSpeed = d.speed || 1;
+        if (v.src !== d.url) { v.src = d.url; v.play().catch(() => {}); }
+        v.playbackRate = curSpeed;
+      }
     });
-    // playbackRate resets when a new source loads — reapply it.
     v.addEventListener('loadedmetadata', () => { v.playbackRate = curSpeed; });
     v.addEventListener('play', () => { v.playbackRate = curSpeed; });
+
+    // ---- grid mode: a wall of every clip in scope ----
+    const esc = (s) => String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    function renderGrid(clips) {
+      $('count').textContent = clips.length ? `${clips.length} clip${clips.length !== 1 ? 's' : ''}` : '';
+      if (!clips.length) {
+        grid.innerHTML = '<div style="grid-column:1/-1;color:#8a8a8a;text-align:center;padding:40px">No clips to show. Tick some clips on the Rename screen (or switch the dropdown to “All”).</div>';
+        return;
+      }
+      grid.innerHTML = clips.map((c) => {
+        const media = c.kind === 'photo'
+          ? `<img loading="lazy" src="${esc(c.url)}" alt="" />`
+          : (cfg.playVideos
+              ? `<video src="${esc(c.url)}" muted loop autoplay preload="metadata"></video>`
+              : `<video src="${esc(c.url)}#t=0.5" muted preload="metadata"></video>`);
+        return `<div class="cell${c.named ? ' named' : ''}" data-i="${c.i}" title="${esc(c.name)}">
+          <span class="badge">${c.kind === 'photo' ? 'photo' : 'video'}</span>
+          ${media}
+          <span class="cap">${esc(c.name) || 'unnamed'}</span>
+        </div>`;
+      }).join('');
+      grid.querySelectorAll('.cell').forEach((cell) => {
+        cell.addEventListener('click', () => window.api.previewJump(Number(cell.dataset.i)));
+      });
+    }
+    window.api.onPreviewList((d) => { if (d && Array.isArray(d.clips)) renderGrid(d.clips); });
+
+    // ---- config broadcast from main ----
+    window.api.onPreviewConfig((c) => { if (c) { cfg = { ...cfg, ...c }; applyCfg(); } });
+
+    applyCfg();
+    // Ask main for the current state on load.
+    if (window.api.previewReady) window.api.previewReady();
   </script>
 </body>
 </html>

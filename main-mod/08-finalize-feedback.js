@@ -27,6 +27,15 @@ function faceDist(a, b) { if (!a || !b) return Infinity; let s = 0; const n = Ma
 function personCounts(p) { const fs = p.faces || []; const conf = fs.filter((f) => f.confirmed).length; return { count: fs.length, confirmed: conf, unconfirmed: fs.length - conf }; }
 ipcMain.handle('people:get', () => aiPeople().map((p) => ({ id: p.id, name: p.name, thumb: personCover(p), ...personCounts(p) })));
 ipcMain.handle('faces:ignoredCount', () => aiIgnoredFaces().length);
+// Persist the unconfirmed face-review clusters so the grid (crops + all) survives
+// restarts — no re-scanning to see your faces again.
+ipcMain.handle('faces:getPending', () => (config.ai && Array.isArray(config.ai.facesPending)) ? config.ai.facesPending : []);
+ipcMain.handle('faces:savePending', (_e, list) => {
+  if (!config.ai) config.ai = {};
+  config.ai.facesPending = Array.isArray(list) ? list : [];
+  saveStore('ai.facesPending');
+  return { ok: true };
+});
 // Full detail incl. every face thumb + confirmed flag — for the dashboard's grid.
 ipcMain.handle('people:detail', (_e, id) => {
   const p = aiPeople().find((x) => x.id === id);

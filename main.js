@@ -89,10 +89,13 @@ const STORE_FILES = {
   projectLedger:  path.join(STORE_DIR, 'project-ledger.json'),
   'ai.people':    path.join(STORE_DIR, 'people.json'),
   'ai.clipObs':   path.join(STORE_DIR, 'clip-observations.json'),
+  // Unconfirmed face-review clusters (crops + descriptors + state) so the "Review
+  // faces" grid — thumbnails and all — survives restarts and never needs re-scanning.
+  'ai.facesPending': path.join(STORE_DIR, 'faces-pending.json'),
 };
 const STORE_DEFAULT = {
   renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [],
-  'ai.people': () => [], 'ai.clipObs': () => ({}),
+  'ai.people': () => [], 'ai.clipObs': () => ({}), 'ai.facesPending': () => [],
 };
 const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
 
@@ -202,6 +205,7 @@ function loadConfig() {
     simulatePhone: false,      // dev-only: surface a fake phone backed by a local folder
     useAdb: false,             // fast Android transfer via ADB (opt-in; falls back to MTP)
     adbPath: '',               // optional explicit path to adb.exe
+    wirelessAddr: '',          // last Wi-Fi-debugging address (host:port) for sticky reconnect
     phoneBackupSource: '',     // wireless: the NAS folder a phone app (QuMagie) auto-uploads to
     ffmpegPath: 'ffmpeg',
     ffprobePath: 'ffprobe',
@@ -1954,6 +1958,18 @@ async function listPhones() {
   // probe (device handshake), so give it room — otherwise a real phone is dropped.
   const r = await runPwshScript(PS_PHONE_LIST, { timeoutMs: 60000 });
   for (const d of parsePsJson(r.stdout).filter((x) => x && x.kind === 'phone')) phones.push(d);
+  // A phone connected over Wi-Fi debugging is invisible to Windows' portable-device (MTP)
+  // enumeration — it exists only to `adb devices`. Surface it as a phone so it can be
+  // backed up wirelessly. Its serial is "ip:port" (has a colon); USB-ADB phones already
+  // appear via MTP above and have a colon-free serial, so this adds no duplicates.
+  try {
+    const serial = await adbReadyDevice();
+    if (serial && serial.includes(':') && !phones.some((p) => p.serial === serial)) {
+      let model = '';
+      try { model = (await runAdb(['-s', serial, 'shell', 'getprop', 'ro.product.model'], { timeoutMs: 6000 })).out.trim(); } catch { /* getprop can fail on a flaky link */ }
+      phones.push({ name: (model || 'Android phone') + ' (Wi-Fi)', kind: 'phone', adb: true, wireless: true, serial });
+    }
+  } catch { /* adb off, or no authorized device */ }
   return phones;
 }
 
@@ -2197,7 +2213,10 @@ async function ensureAdb(allowDownload = false) {
 function runAdb(args, { timeoutMs = 600000 } = {}) {
   return new Promise((resolve) => {
     if (!_adbPath) { resolve({ code: -1, out: '', err: 'no adb' }); return; }
-    const ps = spawn(_adbPath, args, { windowsHide: true });
+    // ADB_MDNS_OPENSCREEN=1 makes the adb server discover Wi-Fi devices (Android 11+
+    // wireless debugging) via its built-in mDNS backend — no Apple Bonjour install
+    // needed. Harmless for USB/`pull` calls; required for `adb mdns services`/pairing.
+    const ps = spawn(_adbPath, args, { windowsHide: true, env: { ...process.env, ADB_MDNS_OPENSCREEN: '1' } });
     let out = ''; let err = '';
     const t = setTimeout(() => { treeKill(ps); }, timeoutMs);
     ps.stdout.on('data', (d) => { out += d.toString(); });
@@ -2320,11 +2339,30 @@ async function adbPullToDest(serial, items, dest, onName) {
   }
   return { ok: true, results };
 }
+let _lastReconnectScan = 0;   // throttle the port-scan reconnect (status is polled often)
 ipcMain.handle('adb:status', async () => {
   const adb = await ensureAdb(false);
   if (!adb) return { ok: false, installed: false, useAdb: !!config.useAdb };
-  const d = adbParseDevices((await runAdb(['devices'], { timeoutMs: 10000 })).out);
-  return { ok: true, installed: true, device: d.device, unauthorized: d.unauthorized, useAdb: !!config.useAdb };
+  let d = adbParseDevices((await runAdb(['devices'], { timeoutMs: 10000 })).out);
+  // Wireless is sticky: if nothing's connected but we've paired before, try silently
+  // re-connecting to the last Wi-Fi address (the phone keeps trusting this PC).
+  if (!d.device && config.wirelessAddr) {
+    await runAdb(['connect', config.wirelessAddr], { timeoutMs: 8000 });
+    d = adbParseDevices((await runAdb(['devices'], { timeoutMs: 10000 })).out);
+    // Saved port went stale (Android rotates the adb-tls-connect port). Scan for the
+    // live one so we reconnect WITHOUT making the user pair again — throttled so a
+    // frequent status poll doesn't scan every time.
+    if (!d.device && (Date.now() - _lastReconnectScan > 20000)) {
+      _lastReconnectScan = Date.now();
+      const host = String(config.wirelessAddr).split(':')[0];
+      if (host) {
+        const scanned = await connectByScan(host);
+        if (scanned.dev) { config.wirelessAddr = scanned.addr; saveConfig(); d = adbParseDevices((await runAdb(['devices'], { timeoutMs: 8000 })).out); }
+      }
+    }
+  }
+  const wireless = !!d.device && /:\d+$/.test(d.device);
+  return { ok: true, installed: true, device: d.device, unauthorized: d.unauthorized, wireless, useAdb: !!config.useAdb };
 });
 ipcMain.handle('adb:enable', async () => {
   const adb = await ensureAdb(true);   // download if missing
@@ -2334,6 +2372,288 @@ ipcMain.handle('adb:enable', async () => {
   return { ok: true, device: d.device, unauthorized: d.unauthorized };
 });
 ipcMain.handle('adb:disable', () => { config.useAdb = false; saveConfig(); return { ok: true }; });
+
+// ---------------------------------------------------------------------------
+// Wireless debugging (Android 11+) — pair over Wi-Fi with a QR code, exactly like
+// Android Studio, so a phone never needs a cable. We mint a random pairing name +
+// password and render the ADB QR (WIFI:T:ADB;S:<name>;P:<pass>;;). The phone scans
+// it under Settings → Developer options → Wireless debugging → "Pair device with QR
+// code", then advertises an mDNS `_adb-tls-pairing._tcp` service. We discover it with
+// our OWN Node multicast-DNS querying every LAN interface (adb's built-in discovery
+// binds the wrong adapter on WSL/Hyper-V/VPN boxes and hangs) — plus `adb mdns services`
+// as a second source — then `adb pair` and `adb connect` the resolved address directly.
+// No cable, no IP typing. A manual pairing-code path is the fallback when the network
+// blocks mDNS entirely (some corporate/guest Wi-Fi isolates clients).
+// ---------------------------------------------------------------------------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let _pairState = null;   // { name, pass, cancelled } for the in-flight QR pairing
+
+function randToken(n, alphabet) {
+  const bytes = crypto.randomBytes(n);
+  let s = ''; for (let i = 0; i < n; i++) s += alphabet[bytes[i] % alphabet.length];
+  return s;
+}
+// Parse `adb mdns services` — one service per line, columns are whitespace/tab
+// separated: "<instance>  _adb-tls-(pairing|connect)._tcp.  <host>:<port>".
+function parseMdnsServices(out) {
+  const svcs = [];
+  for (const l of String(out || '').split(/\r?\n/)) {
+    const m = l.match(/^(.*?)\s+_adb-tls-(pairing|connect)\._tcp\.?\s+([0-9.]+):(\d+)\s*$/);
+    if (m) svcs.push({ instance: m[1].trim(), type: m[2], host: m[3], port: m[4] });
+  }
+  return svcs;
+}
+async function adbMdnsServices() {
+  return parseMdnsServices((await runAdb(['mdns', 'services'], { timeoutMs: 8000 })).out);
+}
+
+// Every non-internal IPv4 interface on this machine. A dev box typically has several —
+// real Wi-Fi/Ethernet PLUS virtual ones from WSL, Hyper-V, VirtualBox, VPNs. adb's own
+// mDNS discovery often binds just one (often a virtual one) and never sees the phone, so
+// we query them all ourselves.
+function lanIPv4Interfaces() {
+  const out = [];
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs || []) if (a.family === 'IPv4' && !a.internal) out.push(a.address);
+  }
+  return out;
+}
+
+// Discover an `_adb-tls-(pairing|connect)._tcp` service via multicast DNS, done in Node
+// so we control the sockets: we open one mDNS responder per LAN interface and broadcast
+// the PTR query out ALL of them, then resolve SRV+A into host:port. This is far more
+// reliable on Windows dev machines than `adb mdns services` (whose openscreen backend
+// picks the wrong adapter when WSL/Hyper-V/VPN adapters are present). Resolves to
+// { host, port, instance } or null on timeout. `want` optionally filters by instance
+// name and/or host so the connect step targets the same phone we just paired.
+function mdnsDiscover(kind, want, timeoutMs, onSeen) {
+  return new Promise((resolve) => {
+    let mdns; try { mdns = require('multicast-dns'); } catch { resolve(null); return; }
+    const type = `_adb-tls-${kind}._tcp.local`;
+    const servers = [];
+    const aByName = {};        // hostname.local -> ipv4
+    const byInstance = {};     // instance -> { port, target }
+    let done = false;
+    const finish = (val) => {
+      if (done) return; done = true;
+      clearInterval(qTimer); clearTimeout(tTimer);
+      for (const s of servers) { try { s.destroy(); } catch { /* */ } }
+      resolve(val);
+    };
+    const tryResolve = () => {
+      for (const [inst, r] of Object.entries(byInstance)) {
+        if (want && want.instance && inst !== want.instance) continue;
+        const host = r.target && aByName[r.target];
+        if (!host || !r.port) continue;
+        if (want && want.host && host !== want.host) continue;
+        finish({ host, port: String(r.port), instance: inst });
+        return;
+      }
+    };
+    const onResponse = (res) => {
+      for (const a of [...(res.answers || []), ...(res.additionals || [])]) {
+        if (a.type === 'A' && a.name) aByName[a.name] = a.data;
+        else if (a.type === 'SRV' && typeof a.name === 'string' && a.name.includes(type) && a.data) {
+          byInstance[a.name.split('.')[0]] = { port: a.data.port, target: a.data.target };
+        } else if (a.type === 'PTR' && a.name === type && a.data) {
+          byInstance[String(a.data).split('.')[0]] = byInstance[String(a.data).split('.')[0]] || {};
+        }
+      }
+      if (onSeen) { try { onSeen(); } catch { /* */ } }
+      tryResolve();
+    };
+    const ifaces = lanIPv4Interfaces();
+    for (const ip of (ifaces.length ? ifaces : [undefined])) {
+      let s; try { s = mdns({ interface: ip, loopback: false, reuseAddr: true }); } catch { continue; }
+      s.on('error', () => { /* an interface that can't bind just contributes nothing */ });
+      s.on('response', onResponse);
+      servers.push(s);
+    }
+    if (!servers.length) { resolve(null); return; }
+    const query = () => { for (const s of servers) { try { s.query([{ name: type, type: 'PTR' }]); } catch { /* */ } } };
+    query();
+    const qTimer = setInterval(query, 1200);
+    const tTimer = setTimeout(() => finish(null), timeoutMs);
+  });
+}
+
+// Discover a service via BOTH our own Node mDNS and `adb mdns services`, first hit wins.
+async function discoverService(kind, want, timeoutMs, onSeen) {
+  const viaNode = mdnsDiscover(kind, want, timeoutMs, onSeen);
+  const viaAdb = (async () => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const hit = (await adbMdnsServices()).find((s) => s.type === kind
+        && (!want || !want.instance || s.instance === want.instance)
+        && (!want || !want.host || s.host === want.host));
+      if (hit) return { host: hit.host, port: hit.port, instance: hit.instance };
+      await sleep(1500);
+    }
+    return null;
+  })();
+  const winner = await Promise.race([viaNode, viaAdb]);
+  if (winner) return winner;
+  return (await Promise.all([viaNode, viaAdb])).find(Boolean) || null;
+}
+function wsSend(payload) { try { if (mainWindow) mainWindow.webContents.send('wireless:status', payload); } catch { /* ignore */ } }
+
+// Start a QR pairing session: ensure ADB, bounce the server so mDNS discovery is live,
+// mint a name/password, and return the QR as a PNG data URL for the renderer to show.
+ipcMain.handle('wireless:begin', async () => {
+  const adb = await ensureAdb(true);   // download platform-tools if missing
+  if (!adb) return { ok: false, error: 'Could not download/find ADB (check your internet).' };
+  config.useAdb = true; saveConfig();
+  // Restart the adb server so it comes up under ADB_MDNS_OPENSCREEN (a server already
+  // running from earlier USB use may have started without mDNS discovery).
+  await runAdb(['kill-server'], { timeoutMs: 8000 });
+  await runAdb(['start-server'], { timeoutMs: 15000 });
+  const name = 'gour-' + randToken(6, 'abcdefghijklmnopqrstuvwxyz0123456789');
+  const pass = randToken(8, '0123456789');   // pairing secret embedded in the QR
+  _pairState = { name, pass, cancelled: false };
+  let qr;
+  try { qr = await require('qrcode').toDataURL(`WIFI:T:ADB;S:${name};P:${pass};;`, { margin: 1, width: 260, errorCorrectionLevel: 'M' }); }
+  catch (e) { return { ok: false, error: 'QR generation failed: ' + e.message }; }
+  const chk = await runAdb(['mdns', 'check'], { timeoutMs: 6000 });
+  const mdnsOk = !/unavailable|no mdns/i.test((chk.out || '') + (chk.err || ''));
+  return { ok: true, qr, name, code: pass, mdnsOk };
+});
+
+// TCP-scan a host for open ports in Android's adb-tls-connect range. mDNS often
+// hands back a STALE connect port (the port rotates every time Wireless debugging
+// cycles), and adb's own discovery is unreliable behind WSL/Hyper-V/VPN adapters —
+// a direct scan finds the port that's actually listening right now. Fast because
+// closed ports RST instantly on a LAN; only the few open ones cost the timeout.
+function scanAdbPorts(host, { start = 30000, end = 49999, concurrency = 800, timeoutMs = 300 } = {}) {
+  const net = require('net');
+  return new Promise((resolve) => {
+    const open = [];
+    let next = start, active = 0, done = false;
+    const finish = () => { if (!done) { done = true; resolve(open.sort((a, b) => a - b)); } };
+    const pump = () => {
+      while (active < concurrency && next <= end) {
+        const port = next++; active += 1;
+        const s = new net.Socket();
+        const clear = () => { active -= 1; s.destroy(); if (next > end && active === 0) finish(); else pump(); };
+        s.setTimeout(timeoutMs);
+        s.once('connect', () => { open.push(port); clear(); });
+        s.once('timeout', clear);
+        s.once('error', clear);
+        s.connect(port, host);
+      }
+    };
+    pump();
+  });
+}
+
+// Last-resort connect: scan the phone for its live adb port and `adb connect` each
+// open one until a device shows up. This is what makes pairing reliable on networks
+// where mDNS lies about the connect port. Returns { dev, addr } or { dev:null }.
+async function connectByScan(host, isCancelled) {
+  let ports = [];
+  try { ports = await scanAdbPorts(host); } catch { ports = []; }
+  if (!ports.length) return { dev: null, addr: null };
+  let connectedAddr = null;
+  // `adb connect` is cheap + idempotent — connect to EVERY open port; only the real
+  // adb-tls-connect one authorizes. (The others are stale transports / the pairing
+  // port and just come back "offline" or refused.)
+  for (const p of ports) {
+    if (isCancelled && isCancelled()) break;
+    // eslint-disable-next-line no-await-in-loop
+    const cr = await runAdb(['connect', `${host}:${p}`], { timeoutMs: 6000 });
+    if (/connected|already connected/i.test((cr.out || '') + (cr.err || ''))) connectedAddr = `${host}:${p}`;
+  }
+  // Poll for an ONLINE device — adb often lands "offline" for a beat before it flips.
+  for (let i = 0; i < 5 && !(isCancelled && isCancelled()); i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const parsed = adbParseDevices((await runAdb(['devices'], { timeoutMs: 8000 })).out);
+    if (parsed.device) return { dev: parsed.device, addr: parsed.device };
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(1000);
+  }
+  return { dev: null, addr: connectedAddr };
+}
+
+// Wait for the scanned phone to appear over mDNS, pair, then connect. Long-polls up to
+// ~2 min; the renderer shows a spinner and can `wireless:cancel`. Emits phase updates.
+ipcMain.handle('wireless:await', async () => {
+  const st = _pairState;
+  if (!st) return { ok: false, error: 'Pairing not started.' };
+  // Discovery is the slow part; once we have the phone's address, pair+connect are
+  // near-instant. 60s is plenty for someone to open the QR scanner and scan — if the
+  // phone isn't found by then it's a network/reachability problem, not slowness.
+  wsSend({ phase: 'waiting' });
+  const pairSvc = await discoverService('pairing', { instance: st.name }, 60000, () => { if (!st.cancelled) wsSend({ phase: 'waiting' }); });
+  if (st.cancelled) { _pairState = null; return { ok: false, cancelled: true }; }
+  if (!pairSvc) {
+    _pairState = null;
+    return { ok: false, error: 'Couldn’t find your phone on the network. Check that the phone and PC are on the SAME Wi-Fi (not a guest network), then try again — or use “Enter code manually”.' };
+  }
+  wsSend({ phase: 'pairing' });
+  const pr = await runAdb(['pair', `${pairSvc.host}:${pairSvc.port}`, st.pass], { timeoutMs: 20000 });
+  if (!/success/i.test(pr.out || '')) { _pairState = null; return { ok: false, error: (pr.err || pr.out || 'Pairing was rejected — try again.').trim().slice(0, 200) }; }
+  // Paired — now establish the actual debugging session. The phone advertises a SEPARATE
+  // `_adb-tls-connect._tcp` service (different port from pairing) that can take a few
+  // seconds to appear, and `adb connect` sometimes lands the device as "offline" for a
+  // beat before it flips to "device". So retry the discover→connect→verify cycle for a
+  // while instead of a single shot. adb's OWN discovery is broken here (WSL adapters),
+  // so there's no auto-connect to fall back on — this loop is the whole connection.
+  wsSend({ phase: 'connecting' });
+  let addr = null; let dev = null; let lastOut = '';
+  // SCAN-FIRST: the connect port rotates and mDNS routinely reports a stale one, so
+  // a direct port scan is what actually works. Retry a few times — the phone can take
+  // a couple seconds to start listening on its connect port after pairing.
+  for (let attempt = 0; attempt < 5 && !dev && !st.cancelled; attempt += 1) {
+    const scanned = await connectByScan(pairSvc.host, () => st.cancelled);
+    if (scanned.dev) { dev = scanned.dev; addr = scanned.addr; break; }
+    if (scanned.addr) addr = scanned.addr;
+    // Bonus: also try whatever mDNS advertises (cheap, occasionally right).
+    if (!dev) {
+      const conn = await discoverService('connect', { host: pairSvc.host }, 2500);
+      if (conn) {
+        const cr = await runAdb(['connect', `${conn.host}:${conn.port}`], { timeoutMs: 8000 });
+        lastOut = (cr.out || cr.err || '').trim();
+        dev = adbParseDevices((await runAdb(['devices'], { timeoutMs: 8000 })).out).device;
+        if (dev) { addr = `${conn.host}:${conn.port}`; break; }
+      }
+    }
+    if (!dev) await sleep(1800);
+  }
+  _pairState = null;
+  // Remember the address even if this connect didn't verify — the sticky reconnect in
+  // adb:status will retry it, and it often lands a moment later.
+  if (dev || addr) { config.wirelessAddr = (dev && /:\d+$/.test(dev)) ? dev : (addr || ''); saveConfig(); }
+  if (!dev) {
+    const why = lastOut ? ` (adb: ${lastOut.slice(0, 120)})` : (addr ? '' : ' — couldn’t find the phone’s connect address on the network.');
+    return { ok: false, paired: true, error: `Paired successfully, but couldn’t open the connection${why}. Try “Pair over Wi-Fi” once more — pairing is remembered, so it just needs to connect.` };
+  }
+  return { ok: true, device: dev, address: addr, paired: true };
+});
+ipcMain.handle('wireless:cancel', () => { if (_pairState) _pairState.cancelled = true; return { ok: true }; });
+
+// Fallback for when mDNS/QR won't work: the user reads the phone's "Pair device with
+// pairing code" screen (host:port + 6-digit code) and types them here. Optionally the
+// connect host:port from the main wireless-debugging screen for the follow-up connect.
+ipcMain.handle('wireless:manualPair', async (_evt, { hostport, code, connectAddr } = {}) => {
+  const adb = await ensureAdb(true);
+  if (!adb) return { ok: false, error: 'Could not download/find ADB (check your internet).' };
+  config.useAdb = true; saveConfig();
+  const pairHost = String(hostport || '').trim().split(':')[0];
+  const pr = await runAdb(['pair', String(hostport || '').trim(), String(code || '').trim()], { timeoutMs: 20000 });
+  if (!/success/i.test(pr.out || '')) return { ok: false, error: (pr.err || pr.out || 'Pairing was rejected.').trim().slice(0, 200) };
+  // Prefer the connect address the user typed off the phone's main screen (100% reliable,
+  // no discovery); otherwise discover the same phone's connect endpoint over mDNS.
+  let addr = String(connectAddr || '').trim();
+  if (!addr) { const c = await discoverService('connect', pairHost ? { host: pairHost } : null, 12000); if (c) addr = `${c.host}:${c.port}`; }
+  if (addr) await runAdb(['connect', addr], { timeoutMs: 12000 });
+  let dev = adbParseDevices((await runAdb(['devices'], { timeoutMs: 10000 })).out).device;
+  // Typed/mDNS connect port didn't take → scan the phone for its live adb port.
+  if (!dev && pairHost) {
+    const scanned = await connectByScan(pairHost);
+    if (scanned.dev) { dev = scanned.dev; addr = scanned.addr; }
+  }
+  if (dev) { config.wirelessAddr = /:\d+$/.test(dev) ? dev : (addr || ''); saveConfig(); }
+  return { ok: !!dev, device: dev, address: addr };
+});
 
 // Transfer dispatcher: use the fast ADB path when enabled + an authorized device is
 // present, otherwise the original MTP copy. ADB failure falls back to MTP per call.
@@ -2730,6 +3050,8 @@ ipcMain.handle('config:get', () => ({
     memories: Array.isArray(config.ai && config.ai.memories) ? config.ai.memories : []
   },
   nasBackup: { enabled: !!(config.nasBackup && config.nasBackup.enabled), path: (config.nasBackup && config.nasBackup.path) || '' },
+  // Last-session snapshot so the app can reopen exactly where you left off.
+  session: (config.session && typeof config.session === 'object') ? config.session : null,
   detectionEnabled: DETECTION_ENABLED,
   // First-ever launch (no saved config yet) → renderer shows the setup wizard once.
   firstRun: !USER_CONFIG_EXISTED
@@ -2807,6 +3129,23 @@ ipcMain.handle('prefs:set', (_evt, patch) => {
         styleExamples: Array.isArray(prev.styleExamples) ? prev.styleExamples : [],
         feedbackLog: Array.isArray(prev.feedbackLog) ? prev.feedbackLog : []
       };
+    }
+    // Last-session snapshot (which screen / drive / step) for resume-on-launch. Kept
+    // small + sanitised; `null` clears it (e.g. when a flow finishes).
+    if ('session' in patch) {
+      const s = patch.session;
+      if (s && typeof s === 'object' && typeof s.view === 'string') {
+        config.session = {
+          view: String(s.view).slice(0, 24),
+          step: Number.isFinite(s.step) ? Number(s.step) : null,
+          sourcePath: s.sourcePath ? String(s.sourcePath).slice(0, 1024) : '',
+          sourceDesc: s.sourceDesc ? String(s.sourceDesc).slice(0, 200) : '',
+          sourceKind: s.sourceKind ? String(s.sourceKind).slice(0, 24) : '',
+          ts: Date.now()
+        };
+      } else {
+        config.session = null;
+      }
     }
     saveConfig();
   }
@@ -4217,6 +4556,15 @@ function faceDist(a, b) { if (!a || !b) return Infinity; let s = 0; const n = Ma
 function personCounts(p) { const fs = p.faces || []; const conf = fs.filter((f) => f.confirmed).length; return { count: fs.length, confirmed: conf, unconfirmed: fs.length - conf }; }
 ipcMain.handle('people:get', () => aiPeople().map((p) => ({ id: p.id, name: p.name, thumb: personCover(p), ...personCounts(p) })));
 ipcMain.handle('faces:ignoredCount', () => aiIgnoredFaces().length);
+// Persist the unconfirmed face-review clusters so the grid (crops + all) survives
+// restarts — no re-scanning to see your faces again.
+ipcMain.handle('faces:getPending', () => (config.ai && Array.isArray(config.ai.facesPending)) ? config.ai.facesPending : []);
+ipcMain.handle('faces:savePending', (_e, list) => {
+  if (!config.ai) config.ai = {};
+  config.ai.facesPending = Array.isArray(list) ? list : [];
+  saveStore('ai.facesPending');
+  return { ok: true };
+});
 // Full detail incl. every face thumb + confirmed flag — for the dashboard's grid.
 ipcMain.handle('people:detail', (_e, id) => {
   const p = aiPeople().find((x) => x.id === id);
@@ -5480,6 +5828,13 @@ ipcMain.handle('disk:freeSpace', async (_evt, folderPath) => {
     const st = await fsp.statfs(probe);
     return { ok: true, free: Number(st.bavail) * Number(st.bsize), total: Number(st.blocks) * Number(st.bsize), path: probe };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
+});
+
+// Does a path still exist + is it readable? Used by resume-on-launch to decide whether
+// last session's source (a card that may have been unplugged, or a folder) is reachable
+// before re-entering that flow.
+ipcMain.handle('path:exists', async (_evt, p) => {
+  try { if (!p) return false; await fsp.access(String(p)); return true; } catch { return false; }
 });
 
 // Lightweight index of imported source files (key = name+size) so a re-inserted

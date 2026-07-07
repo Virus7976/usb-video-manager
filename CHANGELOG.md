@@ -7,6 +7,47 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **The app reopens exactly where you left off.** Close it mid-job and the next launch
+  drops you straight back into the rename/compress flow on that same card, or into
+  Organize — no re-picking the drive, and your naming drafts restore automatically. (If a
+  card was unplugged in the meantime it lands on Home, where the "footage to deal with"
+  banner still surfaces the work.)
+- **Continue already-pulled phone media WITHOUT reconnecting the phone.** Once photos and
+  videos are pulled, they live locally in the temp folders — so naming, AI analysis and
+  the final copy all run off disk, no phone needed. The app now remembers that as a
+  resumable session (reopened on launch) and shows a **"📱 Phone media waiting for you"**
+  card on Home whenever there are pulled-but-unfinished videos staged — one click drops
+  you back into naming them.
+- **Pair your phone over Wi-Fi with a QR code — no cable needed.** The phone panel now
+  has a **📶 Pair over Wi-Fi (QR)** button that works just like Android Studio: it shows
+  a QR code, you scan it on the phone under **Settings → Developer options → Wireless
+  debugging → Pair device with QR code**, and the app finds the phone over the network
+  (mDNS), pairs, and connects automatically. After that, fast transfers run over Wi-Fi
+  and the app silently re-connects to that phone on later sessions. For networks that
+  block device discovery there's an **Enter code manually** fallback (type the IP:port +
+  6-digit pairing code the phone shows). Pairing sets up fast transfer (ADB) on its own,
+  so the whole thing can be done without ever plugging in. Discovery is done in-app across
+  every network adapter (so a PC with WSL/Hyper-V/VPN virtual adapters — which make ADB's
+  own discovery bind the wrong one and hang — still finds the phone), and the manual
+  fallback can take the phone's connect address too, so it works even when Wi-Fi discovery
+  is fully blocked.
+
+### Changed
+- **AI analysis no longer interrogates you about every subject.** It used to queue a
+  "is this a new subject?" confirmation for every clip whose subject wasn't already in
+  your history — hundreds of near-identical prompts on a first import. Now the AI's
+  subject is simply used (a perfectly good "snow-walking" is the point), with the only
+  cleverness being that a new subject snaps onto one you already use when it's the same
+  thing spelled differently (snow-walking = snow walking = snowwalking), so your
+  vocabulary stays tidy without the nagging. Only a genuinely new top-level *category*
+  (a new root folder) still asks.
+- **The AI-questions review is one page, not a hundred clicks.** Replaced the
+  one-question-at-a-time wizard with a single scrollable panel: named clips to confirm
+  (inline subject/description edits), new values grouped by suggestion so one choice fans
+  out to every clip that shares it, and learned rules as checkboxes — defaults
+  pre-selected, so it's usually a single glance and **Apply**.
+
 ### Fixed
 - **Your renames can never be silently wiped again (data-loss fix).** Reopening the app
   after naming clips could come back with everything blank. Cause: draft-saving replaced

@@ -147,6 +147,8 @@ ipcMain.handle('config:get', () => ({
     memories: Array.isArray(config.ai && config.ai.memories) ? config.ai.memories : []
   },
   nasBackup: { enabled: !!(config.nasBackup && config.nasBackup.enabled), path: (config.nasBackup && config.nasBackup.path) || '' },
+  // Last-session snapshot so the app can reopen exactly where you left off.
+  session: (config.session && typeof config.session === 'object') ? config.session : null,
   detectionEnabled: DETECTION_ENABLED,
   // First-ever launch (no saved config yet) → renderer shows the setup wizard once.
   firstRun: !USER_CONFIG_EXISTED
@@ -224,6 +226,23 @@ ipcMain.handle('prefs:set', (_evt, patch) => {
         styleExamples: Array.isArray(prev.styleExamples) ? prev.styleExamples : [],
         feedbackLog: Array.isArray(prev.feedbackLog) ? prev.feedbackLog : []
       };
+    }
+    // Last-session snapshot (which screen / drive / step) for resume-on-launch. Kept
+    // small + sanitised; `null` clears it (e.g. when a flow finishes).
+    if ('session' in patch) {
+      const s = patch.session;
+      if (s && typeof s === 'object' && typeof s.view === 'string') {
+        config.session = {
+          view: String(s.view).slice(0, 24),
+          step: Number.isFinite(s.step) ? Number(s.step) : null,
+          sourcePath: s.sourcePath ? String(s.sourcePath).slice(0, 1024) : '',
+          sourceDesc: s.sourceDesc ? String(s.sourceDesc).slice(0, 200) : '',
+          sourceKind: s.sourceKind ? String(s.sourceKind).slice(0, 24) : '',
+          ts: Date.now()
+        };
+      } else {
+        config.session = null;
+      }
     }
     saveConfig();
   }

@@ -667,6 +667,29 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .wiz-rule-q { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
 .wiz-rule-text { width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13.5px; color: var(--text); background: var(--control); border: 1px solid var(--stroke); border-bottom-color: var(--input-underline); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 12px; }
 
+/* ---- AI questions: single-page grouped review (replaces the one-per-step wizard) ---- */
+.modal-card.airev-card { width: min(600px, 94vw); }
+.airev-body { max-height: min(60vh, 520px); overflow-y: auto; margin: 4px -6px 6px; padding: 0 6px; }
+.airev-sec { margin-bottom: 16px; }
+.airev-sec:last-child { margin-bottom: 4px; }
+.airev-sec-hd { font-size: 12px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--text-2); margin: 2px 0 9px; }
+.airev-row { padding: 9px 11px; border: 1px solid var(--stroke); border-radius: var(--radius-sm); margin-bottom: 8px; background: color-mix(in srgb, var(--card) 60%, transparent); }
+.airev-row-hd { font-size: 13.5px; margin-bottom: 7px; }
+.airev-opts { display: flex; flex-direction: column; gap: 7px; }
+.airev-opts .fin-radio { gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.airev-custom { font-family: inherit; font-size: 13px; color: var(--text); background: var(--control); border: 1px solid var(--stroke); border-bottom-color: var(--input-underline); border-radius: var(--radius-sm); padding: 5px 8px; min-width: 150px; }
+.airev-clip { display: flex; gap: 11px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--stroke); }
+.airev-clip:last-child { border-bottom: none; }
+.airev-clip .wiz-thumb { width: 84px; height: 48px; }
+.wiz-thumb-ph { background: color-mix(in srgb, var(--text) 10%, transparent); display: inline-block; }
+.airev-clip-fields { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.airev-clip-name { word-break: break-all; }
+.airev-clip-fields .ai-input { width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13px; color: var(--text); background: var(--control); border: 1px solid var(--stroke); border-bottom-color: var(--input-underline); border-radius: var(--radius-sm); padding: 5px 8px; }
+.airev-rule { padding: 8px 0; border-bottom: 1px solid var(--stroke); }
+.airev-rule:last-child { border-bottom: none; }
+.airev-rule .airev-rule-text { width: 100%; box-sizing: border-box; margin-top: 6px; font-family: inherit; font-size: 13px; color: var(--text); background: var(--control); border: 1px solid var(--stroke); border-bottom-color: var(--input-underline); border-radius: var(--radius-sm); padding: 6px 9px; }
+.airev-rule-eg { margin-top: 4px; }
+
 /* ---- AI questions: bottom-right ⚠ indicator + its popover ---- */
 .ai-hazard {
   position: fixed; right: 18px; bottom: 18px; z-index: 60;
@@ -2571,6 +2594,7 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
   background: color-mix(in srgb, var(--accent) 14%, var(--card));
   border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--card-stroke)); }
 .pw-card:hover { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
+.pw-card + .pw-card { margin-top: 8px; }
 .pw-ic { font-size: 22px; line-height: 1; flex: 0 0 auto; }
 .pw-tx { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
 .pw-title { font-weight: 650; }

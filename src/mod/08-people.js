@@ -24,17 +24,38 @@ async function ensureFaceModels() {
   })();
   return _faceReady;
 }
-// Crop a face box out of an already-decoded HTMLImageElement. Uses the img directly
+// Cap the longest edge we ever hand to face-api (WebGL). Video frames arrive already
+// downscaled (~1100px), but a PHOTO frame is the full-resolution file — a 40–50MP phone
+// photo fed straight into the SSD-MobileNet WebGL graph exhausts GPU memory and CRASHES
+// the renderer/GPU process. Detecting at 1600px is plenty for face quality (video frames
+// prove 1100px works) and keeps memory bounded.
+const FACE_MAX_EDGE = 1600;
+// Build the element we run detection AND cropping on. If the decoded frame is bigger than
+// FACE_MAX_EDGE, draw it down onto a canvas once; both detection boxes and crops then live
+// in the SAME (scaled) pixel space, so no coordinate remapping is needed.
+function faceSource(img) {
+  const w = img.naturalWidth || img.width || 0;
+  const h = img.naturalHeight || img.height || 0;
+  const long = Math.max(w, h);
+  if (!long || long <= FACE_MAX_EDGE) return { el: img, w, h };
+  const scale = FACE_MAX_EDGE / long;
+  const cw = Math.max(1, Math.round(w * scale));
+  const ch = Math.max(1, Math.round(h * scale));
+  const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+  c.getContext('2d').drawImage(img, 0, 0, cw, ch);
+  return { el: c, w: cw, h: ch };
+}
+// Crop a face box out of a detection source ({el,w,h} from faceSource). Draws directly
 // (no re-decode) so it's synchronous and sharp. Output is 144×144 with 25% padding.
-function cropFace(img, box) {
+function cropFace(src, box) {
   try {
     const pad = Math.round(Math.max(box.width, box.height) * 0.25);
     const sx = Math.max(0, box.x - pad);
     const sy = Math.max(0, box.y - pad);
-    const sw = Math.min(img.naturalWidth - sx, box.width + pad * 2);
-    const sh = Math.min(img.naturalHeight - sy, box.height + pad * 2);
+    const sw = Math.min(src.w - sx, box.width + pad * 2);
+    const sh = Math.min(src.h - sy, box.height + pad * 2);
     const S = 144; const c = document.createElement('canvas'); c.width = S; c.height = S;
-    c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, S, S);
+    c.getContext('2d').drawImage(src.el, sx, sy, sw, sh, 0, 0, S, S);
     return c.toDataURL('image/jpeg', 0.9);
   } catch { return ''; }
 }
@@ -55,20 +76,25 @@ async function detectFacesForClip(clip, onFrame) {
     const img = new Image(); img.src = frames[fi];
     // eslint-disable-next-line no-await-in-loop
     try { await img.decode(); } catch { continue; }
+    // Detect AND crop against the same (possibly down-scaled) source, so the
+    // detection boxes line up with cropFace's coordinate space. Detecting/cropping
+    // on the raw img left cropFace with no .el/.w/.h → every crop threw and came
+    // back '', which showed the 🙂 placeholder for every face.
+    const src = faceSource(img);
     let dets = [];
     // eslint-disable-next-line no-await-in-loop
-    try { dets = await fa.detectAllFaces(img, new fa.SsdMobilenetv1Options({ minConfidence: 0.5 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; }
+    try { dets = await fa.detectAllFaces(src.el, new fa.SsdMobilenetv1Options({ minConfidence: 0.5 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; }
     for (const d of dets) {
       const box = d.detection.box; const area = box.width * box.height;
       // Skip faces that are too SMALL or low-confidence — their descriptors are noisy
       // and pollute a person's training set, which is what hurts recognition accuracy.
-      const minSide = Math.max(64, img.naturalWidth * 0.055);
+      const minSide = Math.max(64, src.w * 0.055);
       if (box.width < minSide || box.height < minSide) continue;
       if ((d.detection.score || 0) < 0.55) continue;
       const desc = Array.from(d.descriptor);
       const existing = collected.find((c) => faceDist(c.descriptor, desc) < 0.45);
-      if (existing) { if (area > existing.area) { existing.thumb = cropFace(img, box); existing.area = area; existing.descriptor = desc; } }
-      else collected.push({ descriptor: desc, thumb: cropFace(img, box), area });
+      if (existing) { if (area > existing.area) { existing.thumb = cropFace(src, box); existing.area = area; existing.descriptor = desc; } }
+      else collected.push({ descriptor: desc, thumb: cropFace(src, box), area });
     }
   }
   return { ready: true, faces: collected.map((c) => ({ descriptor: c.descriptor, thumb: c.thumb })) };
@@ -215,6 +241,44 @@ function dmapFolderIcon(dated, depth) { return dated ? '📅' : (depth === 0 ? '
 const FACE_CONFIRM_DIST = 0.46;   // <= this: auto-tag, very confident
 const FACE_SUGGEST_DIST = 0.54;   // ceiling passed to people:match; the backend applies
                                   // the strict digiKam-style vote/margin gate (see people:match)
+// --- persist the review across restarts (crops + descriptors + state) --------
+// Only the UNRESOLVED clusters are stored (confirmed faces already live in
+// people.json; skipped ones are dismissed). clipKeys is a Set → stored as array.
+function _serializePending(clusters) {
+  return (clusters || [])
+    .filter((c) => c && !c.skipped && !c.done && c.descriptor)
+    .map((c) => ({
+      thumb: c.thumb || '',
+      descriptor: c.descriptor,
+      descriptors: c.descriptors || [],
+      clipKeys: [...(c.clipKeys || [])],
+      suggest: c.suggest || null,
+      rejected: !!c.rejected,
+    }));
+}
+let _pendingSaveTimer = null;
+function schedulePendingSave(clusters) {
+  clearTimeout(_pendingSaveTimer);
+  _pendingSaveTimer = setTimeout(() => { try { window.api.savePendingFaces(_serializePending(clusters)); } catch { /* ignore */ } }, 700);
+}
+function savePendingNow(clusters) {
+  clearTimeout(_pendingSaveTimer);
+  try { return window.api.savePendingFaces(_serializePending(clusters)); } catch { return Promise.resolve(); }
+}
+async function loadPendingFaces() {
+  let list = [];
+  try { list = await window.api.getPendingFaces(); } catch { list = []; }
+  return (list || []).filter((c) => c && Array.isArray(c.descriptor)).map((c) => ({
+    thumb: c.thumb || '',
+    descriptor: c.descriptor,
+    descriptors: c.descriptors || [],
+    clipKeys: new Set(c.clipKeys || []),
+    suggest: c.suggest || null,
+    rejected: !!c.rejected,
+    done: false,
+  }));
+}
+
 async function scanFacesForClips(clipList, opts = {}) {
   if (!clipList || !clipList.length) { showToast('Select some clips first'); return; }
   // Skip clips already scanned in a previous (or interrupted) run — face scanning is
@@ -222,7 +286,17 @@ async function scanFacesForClips(clipList, opts = {}) {
   const toScan = opts.force ? clipList : clipList.filter((c) => !c._facesScanned);
   const skipped = clipList.length - toScan.length;
   if (!toScan.length) {
-    showToast(`Already scanned ${clipList.length === 1 ? 'this clip' : `all ${clipList.length} clips`} — nothing new (faces are remembered).`, 4000);
+    // Everything here was scanned before → don't re-scan. Reopen the SAVED review
+    // (crops + all) so you can keep confirming exactly where you left off.
+    const pending = await loadPendingFaces();
+    if (pending.length) { await showFaceReviewGrid(pending, state.scannedFiles, 0); return; }
+    // No saved review yet (e.g. first run after this update) — offer a ONE-TIME
+    // re-detect to build it. Once built it's remembered, so this won't ask again.
+    const again = await confirmDialog(
+      'No saved face review found.',
+      'Detect faces now? This runs once, then it’s remembered — you won’t be asked again.',
+      'Detect faces', 'Not now');
+    if (again) return scanFacesForClips(clipList, { ...opts, force: true });
     return;
   }
   const probe = await ensureFaceModels();
@@ -230,7 +304,9 @@ async function scanFacesForClips(clipList, opts = {}) {
   faceScanAborted = false;
   aiFollow = true; aiAborted = false; showFollowBtn(false);
   clearActivity();
-  const clusters = [];   // {thumb, descriptor, descriptors:[], clipKeys:Set, suggest}
+  // Start from the saved review so a new scan MERGES into what's already waiting
+  // (by descriptor) instead of losing it — the review is cumulative and remembered.
+  const clusters = await loadPendingFaces();   // {thumb, descriptor, descriptors:[], clipKeys:Set, suggest}
   let done = 0;
   for (const clip of toScan) {
     if (faceScanAborted) break;
@@ -271,8 +347,10 @@ async function scanFacesForClips(clipList, opts = {}) {
   if (faceScanAborted) { showToast(`Face scan stopped — ${done} scanned so far are remembered (resume to do the rest).`, 4500); }
   const toReview = clusters.length;
   if (!faceScanAborted) pcNotify('Face scan complete', `${toReview} face${toReview !== 1 ? 's' : ''} to review & confirm${skipped ? ` · skipped ${skipped} already-scanned` : ''}.`);
-  if (clusters.length) await showFaceReviewGrid(clusters, toScan, 0);   // await so Analyze can name AFTER you confirm
-  else if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`);
+  // Pass ALL scanned clips (not just this batch) so confirming a merged-in face
+  // from an earlier scan still tags its clips.
+  if (clusters.length) await showFaceReviewGrid(clusters, state.scannedFiles, 0);   // await so Analyze can name AFTER you confirm
+  else { savePendingNow(clusters); if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`); }
 }
 
 // digiKam-style face confirm GRID. Three sections: SUGGESTED (tentative match —
@@ -294,7 +372,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   </div>`;
   document.body.appendChild(ov);
   const scroll = ov.querySelector('.face-grid-scroll');
-  const close = () => { ov.remove(); refreshNames && refreshNames(); refreshAllClipPeople(); resolveGrid(); };
+  const close = () => { savePendingNow(clusters); ov.remove(); refreshNames && refreshNames(); refreshAllClipPeople(); resolveGrid(); };
   ov.querySelector('.fg-done').addEventListener('click', close);
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
 
@@ -362,6 +440,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       + section('Just confirmed', confirmed);
     if (!live.length) scroll.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">All faces handled ✓</p>';
     wire();
+    schedulePendingSave(clusters);   // persist the review after every change
     const anySuggested = suggested.length > 0;
     const btn = ov.querySelector('.fg-confirm-all');
     if (btn) btn.style.display = anySuggested ? '' : 'none';
@@ -1153,7 +1232,7 @@ function showPreferences() {
           <input type="text" class="pref-path" readonly value="${escapeAttr(pending)}" />
           <button type="button" class="btn pref-browse">Browse…</button>
         </div>
-        <p class="muted small pref-hint">Footage is copied here in the Upload step.</p>
+        <p class="muted small pref-hint">Footage is copied here in the Copy step.</p>
       </div>
     </section>
 
@@ -1338,6 +1417,7 @@ async function goHome() {
   $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
   state.phoneBackup = false;
   if (state.drive) $('driveBanner').classList.remove('hidden');
+  saveSession({ view: 'home' });   // back on Home → nothing to resume into next launch
   refreshDriveList();   // re-read removable drives when returning home
   renderPendingWork();  // refresh the "footage to deal with" banner (counts may have changed)
 }

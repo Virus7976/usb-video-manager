@@ -28,7 +28,9 @@
     "@vladmandic/face-api": "^1.7.15",
     "electron-updater": "^6.3.9",
     "exiftool-vendored": "^36.0.0",
-    "gopro-telemetry": "^1.2.11"
+    "gopro-telemetry": "^1.2.11",
+    "multicast-dns": "^7.2.5",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "electron": "^42.4.0",

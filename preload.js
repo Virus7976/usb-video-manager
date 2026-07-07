@@ -59,6 +59,15 @@ contextBridge.exposeInMainWorld('api', {
   adbStatus: () => ipcRenderer.invoke('adb:status'),
   adbEnable: () => ipcRenderer.invoke('adb:enable'),
   adbDisable: () => ipcRenderer.invoke('adb:disable'),
+  wirelessBegin: () => ipcRenderer.invoke('wireless:begin'),
+  wirelessAwait: () => ipcRenderer.invoke('wireless:await'),
+  wirelessCancel: () => ipcRenderer.invoke('wireless:cancel'),
+  wirelessManualPair: (payload) => ipcRenderer.invoke('wireless:manualPair', payload),
+  onWirelessStatus: (cb) => {
+    const listener = (_e, p) => cb(p);
+    ipcRenderer.on('wireless:status', listener);
+    return () => ipcRenderer.removeListener('wireless:status', listener);
+  },
   scanPhone: (name, albums) => ipcRenderer.invoke('phone:scan', { name, albums }),
   pullFromPhone: (payload) => ipcRenderer.invoke('phone:pull', payload),
   copyPhoneVideos: (payload) => ipcRenderer.invoke('phone:copyVideos', payload),
@@ -187,6 +196,8 @@ contextBridge.exposeInMainWorld('api', {
   // People / face recognition (descriptors computed in the renderer via face-api.js)
   getPeople: () => ipcRenderer.invoke('people:get'),
   savePerson: (payload) => ipcRenderer.invoke('people:save', payload),
+  getPendingFaces: () => ipcRenderer.invoke('faces:getPending'),
+  savePendingFaces: (list) => ipcRenderer.invoke('faces:savePending', list),
   renamePerson: (payload) => ipcRenderer.invoke('people:rename', payload),
   deletePerson: (id) => ipcRenderer.invoke('people:delete', id),
   matchPerson: (payload) => ipcRenderer.invoke('people:match', payload),
@@ -290,5 +301,6 @@ contextBridge.exposeInMainWorld('api', {
   verifyCopies: (pairs) => ipcRenderer.invoke('verify:copies', pairs),
   freeSpace: (folder) => ipcRenderer.invoke('disk:freeSpace', folder),
   importsGet: () => ipcRenderer.invoke('imports:get'),
-  importsAdd: (keys) => ipcRenderer.invoke('imports:add', { keys })
+  importsAdd: (keys) => ipcRenderer.invoke('imports:add', { keys }),
+  pathExists: (p) => ipcRenderer.invoke('path:exists', p)
 });

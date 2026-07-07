@@ -36,6 +36,16 @@ function personThumbHTML(thumb) {
 // Math.round((n/d)*100) and Math.min(100,(n/d)*100).) Returns 0 for a zero denominator.
 function pctOf(num, den) { return den ? Math.min(100, Math.round((num / den) * 100)) : 0; }
 
+// Humanize an Electron accelerator ('CommandOrControl+Alt+U') for display so the UI
+// shows real keys ('Ctrl+Alt+U'), never the raw API string.
+function prettyHotkey(s) {
+  return String(s || '')
+    .replace(/CommandOrControl|CmdOrCtrl/gi, 'Ctrl')
+    .replace(/\bCommand\b|\bCmd\b/gi, 'Ctrl')
+    .replace(/\bControl\b/gi, 'Ctrl')
+    .replace(/\bSuper\b|\bMeta\b/gi, 'Win');
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
@@ -216,7 +226,7 @@ let cfg = null;
     document.querySelector('.brand-dot').classList.add('live');
   } else {
     $('statusLine').textContent = cfg.hotkey
-      ? `Ready — press ${cfg.hotkey} (or the tray icon) after inserting a card.`
+      ? `Ready — press ${prettyHotkey(cfg.hotkey)} (or the tray icon) after inserting a card.`
       : 'Ready — use “Choose drive…”.';
     document.querySelector('.brand-dot').classList.add('live');
   }
@@ -258,8 +268,12 @@ let cfg = null;
   // If a copy was already running (e.g. window was closed and reopened), resume
   // straight to its progress so you can see where it's at — and continue.
   const cs = await window.api.copyStatus();
-  if (cs && cs.active) { updateCopyChip(cs); goToCopyProgress(cs); }
-  maybeFirstRunSetup();   // first-ever launch → setup wizard, else the spotlight tour
+  let resumed = false;
+  if (cs && cs.active) { updateCopyChip(cs); goToCopyProgress(cs); resumed = true; }
+  // Otherwise reopen exactly where we left off last session (the rename flow on this
+  // card, or Organize) — unless it's the very first launch (setup wizard comes first).
+  else if (!cfg.firstRun) { try { resumed = await maybeResumeSession(); } catch { /* stay Home */ } }
+  if (!resumed) maybeFirstRunSetup();   // first-ever launch → setup wizard, else the spotlight tour
 })();
 
 // All available removable drives, listed on the home screen so you can see & pick
@@ -289,7 +303,7 @@ function renderDevices() {
     </button>` : '';
   const phoneCards = phones.map((p, i) => `<button type="button" class="settings-card action dl-card" data-kind="phone" data-i="${i}">
       <span class="sc-icon accent">${DL_ICON_PHONE}</span>
-      <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : 'Phone · photos + videos (MTP)'}</span></span>
+      <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : (p.wireless ? '📶 Phone · photos + videos (Wi-Fi)' : 'Phone · photos + videos (MTP)')}</span></span>
       <span class="sc-chevron">›</span>
     </button>`).join('');
   const driveCards = drives.map((d, i) => {
@@ -329,25 +343,43 @@ async function renderPendingWork() {
   let w = {}; try { w = await window.api.pendingWork(); } catch { w = {}; }
   const ready = (w && w.ready) || 0;
   const uncompressed = (w && w.uncompressed) || 0;
-  if (!ready && !uncompressed) { host.classList.add('hidden'); host.innerHTML = ''; return; }
   const analyzed = (w && w.readyAnalyzed) || 0;
-  const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} already analyzed` : ''}` : '';
-  let uncLine = '';
-  if (uncompressed) {
-    uncLine = ready
-      ? `<b>${uncompressed}</b> still in Uncompressed`
-      : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'}, then organize`;
+  // Phone media already pulled off the phone and waiting locally — you can name/organize it
+  // WITHOUT reconnecting the phone. Keyed on the video temp (empties when finished).
+  let phoneStaged = 0;
+  try { phoneStaged = (await scanPhoneStaged()).unfinished; } catch { phoneStaged = 0; }
+
+  const cards = [];
+  if (phoneStaged) {
+    cards.push(`<button type="button" class="pw-card" id="pwPhone">
+        <span class="pw-ic keep-emoji">📱</span>
+        <span class="pw-tx"><span class="pw-title">Phone media waiting for you</span><span class="pw-sub"><b>${phoneStaged}</b> video${phoneStaged !== 1 ? 's' : ''} already pulled — name &amp; organize without reconnecting your phone</span></span>
+        <span class="pw-cta">Continue ›</span>
+      </button>`);
   }
-  const sub = [readyLine, uncLine].filter(Boolean).join(' &nbsp;·&nbsp; ');
-  const cta = ready ? `Organize ${ready} ›` : 'Open Organize ›';
-  host.innerHTML = `<button type="button" class="pw-card" id="pwGo">
-      <span class="pw-ic keep-emoji">🎬</span>
-      <span class="pw-tx"><span class="pw-title">You've got footage to deal with</span><span class="pw-sub">${sub}</span></span>
-      <span class="pw-cta">${cta}</span>
-    </button>`;
+  if (ready || uncompressed) {
+    const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} already analyzed` : ''}` : '';
+    let uncLine = '';
+    if (uncompressed) {
+      uncLine = ready
+        ? `<b>${uncompressed}</b> still in Uncompressed`
+        : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'}, then organize`;
+    }
+    const sub = [readyLine, uncLine].filter(Boolean).join(' &nbsp;·&nbsp; ');
+    const cta = ready ? `Organize ${ready} ›` : 'Open Organize ›';
+    cards.push(`<button type="button" class="pw-card" id="pwGo">
+        <span class="pw-ic keep-emoji">🎬</span>
+        <span class="pw-tx"><span class="pw-title">You've got footage to deal with</span><span class="pw-sub">${sub}</span></span>
+        <span class="pw-cta">${cta}</span>
+      </button>`);
+  }
+  if (!cards.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
+  host.innerHTML = cards.join('');
   host.classList.remove('hidden');
   const go = host.querySelector('#pwGo');
   if (go) go.addEventListener('click', () => openFinalize());
+  const ph = host.querySelector('#pwPhone');
+  if (ph) ph.addEventListener('click', () => resumePhoneStaged());
 }
 
 // Wireless workflow: remember the NAS folder a phone app (QNAP QuMagie/Qfile) uploads
@@ -426,6 +458,57 @@ function setStep(n) {
   $('step2').classList.toggle('hidden', n !== 2);
   $('step3').classList.toggle('hidden', n !== 3);
   $('stepDone').classList.add('hidden');
+  if (sessionState.view === 'flow') saveSession({ step: n });
+}
+
+// ---------------------------------------------------------------------------
+// Resume on launch — remember which screen / source / step you were last on so the
+// next launch reopens exactly there (no re-picking the drive, no lost place). Persisted
+// to config via prefs:set; view 'home' clears it. Saves are debounced so rapid step
+// changes don't spam the disk.
+// ---------------------------------------------------------------------------
+let sessionState = { view: 'home', step: null, sourcePath: '', sourceDesc: '', sourceKind: '' };
+let _sessionSaveT = null;
+function saveSession(patch) {
+  sessionState = { ...sessionState, ...(patch || {}) };
+  clearTimeout(_sessionSaveT);
+  _sessionSaveT = setTimeout(() => {
+    try { window.api.setPrefs({ session: sessionState.view === 'home' ? null : sessionState }); } catch { /* non-fatal */ }
+  }, 250);
+}
+// Reopen last session. Returns true if it took over the screen (so the boot flow can
+// skip the auto-tour). Never throws into boot — any snag just leaves you on Home.
+async function maybeResumeSession() {
+  const s = cfg && cfg.session;
+  if (!s || !s.view) return false;
+  try {
+    if (s.view === 'finalize') {
+      // Organize works on a disk folder that persists — safe to reopen directly.
+      sessionState = { ...sessionState, view: 'finalize' };
+      await openFinalize();
+      return true;
+    }
+    if (s.view === 'phone') {
+      // Already-pulled phone media lives in the local temp folders — reopen the naming
+      // flow straight from disk, no phone needed. False → nothing left staged → Home.
+      return await resumePhoneStaged();
+    }
+    if (s.view === 'flow' && s.sourcePath) {
+      // A card may have been unplugged since — only re-enter if the source is reachable.
+      const reachable = await window.api.pathExists(s.sourcePath);
+      if (!reachable) return false;   // fall back to Home (pending-work banner still shows)
+      state.drive = {
+        mountpoint: s.sourcePath,
+        description: s.sourceDesc || 'Removable drive',
+        isCard: s.sourceKind === 'card',
+        isUSB: s.sourceKind === 'usb'
+      };
+      onDrive(state.drive);
+      await startFlow();   // re-scans + restores your naming drafts → right where you left off
+      return true;
+    }
+  } catch { /* stay on Home */ }
+  return false;
 }
 
 function showDone(summary) {
@@ -737,6 +820,9 @@ async function startFlow() {
   $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
   $('driveBanner').classList.remove('hidden');
   $('flow').classList.remove('hidden');
+  // Remember we're in the rename/compress flow on this source, so the next launch
+  // reopens straight here (drafts restore the naming automatically).
+  if (state.drive) saveSession({ view: 'flow', step: 1, sourcePath: state.drive.mountpoint, sourceDesc: state.drive.description || '', sourceKind: state.drive.isCard ? 'card' : (state.drive.isUSB ? 'usb' : 'folder') });
 
   await refreshSubjectOptions();
   await refreshDescriptionOptions();

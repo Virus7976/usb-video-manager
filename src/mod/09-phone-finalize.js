@@ -84,25 +84,124 @@ async function phoneEnterChooser() {
 async function renderPhFast() {
   const el = $('phFast'); if (!el) return;
   let st = {}; try { st = await window.api.adbStatus(); } catch { st = {}; }
+  // "Pair over Wi-Fi (QR)" button — works whether or not fast transfer is on yet
+  // (pairing enables ADB itself), so the whole flow can be done without a cable.
+  const wifiBtn = '<button type="button" class="btn ghost" id="phPairWifi">📶 Pair over Wi-Fi (QR)</button>';
   if (st.useAdb) {
-    el.innerHTML = st.device
-      ? '⚡ Fast transfer on (ADB).'
-      : (st.unauthorized
-        ? '⚡ Fast transfer on — unlock your phone and tap <b>Allow</b> for USB debugging.'
-        : '⚡ Fast transfer on — connect your phone with <b>USB debugging</b> enabled (Settings → Developer options).');
-    return;
+    if (st.device) {
+      el.innerHTML = st.wireless
+        ? '⚡ Fast transfer on — <b>connected wirelessly</b>. You can unplug the cable. ' + wifiBtn
+        : '⚡ Fast transfer on (USB). ' + wifiBtn;
+    } else if (st.unauthorized) {
+      el.innerHTML = '⚡ Fast transfer on — unlock your phone and tap <b>Allow</b> for USB debugging.';
+    } else {
+      el.innerHTML = '⚡ Fast transfer on — pair over Wi-Fi, or plug in with <b>USB debugging</b> enabled. ' + wifiBtn;
+    }
+  } else {
+    el.innerHTML = 'Transfers use MTP (slow for big camera rolls). '
+      + '<button type="button" class="btn ghost" id="phFastOn">⚡ Turn on fast transfer</button> ' + wifiBtn;
   }
-  el.innerHTML = 'Transfers use MTP (slow for big camera rolls). <button type="button" class="btn ghost" id="phFastOn">⚡ Turn on fast transfer</button>';
   const b = el.querySelector('#phFastOn');
   if (b) b.addEventListener('click', async () => {
     b.disabled = true; b.textContent = 'Setting up…';
     let r = {}; try { r = await window.api.adbEnable(); } catch (e) { r = { ok: false, error: (e && e.message) }; }
     if (!r.ok) { showToast(`Couldn’t set up fast transfer: ${r.error || 'failed'}`, 6000); renderPhFast(); return; }
     if (r.unauthorized) showToast('Almost there — on your phone tap “Allow” for USB debugging, then back up.', 8000);
-    else if (!r.device) showToast('Fast transfer ready. Enable USB debugging on the phone (Settings → Developer options), then reconnect.', 9000);
+    else if (!r.device) showToast('Fast transfer ready. Pair over Wi-Fi, or enable USB debugging and reconnect.', 9000);
     else showToast('⚡ Fast transfer on — your phone will back up much faster now.', 5000);
     renderPhFast();
   });
+  const w = el.querySelector('#phPairWifi');
+  if (w) w.addEventListener('click', () => showWirelessPairModal());
+}
+
+// QR wireless-pairing dialog — mirrors Android Studio: show the ADB pairing QR, the
+// phone scans it under Wireless debugging → "Pair device with QR code", and the main
+// process discovers it over mDNS, pairs, and connects. Manual pairing-code entry is
+// offered as a fallback for networks that block mDNS discovery.
+async function showWirelessPairModal() {
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML = `<div class="modal-card wl-pair" style="width:min(460px,94vw);text-align:center">
+    <h3>📶 Pair phone over Wi-Fi</h3>
+    <div class="wl-body"><p class="muted small">Setting up…</p></div>
+    <div class="modal-actions" style="justify-content:center">
+      <button type="button" class="btn wl-close">Close</button>
+    </div></div>`;
+  document.body.appendChild(ov);
+  const body = ov.querySelector('.wl-body');
+  let unsub = null; let closed = false;
+  const cleanup = () => { closed = true; try { if (unsub) unsub(); } catch { /* */ } try { window.api.wirelessCancel(); } catch { /* */ } ov.remove(); };
+  ov.querySelector('.wl-close').addEventListener('click', cleanup);
+  ov.addEventListener('click', (e) => { if (e.target === ov) cleanup(); });
+
+  const finishOk = (address) => {
+    body.innerHTML = `<p class="wl-ok">✅ Connected wirelessly${address ? ` (${escapeHtml(address)})` : ''}! Your phone now appears under <b>Devices</b> — pick it to back up over Wi-Fi, no cable needed.</p>`;
+    showToast('📶 Phone paired over Wi-Fi — it’s now under Devices.', 5000);
+    renderPhFast();
+    try { refreshDriveList(); } catch { /* not on the home screen */ }
+    setTimeout(() => { if (!closed) { closed = true; ov.remove(); } }, 2800);
+  };
+  const showManual = () => {
+    try { window.api.wirelessCancel(); } catch { /* */ }
+    if (unsub) { try { unsub(); } catch { /* */ } unsub = null; }
+    body.innerHTML = `
+      <p class="small" style="text-align:left">On the phone open <b>Wireless debugging → Pair device with pairing code</b>. It shows an <b>IP address &amp; port</b> and a <b>6-digit code</b> — type those two here:</p>
+      <label class="pref-label">Pairing IP address &amp; port</label>
+      <input type="text" class="wl-hostport" placeholder="192.168.1.42:37135" style="width:100%" />
+      <label class="pref-label" style="margin-top:8px">Pairing code</label>
+      <input type="text" class="wl-code" placeholder="123456" inputmode="numeric" style="width:100%" />
+      <details style="margin-top:10px;text-align:left"><summary class="small muted" style="cursor:pointer">Didn’t connect after pairing? Add the connect address</summary>
+        <p class="small muted" style="margin-top:6px">On the phone go <b>back one screen</b> to the main <b>Wireless debugging</b> page — it shows an <b>IP address &amp; Port</b> at the top (a different port). Type that here:</p>
+        <input type="text" class="wl-connect" placeholder="192.168.1.42:41099" style="width:100%" />
+      </details>
+      <p class="wl-status muted small"></p>
+      <div class="modal-actions" style="justify-content:center;margin-top:10px">
+        <button type="button" class="btn primary wl-do">Pair</button>
+      </div>`;
+    const stEl = body.querySelector('.wl-status');
+    body.querySelector('.wl-do').addEventListener('click', async () => {
+      const hostport = body.querySelector('.wl-hostport').value.trim();
+      const code = body.querySelector('.wl-code').value.trim();
+      const connectAddr = body.querySelector('.wl-connect').value.trim();
+      if (!hostport || !code) { stEl.textContent = 'Enter both the address and the code.'; return; }
+      stEl.textContent = 'Pairing…';
+      let r = {}; try { r = await window.api.wirelessManualPair({ hostport, code, connectAddr }); } catch (e) { r = { ok: false, error: (e && e.message) }; }
+      if (r.ok) finishOk(r.address);
+      else stEl.textContent = r.error || 'Pairing failed — check the address and code.';
+    });
+  };
+
+  let begin = {};
+  try { begin = await window.api.wirelessBegin(); } catch (e) { begin = { ok: false, error: (e && e.message) }; }
+  if (closed) return;
+  if (!begin.ok) { body.innerHTML = `<p class="wl-err">Couldn’t start pairing: ${escapeHtml(begin.error || 'failed')}</p>`; return; }
+
+  const mdnsWarn = begin.mdnsOk ? '' : '<p class="wl-warn small" style="color:#c77">⚠ Wi-Fi discovery looks blocked on this network — if the phone doesn’t connect, use “Enter code manually”.</p>';
+  body.innerHTML = `
+    <p class="small">On your phone: <b>Settings → Developer options → Wireless debugging → Pair device with QR code</b>, then point it at this code.</p>
+    <img class="wl-qr" src="${begin.qr}" alt="ADB pairing QR" style="width:240px;height:240px;image-rendering:pixelated;margin:10px auto;display:block;border-radius:8px;background:#fff;padding:8px" />
+    <p class="wl-status muted small">Waiting for your phone to scan…</p>
+    ${mdnsWarn}
+    <p style="margin-top:6px"><button type="button" class="btn ghost wl-manual">Enter code manually instead</button></p>`;
+  const statusEl = body.querySelector('.wl-status');
+  unsub = window.api.onWirelessStatus((p) => {
+    if (!statusEl || closed) return;
+    if (p.phase === 'waiting') statusEl.textContent = 'Waiting for your phone to scan…';
+    else if (p.phase === 'pairing') statusEl.textContent = 'Phone found — pairing…';
+    else if (p.phase === 'connecting') statusEl.textContent = 'Paired — connecting…';
+  });
+  body.querySelector('.wl-manual').addEventListener('click', showManual);
+
+  let res = {};
+  try { res = await window.api.wirelessAwait(); } catch (e) { res = { ok: false, error: (e && e.message) }; }
+  if (closed || res.cancelled) return;   // user closed, or switched to manual entry
+  if (res.ok) finishOk(res.address);
+  else {
+    body.innerHTML = `<p class="wl-err">${escapeHtml(res.error || 'Pairing failed.')}</p>
+      <p style="margin-top:6px"><button type="button" class="btn ghost wl-manual2">Enter code manually</button></p>`;
+    body.querySelector('.wl-manual2').addEventListener('click', showManual);
+  }
 }
 
 function renderPhoneAlbums() {
@@ -357,11 +456,42 @@ async function enterRenameWithPhoneFiles(staged) {
   // a re-pull or a crash+relaunch doesn't lose your batching work.
   try { const drafts = await window.api.getDrafts(); const restored = applyDraftsToClips(drafts || {}); if (restored) showToast(`Restored your names on ${restored} clip${restored !== 1 ? 's' : ''} ✓`, 4000); } catch { /* ignore */ }
   buildRenameStep();
+  // The staged files live on disk in the temp folders — naming + the final copy both run
+  // off those, NOT the phone. Remember this as a resumable session so you can carry on
+  // WITHOUT plugging the phone back in (relaunch reopens it; Home shows a "continue" card).
+  saveSession({ view: 'phone', step: 1, sourcePath: phoneStagingDests().video, sourceDesc: 'Phone media', sourceKind: 'phone' });
   const nPh = state.scannedFiles.filter((c) => c.isPhoto).length;
   const nVid = state.scannedFiles.length - nPh;
   showToast(nVid
     ? `Photos pulled ✓ — name what you like, then Continue to copy your ${nVid} video${nVid !== 1 ? 's' : ''} off the phone.`
     : `${state.scannedFiles.length} pulled off your phone — name them, then continue ✓`, 6000);
+}
+
+// The phone-staged files sit locally in the temp folders after a pull — so naming/organizing
+// them needs NO phone. Re-scan those folders to recover unfinished staged media. Videos live
+// in "_Phone Video Temp" (session-specific — MOVED out when you send them to Uncompressed, so
+// its contents mean "unfinished"); photos in "Photos Temp" are COPIED out and can linger, so
+// they only ride along, they don't by themselves signal unfinished work.
+async function scanPhoneStagedDir(dir) {
+  if (!dir) return [];
+  let r; try { r = await window.api.scanVideos(dir); } catch { r = null; }
+  return (r && r.ok && Array.isArray(r.files)) ? r.files : [];
+}
+async function scanPhoneStaged() {
+  const { photo, video } = phoneStagingDests();
+  const videos = await scanPhoneStagedDir(video);
+  const photos = await scanPhoneStagedDir(photo);
+  return { videos, photos, unfinished: videos.length };   // `unfinished` drives the Home card
+}
+// Continue naming/organizing already-pulled phone media WITHOUT the phone connected.
+// Returns false when nothing's staged (already finished) so callers fall back to Home.
+async function resumePhoneStaged() {
+  const { videos, photos } = await scanPhoneStaged();
+  const seen = new Set();
+  const staged = [...videos, ...photos].filter((f) => { const k = f.sourcePath || `${f.name}|${f.size}`; return seen.has(k) ? false : (seen.add(k), true); });
+  if (!staged.length) return false;
+  await enterRenameWithPhoneFiles(staged);
+  return true;
 }
 
 // Jump straight to the Name & copy (rename) flow from any screen.
@@ -1201,6 +1331,8 @@ async function openFinalize() {
 
   const src = await window.api.getFinalizeSource();
   finScan.dir = src || '';
+  // Remember we're organizing → next launch reopens Organize straight away.
+  saveSession({ view: 'finalize', step: null, sourcePath: src || '', sourceDesc: 'Organize', sourceKind: 'finalize' });
   $('finSourceLine').textContent = src || 'Not chosen yet';
   if (src) finRunScan();
   else {

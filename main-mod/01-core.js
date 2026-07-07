@@ -87,10 +87,13 @@ const STORE_FILES = {
   projectLedger:  path.join(STORE_DIR, 'project-ledger.json'),
   'ai.people':    path.join(STORE_DIR, 'people.json'),
   'ai.clipObs':   path.join(STORE_DIR, 'clip-observations.json'),
+  // Unconfirmed face-review clusters (crops + descriptors + state) so the "Review
+  // faces" grid — thumbnails and all — survives restarts and never needs re-scanning.
+  'ai.facesPending': path.join(STORE_DIR, 'faces-pending.json'),
 };
 const STORE_DEFAULT = {
   renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [],
-  'ai.people': () => [], 'ai.clipObs': () => ({}),
+  'ai.people': () => [], 'ai.clipObs': () => ({}), 'ai.facesPending': () => [],
 };
 const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
 
@@ -200,6 +203,7 @@ function loadConfig() {
     simulatePhone: false,      // dev-only: surface a fake phone backed by a local folder
     useAdb: false,             // fast Android transfer via ADB (opt-in; falls back to MTP)
     adbPath: '',               // optional explicit path to adb.exe
+    wirelessAddr: '',          // last Wi-Fi-debugging address (host:port) for sticky reconnect
     phoneBackupSource: '',     // wireless: the NAS folder a phone app (QuMagie) auto-uploads to
     ffmpegPath: 'ffmpeg',
     ffprobePath: 'ffprobe',

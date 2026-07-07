@@ -9,7 +9,7 @@
   "05-windows-phone.js|copyFile|if (!st || st.size !== it.size) { await fsp.copyFile(it.abs, dst); st = await fsp.stat(dst); }": 1,
   "05-windows-phone.js|spawn|try { return require('node:child_process').spawnSync(p, ['version'], { windowsHide: true, timeout: 8000 }).status === 0; } catch { return false; }": 1,
   "05-windows-phone.js|spawn|const ps = spawn('powershell.exe', ['-NoProfile', '-Command', `Expand-Archive -Force -LiteralPath '${zip}' -DestinationPath '${ud}'`], { windowsHide: true });": 1,
-  "05-windows-phone.js|spawn|const ps = spawn(_adbPath, args, { windowsHide: true });": 1,
+  "05-windows-phone.js|spawn|const ps = spawn(_adbPath, args, { windowsHide: true, env: { ...process.env, ADB_MDNS_OPENSCREEN: '1' } });": 1,
   "05-windows-phone.js|mkdir|fs.mkdirSync(dest, { recursive: true });": 1,
   "05-windows-phone.js|mkdir|await fsp.mkdir(dir, { recursive: true });": 1,
   "06-copy-transfer.js|spawn|const proc = killAfter(spawn(config.ffmpegPath, [": 1,

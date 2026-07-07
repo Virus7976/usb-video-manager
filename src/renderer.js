@@ -38,6 +38,16 @@ function personThumbHTML(thumb) {
 // Math.round((n/d)*100) and Math.min(100,(n/d)*100).) Returns 0 for a zero denominator.
 function pctOf(num, den) { return den ? Math.min(100, Math.round((num / den) * 100)) : 0; }
 
+// Humanize an Electron accelerator ('CommandOrControl+Alt+U') for display so the UI
+// shows real keys ('Ctrl+Alt+U'), never the raw API string.
+function prettyHotkey(s) {
+  return String(s || '')
+    .replace(/CommandOrControl|CmdOrCtrl/gi, 'Ctrl')
+    .replace(/\bCommand\b|\bCmd\b/gi, 'Ctrl')
+    .replace(/\bControl\b/gi, 'Ctrl')
+    .replace(/\bSuper\b|\bMeta\b/gi, 'Win');
+}
+
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
@@ -218,7 +228,7 @@ let cfg = null;
     document.querySelector('.brand-dot').classList.add('live');
   } else {
     $('statusLine').textContent = cfg.hotkey
-      ? `Ready — press ${cfg.hotkey} (or the tray icon) after inserting a card.`
+      ? `Ready — press ${prettyHotkey(cfg.hotkey)} (or the tray icon) after inserting a card.`
       : 'Ready — use “Choose drive…”.';
     document.querySelector('.brand-dot').classList.add('live');
   }
@@ -260,8 +270,12 @@ let cfg = null;
   // If a copy was already running (e.g. window was closed and reopened), resume
   // straight to its progress so you can see where it's at — and continue.
   const cs = await window.api.copyStatus();
-  if (cs && cs.active) { updateCopyChip(cs); goToCopyProgress(cs); }
-  maybeFirstRunSetup();   // first-ever launch → setup wizard, else the spotlight tour
+  let resumed = false;
+  if (cs && cs.active) { updateCopyChip(cs); goToCopyProgress(cs); resumed = true; }
+  // Otherwise reopen exactly where we left off last session (the rename flow on this
+  // card, or Organize) — unless it's the very first launch (setup wizard comes first).
+  else if (!cfg.firstRun) { try { resumed = await maybeResumeSession(); } catch { /* stay Home */ } }
+  if (!resumed) maybeFirstRunSetup();   // first-ever launch → setup wizard, else the spotlight tour
 })();
 
 // All available removable drives, listed on the home screen so you can see & pick
@@ -291,7 +305,7 @@ function renderDevices() {
     </button>` : '';
   const phoneCards = phones.map((p, i) => `<button type="button" class="settings-card action dl-card" data-kind="phone" data-i="${i}">
       <span class="sc-icon accent">${DL_ICON_PHONE}</span>
-      <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : 'Phone · photos + videos (MTP)'}</span></span>
+      <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : (p.wireless ? '📶 Phone · photos + videos (Wi-Fi)' : 'Phone · photos + videos (MTP)')}</span></span>
       <span class="sc-chevron">›</span>
     </button>`).join('');
   const driveCards = drives.map((d, i) => {
@@ -331,25 +345,43 @@ async function renderPendingWork() {
   let w = {}; try { w = await window.api.pendingWork(); } catch { w = {}; }
   const ready = (w && w.ready) || 0;
   const uncompressed = (w && w.uncompressed) || 0;
-  if (!ready && !uncompressed) { host.classList.add('hidden'); host.innerHTML = ''; return; }
   const analyzed = (w && w.readyAnalyzed) || 0;
-  const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} already analyzed` : ''}` : '';
-  let uncLine = '';
-  if (uncompressed) {
-    uncLine = ready
-      ? `<b>${uncompressed}</b> still in Uncompressed`
-      : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'}, then organize`;
+  // Phone media already pulled off the phone and waiting locally — you can name/organize it
+  // WITHOUT reconnecting the phone. Keyed on the video temp (empties when finished).
+  let phoneStaged = 0;
+  try { phoneStaged = (await scanPhoneStaged()).unfinished; } catch { phoneStaged = 0; }
+
+  const cards = [];
+  if (phoneStaged) {
+    cards.push(`<button type="button" class="pw-card" id="pwPhone">
+        <span class="pw-ic keep-emoji">📱</span>
+        <span class="pw-tx"><span class="pw-title">Phone media waiting for you</span><span class="pw-sub"><b>${phoneStaged}</b> video${phoneStaged !== 1 ? 's' : ''} already pulled — name &amp; organize without reconnecting your phone</span></span>
+        <span class="pw-cta">Continue ›</span>
+      </button>`);
   }
-  const sub = [readyLine, uncLine].filter(Boolean).join(' &nbsp;·&nbsp; ');
-  const cta = ready ? `Organize ${ready} ›` : 'Open Organize ›';
-  host.innerHTML = `<button type="button" class="pw-card" id="pwGo">
-      <span class="pw-ic keep-emoji">🎬</span>
-      <span class="pw-tx"><span class="pw-title">You've got footage to deal with</span><span class="pw-sub">${sub}</span></span>
-      <span class="pw-cta">${cta}</span>
-    </button>`;
+  if (ready || uncompressed) {
+    const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} already analyzed` : ''}` : '';
+    let uncLine = '';
+    if (uncompressed) {
+      uncLine = ready
+        ? `<b>${uncompressed}</b> still in Uncompressed`
+        : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'}, then organize`;
+    }
+    const sub = [readyLine, uncLine].filter(Boolean).join(' &nbsp;·&nbsp; ');
+    const cta = ready ? `Organize ${ready} ›` : 'Open Organize ›';
+    cards.push(`<button type="button" class="pw-card" id="pwGo">
+        <span class="pw-ic keep-emoji">🎬</span>
+        <span class="pw-tx"><span class="pw-title">You've got footage to deal with</span><span class="pw-sub">${sub}</span></span>
+        <span class="pw-cta">${cta}</span>
+      </button>`);
+  }
+  if (!cards.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
+  host.innerHTML = cards.join('');
   host.classList.remove('hidden');
   const go = host.querySelector('#pwGo');
   if (go) go.addEventListener('click', () => openFinalize());
+  const ph = host.querySelector('#pwPhone');
+  if (ph) ph.addEventListener('click', () => resumePhoneStaged());
 }
 
 // Wireless workflow: remember the NAS folder a phone app (QNAP QuMagie/Qfile) uploads
@@ -428,6 +460,57 @@ function setStep(n) {
   $('step2').classList.toggle('hidden', n !== 2);
   $('step3').classList.toggle('hidden', n !== 3);
   $('stepDone').classList.add('hidden');
+  if (sessionState.view === 'flow') saveSession({ step: n });
+}
+
+// ---------------------------------------------------------------------------
+// Resume on launch — remember which screen / source / step you were last on so the
+// next launch reopens exactly there (no re-picking the drive, no lost place). Persisted
+// to config via prefs:set; view 'home' clears it. Saves are debounced so rapid step
+// changes don't spam the disk.
+// ---------------------------------------------------------------------------
+let sessionState = { view: 'home', step: null, sourcePath: '', sourceDesc: '', sourceKind: '' };
+let _sessionSaveT = null;
+function saveSession(patch) {
+  sessionState = { ...sessionState, ...(patch || {}) };
+  clearTimeout(_sessionSaveT);
+  _sessionSaveT = setTimeout(() => {
+    try { window.api.setPrefs({ session: sessionState.view === 'home' ? null : sessionState }); } catch { /* non-fatal */ }
+  }, 250);
+}
+// Reopen last session. Returns true if it took over the screen (so the boot flow can
+// skip the auto-tour). Never throws into boot — any snag just leaves you on Home.
+async function maybeResumeSession() {
+  const s = cfg && cfg.session;
+  if (!s || !s.view) return false;
+  try {
+    if (s.view === 'finalize') {
+      // Organize works on a disk folder that persists — safe to reopen directly.
+      sessionState = { ...sessionState, view: 'finalize' };
+      await openFinalize();
+      return true;
+    }
+    if (s.view === 'phone') {
+      // Already-pulled phone media lives in the local temp folders — reopen the naming
+      // flow straight from disk, no phone needed. False → nothing left staged → Home.
+      return await resumePhoneStaged();
+    }
+    if (s.view === 'flow' && s.sourcePath) {
+      // A card may have been unplugged since — only re-enter if the source is reachable.
+      const reachable = await window.api.pathExists(s.sourcePath);
+      if (!reachable) return false;   // fall back to Home (pending-work banner still shows)
+      state.drive = {
+        mountpoint: s.sourcePath,
+        description: s.sourceDesc || 'Removable drive',
+        isCard: s.sourceKind === 'card',
+        isUSB: s.sourceKind === 'usb'
+      };
+      onDrive(state.drive);
+      await startFlow();   // re-scans + restores your naming drafts → right where you left off
+      return true;
+    }
+  } catch { /* stay on Home */ }
+  return false;
 }
 
 function showDone(summary) {
@@ -739,6 +822,9 @@ async function startFlow() {
   $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
   $('driveBanner').classList.remove('hidden');
   $('flow').classList.remove('hidden');
+  // Remember we're in the rename/compress flow on this source, so the next launch
+  // reopens straight here (drafts restore the naming automatically).
+  if (state.drive) saveSession({ view: 'flow', step: 1, sourcePath: state.drive.mountpoint, sourceDesc: state.drive.description || '', sourceKind: state.drive.isCard ? 'card' : (state.drive.isUSB ? 'usb' : 'folder') });
 
   await refreshSubjectOptions();
   await refreshDescriptionOptions();
@@ -2656,13 +2742,21 @@ function applyAiResult(i, res, mode = 'all') {
   if (!clip || !res) return { ok: false };
   const capWords = (s, n) => slug(s).split('-').filter(Boolean).slice(0, n).join('-');
   const onlyEmpty = mode === 'empty';
-  let newSubject = '';
   // Only touch the subject when the user allows it (default: keep my subjects,
   // AI just fills description + metadata). An empty subject is still fillable.
   if (res.subject && (aiCfg.updateSubject || !clip.subject) && (!onlyEmpty || !clip.subject)) {
     const subj = capWords(res.subject, 3);
-    if (subjectsCache.map((s) => s.toLowerCase()).includes(subj)) { clip.subject = subj; clip._aiSubject = subj; rememberSubject(subj); }
-    else if (subj) newSubject = subj;
+    // The AI naming a clip with a fresh subject ("snow-walking") is the whole point —
+    // just USE it. We used to queue a confirm-question for every subject that wasn't
+    // already in your history, which meant hundreds of near-identical "is this a new
+    // subject?" prompts on a first import. Now the only cleverness is snapping a new
+    // subject onto one you ALREADY use when it's the same thing spelled differently
+    // (snow-walking == snow walking == snowwalking) so your vocabulary stays tidy
+    // instead of sprouting duplicates. A genuinely new subject is simply accepted.
+    if (subj) {
+      const finalSubj = matchKnownSubject(subj) || subj;
+      clip.subject = finalSubj; clip._aiSubject = finalSubj; rememberSubject(finalSubj);
+    }
   }
   if (res.shotType) clip.shotType = slug(res.shotType);   // kept for metadata/keywords even if folded into the description
   if ((res.description || res.shotType) && (!onlyEmpty || !clip.description)) {
@@ -2689,7 +2783,19 @@ function applyAiResult(i, res, mode = 'all') {
   syncRowInputs([i]);
   refreshNames();
   if (clip.subject || clip.description) flashNamed(i);
-  return { ok: true, newSubject, newCategory, note: res.note || '', switchedTo: res.switchedTo || '' };
+  return { ok: true, newCategory, note: res.note || '', switchedTo: res.switchedTo || '' };
+}
+
+// Snap an AI-generated subject onto one you ALREADY use when it's the same thing spelled
+// differently (canonical form ignores case/spaces/hyphens: snow-walking == snowwalking).
+// Returns the existing spelling to reuse, or '' when the subject is genuinely new (which
+// is fine — it's used as-is, no confirmation). Keeps the subject vocabulary from sprouting
+// near-duplicates without ever nagging the user about a perfectly good new subject.
+function matchKnownSubject(subj) {
+  const want = canon(subj);
+  if (!want) return '';
+  for (const s of subjectsCache) { if (canon(s) === want) return s; }
+  return '';
 }
 
 // Watchdog: guarantee an AI loop ALWAYS advances even if one call wedges (a model
@@ -3049,7 +3155,8 @@ async function aiAnalyzeSelected() {
       okCount += 1;
       if (r.note) visionNote = r.note;
       if (r.switchedTo) aiCfg.model = r.switchedTo;   // broken vision model was swapped — stop re-trying it
-      if (r.newSubject) addAiQuestion({ type: 'subject', clipIndex: i, suggested: r.newSubject });
+      // New subjects are auto-accepted now (see applyAiResult) — no confirm flood. Only a
+      // genuinely new top-level CATEGORY still asks, since that creates a new root folder.
       if (r.newCategory) addAiQuestion({ type: 'category', clipIndex: i, field: 'category', suggested: r.newCategory });
     } else { failCount += 1; if (r && r.error) lastErr = r.error; logIssue('AI analyze', `${(state.scannedFiles[i] || {}).name || 'clip'}: ${(r && r.error) || 'no response'}`); }
   };
@@ -3291,139 +3398,150 @@ function showFeedbackExportDialog() {
   load(false);
 }
 
-// Review the AI's pending questions, one per step. Handles all question types:
-//  - subject / category : confirm a brand-new value (use new / existing / custom / skip)
-//  - rule               : remember a learned preference, or discard it
-// Resolves each question as it's answered; confirmed rules are committed to memory
-// in one batch at the end. Opened only via the ⚠ indicator → Review.
+// Review the AI's pending questions on ONE page — no more clicking Next through
+// hundreds of near-identical prompts. Everything the AI is unsure about is grouped and
+// shown at once, with sensible defaults already selected, so the common case is a single
+// glance + "Apply". Handles all question types:
+//  - confirm            : a clip the AI named — tweak subject/description inline (optional)
+//  - subject / category : a new value, GROUPED by suggestion so "use 'snow-walking' for
+//                         these 12 clips" is one decision, not twelve
+//  - rule               : remember a learned preference (checkbox)
+// Nothing is committed until you hit Apply; closing/Cancel leaves the questions pending.
+let aiReviewDlId = 0;
 function showAiReview() {
-  const items = aiQuestions.slice();   // snapshot of what to walk through
+  const items = aiQuestions.slice();   // snapshot to resolve on Apply
   if (!items.length) { showToast('No AI questions right now'); return; }
-  let step = 0;
-  const confirmedRules = [];
+  const rules = items.filter((it) => it.type === 'rule');
+  const confirms = items.filter((it) => it.type === 'confirm');
+  const valueItems = items.filter((it) => it.type === 'subject' || it.type === 'category');
+  // Collapse identical new-value suggestions into one row (one decision → many clips).
+  const groups = [];
+  const groupOf = new Map();
+  for (const it of valueItems) {
+    const key = `${it.type}|${it.field || ''}|${(it.suggested || '').toLowerCase()}`;
+    let g = groupOf.get(key);
+    if (!g) { g = { type: it.type, field: it.field, suggested: it.suggested, items: [] }; groupOf.set(key, g); groups.push(g); }
+    g.items.push(it);
+  }
+  const thumbImg = (clip) => (clip && clip.posterUrl ? `<img class="wiz-thumb" src="${escapeAttr(clip.posterUrl)}" alt="" />` : '<span class="wiz-thumb wiz-thumb-ph"></span>');
+
+  // --- Group rows (new subject / category) — radios: use suggestion / type instead / skip.
+  const dl = `airev-dl-${(aiReviewDlId += 1)}`;
+  const groupsHtml = groups.map((g, gi) => {
+    const kind = g.type === 'category' ? 'category' : 'subject';
+    const n = g.items.length;
+    return `<div class="airev-row" data-group="${gi}">
+      <div class="airev-row-hd"><b>${escapeHtml(g.suggested)}</b> <span class="muted small">— new ${kind} · ${n} clip${n !== 1 ? 's' : ''}</span></div>
+      <div class="airev-opts">
+        <label class="fin-radio"><input type="radio" name="airev-g${gi}" value="use" checked /> <span>Use it</span></label>
+        <label class="fin-radio"><input type="radio" name="airev-g${gi}" value="custom" /> <span>Use instead:</span> <input type="text" class="ai-input airev-custom" list="${dl}" placeholder="type a ${kind}" /></label>
+        <label class="fin-radio"><input type="radio" name="airev-g${gi}" value="skip" /> <span>Leave blank</span></label>
+      </div>
+    </div>`;
+  }).join('');
+  const existingVals = [...new Set([...(subjectsCache || []), ...Object.values(fieldHistoryCache || {}).flat()])].filter(Boolean);
+  const datalist = groups.length ? `<datalist id="${dl}">${existingVals.map((o) => `<option value="${escapeAttr(o)}"></option>`).join('')}</datalist>` : '';
+
+  // --- Confirm rows (clips the AI named) — inline subject/description, thumbnail only
+  // (a compact grid instead of a one-video-at-a-time carousel).
+  const confirmsHtml = confirms.map((it) => {
+    const clip = state.scannedFiles[it.clipIndex];
+    return `<div class="airev-clip" data-qid="${it.id}">
+      ${thumbImg(clip)}
+      <div class="airev-clip-fields">
+        <div class="airev-clip-name muted small">${escapeHtml(clip ? clip.name : '')}</div>
+        <input type="text" class="ai-input airev-cf-subject" value="${escapeAttr(clip ? (clip.subject || '') : '')}" placeholder="subject" />
+        <input type="text" class="ai-input airev-cf-desc" value="${escapeAttr(clip ? (clip.description || '') : '')}" placeholder="description" />
+      </div>
+    </div>`;
+  }).join('');
+
+  // --- Rule rows (things it learned) — a checkbox each, editable text.
+  const rulesHtml = rules.map((it, ri) => `<div class="airev-rule" data-qid="${it.id}">
+      <label class="fin-radio"><input type="checkbox" class="airev-rule-on" data-ri="${ri}" checked /> <span>Remember:</span></label>
+      <input type="text" class="ai-input airev-rule-text" value="${escapeAttr(it.rule)}" />
+      ${it.example ? `<div class="airev-rule-eg muted small">e.g. ${escapeHtml(it.example)}</div>` : ''}
+    </div>`).join('');
+
+  const section = (title, sub, inner) => inner
+    ? `<div class="airev-sec"><div class="airev-sec-hd">${title}${sub ? ` <span class="muted small">${sub}</span>` : ''}</div>${inner}</div>`
+    : '';
+
   const ov = document.createElement('div');
   ov.className = 'modal-overlay';
-  ov.innerHTML = `<div class="modal-card ai-wiz">
+  ov.innerHTML = `<div class="modal-card ai-wiz airev-card">
     <div class="illo mob-illo">${ILLO_ASK}</div>
-    <div class="ai-hd" style="margin-top:2px"><div class="ai-hd-text"><h3>Review AI questions</h3><p class="muted small">The AI only asks when it's unsure — confirm a new subject/category, or whether to remember something it learned.</p></div></div>
-    <div class="wiz-stepno muted small"></div>
-    <div class="wiz-body"></div>
+    <div class="ai-hd" style="margin-top:2px"><div class="ai-hd-text"><h3>Review AI questions</h3><p class="muted small">Everything the AI wasn't sure about — the defaults are already picked, so you can usually just hit Apply.</p></div></div>
+    <div class="airev-body">
+      ${section('Confirm clips', confirms.length ? `${confirms.length} named` : '', confirmsHtml)}
+      ${section('New values', groups.length ? `${groups.length}` : '', groupsHtml)}
+      ${section('Remember', rules.length ? `${rules.length}` : '', rulesHtml)}
+    </div>
+    ${datalist}
     <div class="modal-actions">
-      <button type="button" class="btn wiz-back">Back</button>
-      <button type="button" class="btn primary wiz-next">Next</button>
+      <button type="button" class="btn primary airev-apply">Apply${items.length > 1 ? ` all (${items.length})` : ''}</button>
+      <button type="button" class="btn airev-cancel">Cancel</button>
     </div></div>`;
   document.body.appendChild(ov);
   const $w = (s) => ov.querySelector(s);
-  const body = $w('.wiz-body');
-  let wizSelect = null;   // custom dropdown for "use an existing subject/category"
-  // Live looping preview of the clip being reviewed (decode-session-safe: only one
-  // <video> at a time — we free the grid's active video first).
-  let reviewVid = null;
-  function unmountReviewVideo() { if (reviewVid) { try { reviewVid.pause(); reviewVid.removeAttribute('src'); reviewVid.load(); reviewVid.remove(); } catch { /* ignore */ } reviewVid = null; } }
-  async function mountReviewVideo(clip, holder) {
-    unmountReviewVideo();
-    if (activeVideoIndex !== null) teardownVideo(activeVideoIndex);   // never two HEVC decoders
-    if (!clip || !holder) return;
-    const url = await window.api.mediaUrl(clip.sourcePath);
-    if (!holder.isConnected) return;   // stepped away while awaiting
-    const v = document.createElement('video');
-    v.className = 'wiz-video'; v.muted = true; v.loop = true; v.autoplay = true; v.playbackRate = currentSpeed;
-    v.addEventListener('error', () => { /* keep the poster fallback */ });
-    v.src = url;
-    holder.innerHTML = ''; holder.appendChild(v);
-    reviewVid = v;
-    v.play().catch(() => { /* autoplay race */ });
-  }
-  const close = () => { unmountReviewVideo(); ov.remove(); };
-  const thumbImg = (clip) => (clip && clip.posterUrl ? `<img class="wiz-thumb" src="${escapeAttr(clip.posterUrl)}" alt="" />` : '');
+  const close = () => ov.remove();
 
-  function render() {
-    const it = items[step];
-    $w('.wiz-stepno').textContent = `${step + 1} of ${items.length}`;
-    if (it.type === 'rule') {
-      unmountReviewVideo();   // no clip for rule steps
-      body.innerHTML = `
-        <div class="wiz-rule">
-          <p class="wiz-rule-q">Want me to remember this?</p>
-          <input type="text" class="wiz-rule-text ai-input" value="${escapeAttr(it.rule)}" />
-          ${it.example ? `<div class="wiz-rule-eg muted small">e.g. ${escapeHtml(it.example)}</div>` : ''}
-          <div class="wiz-options">
-            <label class="fin-radio"><input type="radio" name="wiz" value="remember" checked /> <span>Remember it (add to Memory)</span></label>
-            <label class="fin-radio"><input type="radio" name="wiz" value="discard" /> <span>Don't remember</span></label>
-          </div>
-        </div>`;
-    } else if (it.type === 'confirm') {
+  async function applyAll() {
+    const confirmedRules = [];
+    // Rules
+    rules.forEach((it, ri) => {
+      const on = ov.querySelector(`.airev-rule-on[data-ri="${ri}"]`);
+      if (on && on.checked) { const box = on.closest('.airev-rule'); const t = (box.querySelector('.airev-rule-text').value || '').trim(); if (t) confirmedRules.push({ text: t, example: it.example || '' }); }
+      resolveAiQuestion(it.id);
+    });
+    // Confirm clips — apply inline edits (corrections teach the AI)
+    const touched = [];
+    confirms.forEach((it) => {
       const clip = state.scannedFiles[it.clipIndex];
-      body.innerHTML = `
-        <div class="wiz-clip"><span class="wiz-media">${thumbImg(clip)}</span><span class="wiz-name">${escapeHtml(clip ? clip.name : '')}</span></div>
-        <p class="muted small" style="margin:4px 0 8px">The AI named this — fix anything wrong (your corrections teach it), or just hit Next if it's right.</p>
-        <label class="pref-label">Subject</label><input type="text" class="ai-input wiz-cf-subject" value="${escapeAttr(clip ? (clip.subject || '') : '')}" />
-        <label class="pref-label" style="margin-top:8px">Description</label><input type="text" class="ai-input wiz-cf-desc" value="${escapeAttr(clip ? (clip.description || '') : '')}" />`;
-      mountReviewVideo(clip, $w('.wiz-media'));
-    } else {
-      const clip = state.scannedFiles[it.clipIndex];
-      const kind = it.type === 'category' ? 'category' : 'subject';
-      const existing = it.type === 'category' ? (fieldHistoryCache[it.field || 'category'] || []) : subjectsCache;
-      body.innerHTML = `
-        <div class="wiz-clip"><span class="wiz-media">${thumbImg(clip)}</span><span class="wiz-name">${escapeHtml(clip ? clip.name : '')}</span></div>
-        <div class="wiz-options">
-          <label class="fin-radio"><input type="radio" name="wiz" value="new" checked /> <span>Use new ${kind}: <b>${escapeHtml(it.suggested)}</b></span></label>
-          <label class="fin-radio"><input type="radio" name="wiz" value="existing" /> <span>Use an existing ${kind}</span> <span class="wiz-existing-mount"></span></label>
-          <label class="fin-radio"><input type="radio" name="wiz" value="custom" /> <span>Type my own</span> <input type="text" class="wiz-custom ai-input" placeholder="${kind}" /></label>
-          <label class="fin-radio"><input type="radio" name="wiz" value="skip" /> <span>Skip (leave blank)</span></label>
-        </div>`;
-      wizSelect = createSelect({ value: existing[0] || '', placeholder: '(none yet)', empty: '(none yet)', style: 'min-width:150px' });
-      wizSelect.setOptions(existing.map((s) => ({ value: s, label: s })));
-      $w('.wiz-existing-mount').appendChild(wizSelect.el);
-      mountReviewVideo(clip, $w('.wiz-media'));
-    }
-    $w('.wiz-back').disabled = step === 0;
-    $w('.wiz-next').textContent = step === items.length - 1 ? 'Finish' : 'Next';
-  }
-  function applyCurrent() {
-    const it = items[step];
-    if (it.type === 'rule') {
-      const choice = ov.querySelector('input[name="wiz"]:checked').value;
-      if (choice === 'remember') { const t = ($w('.wiz-rule-text').value || '').trim(); if (t) confirmedRules.push({ text: t, example: it.example || '' }); }
-    } else if (it.type === 'confirm') {
-      const clip = state.scannedFiles[it.clipIndex];
-      if (clip) {
-        const ns = slug($w('.wiz-cf-subject').value);
-        const nd = slug($w('.wiz-cf-desc').value);
+      const box = ov.querySelector(`.airev-clip[data-qid="${it.id}"]`);
+      if (clip && box) {
+        const ns = slug(box.querySelector('.airev-cf-subject').value);
+        const nd = slug(box.querySelector('.airev-cf-desc').value);
         if (ns !== (clip.subject || '')) { recordAiEdit(clip, 'subject', ns); clip.subject = ns; if (ns) rememberSubject(ns); }
         if (nd !== (clip.description || '')) { recordAiEdit(clip, 'description', nd); clip.description = nd; if (nd) rememberDescription(nd); }
-        syncRowInputs([it.clipIndex]);
+        touched.push(it.clipIndex);
       }
-    } else {
-      const choice = ov.querySelector('input[name="wiz"]:checked').value;
-      const clip = state.scannedFiles[it.clipIndex];
+      resolveAiQuestion(it.id);
+    });
+    // New-value groups — one choice fans out to every clip in the group
+    groups.forEach((g, gi) => {
+      const sel = ov.querySelector(`input[name="airev-g${gi}"]:checked`);
+      const choice = sel ? sel.value : 'use';
       let value = '';
-      if (choice === 'new') value = it.suggested;
-      else if (choice === 'existing') value = (wizSelect && wizSelect.value) || '';
-      else if (choice === 'custom') value = slug($w('.wiz-custom').value);
-      if (clip && choice !== 'skip' && value) {
-        if (it.type === 'category') { clip[it.field || 'category'] = value; rememberField(it.field || 'category', value); }
-        else { clip.subject = value; rememberSubject(value); }
-        syncRowInputs([it.clipIndex]);
+      if (choice === 'use') value = g.suggested;
+      else if (choice === 'custom') value = slug((ov.querySelector(`.airev-row[data-group="${gi}"] .airev-custom`) || {}).value || '');
+      for (const it of g.items) {
+        const clip = state.scannedFiles[it.clipIndex];
+        if (clip && choice !== 'skip' && value) {
+          if (g.type === 'category') { clip[g.field || 'category'] = value; rememberField(g.field || 'category', value); }
+          else { clip.subject = value; rememberSubject(value); }
+          touched.push(it.clipIndex);
+        }
+        resolveAiQuestion(it.id);
       }
-    }
-    resolveAiQuestion(it.id);
-  }
-  $w('.wiz-back').addEventListener('click', () => { if (step > 0) { step -= 1; render(); } });
-  $w('.wiz-next').addEventListener('click', async () => {
-    applyCurrent();
-    if (step < items.length - 1) { step += 1; render(); return; }
+    });
+    if (touched.length) syncRowInputs([...new Set(touched)]);
     refreshNames();
     close();
     if (confirmedRules.length) {
       const r = await window.api.aiAddMemories(confirmedRules);
       if (r && r.ok && Array.isArray(r.memories)) aiCfg.memories = r.memories;
     }
-    maybeFlushEdits(true);   // learn from any corrections made in the confirm steps
+    maybeFlushEdits(true);   // learn from any corrections made here
     showToast('All caught up ✓');
-  });
-  ov.addEventListener('mousedown', (e) => { if (e.target === ov) { refreshNames(); close(); } });
-  render();
+  }
+  $w('.airev-apply').addEventListener('click', applyAll);
+  $w('.airev-cancel').addEventListener('click', close);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  // Typing in a "use instead" field selects its radio (so a typed value isn't ignored).
+  ov.querySelectorAll('.airev-custom').forEach((inp) => inp.addEventListener('input', () => {
+    const r = inp.closest('.airev-opts').querySelector('input[value="custom"]'); if (r) r.checked = true;
+  }));
 }
 
 // Full editor for one memory — write freely, optionally Refine with AI (compacts
@@ -3615,7 +3733,6 @@ function runAiOnClip(idx) {
     clearTask('ai');
     if (r && r.ok) {
       if (r.switchedTo) aiCfg.model = r.switchedTo;
-      if (r.newSubject) addAiQuestion({ type: 'subject', clipIndex: idx, suggested: r.newSubject });
       if (r.newCategory) addAiQuestion({ type: 'category', clipIndex: idx, field: 'category', suggested: r.newCategory });
       showToast(aiQuestions.length ? 'AI done · question to review ⚠' : 'AI done ✓');
       if (r.note) showToast(r.note, 8000);
@@ -5494,6 +5611,7 @@ function showSettingsHub() {
     { ic: '🗂️', title: 'Organizing fields', sub: 'The metadata fields used to file footage', go: showOrganizeFields },
     { ic: '📂', title: 'Filing rules', sub: 'Where footage goes by subject / descriptor', go: () => showRoutingRules() },
     { ic: '🫥', title: 'People & faces', sub: 'Manage recognized people', go: showPeopleManager },
+    { ic: '📶', title: 'Pair phone (Wi-Fi)', sub: 'Scan a QR to back up your phone with no cable', go: () => showWirelessPairModal() },
     { ic: '🧭', title: 'Setup wizard', sub: 'Re-run guided onboarding (folders, AI, faces)', go: () => showSetupWizard() }
   ];
   ov.innerHTML = `<div class="modal-card settings-hub">
@@ -7660,17 +7778,38 @@ async function ensureFaceModels() {
   })();
   return _faceReady;
 }
-// Crop a face box out of an already-decoded HTMLImageElement. Uses the img directly
+// Cap the longest edge we ever hand to face-api (WebGL). Video frames arrive already
+// downscaled (~1100px), but a PHOTO frame is the full-resolution file — a 40–50MP phone
+// photo fed straight into the SSD-MobileNet WebGL graph exhausts GPU memory and CRASHES
+// the renderer/GPU process. Detecting at 1600px is plenty for face quality (video frames
+// prove 1100px works) and keeps memory bounded.
+const FACE_MAX_EDGE = 1600;
+// Build the element we run detection AND cropping on. If the decoded frame is bigger than
+// FACE_MAX_EDGE, draw it down onto a canvas once; both detection boxes and crops then live
+// in the SAME (scaled) pixel space, so no coordinate remapping is needed.
+function faceSource(img) {
+  const w = img.naturalWidth || img.width || 0;
+  const h = img.naturalHeight || img.height || 0;
+  const long = Math.max(w, h);
+  if (!long || long <= FACE_MAX_EDGE) return { el: img, w, h };
+  const scale = FACE_MAX_EDGE / long;
+  const cw = Math.max(1, Math.round(w * scale));
+  const ch = Math.max(1, Math.round(h * scale));
+  const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+  c.getContext('2d').drawImage(img, 0, 0, cw, ch);
+  return { el: c, w: cw, h: ch };
+}
+// Crop a face box out of a detection source ({el,w,h} from faceSource). Draws directly
 // (no re-decode) so it's synchronous and sharp. Output is 144×144 with 25% padding.
-function cropFace(img, box) {
+function cropFace(src, box) {
   try {
     const pad = Math.round(Math.max(box.width, box.height) * 0.25);
     const sx = Math.max(0, box.x - pad);
     const sy = Math.max(0, box.y - pad);
-    const sw = Math.min(img.naturalWidth - sx, box.width + pad * 2);
-    const sh = Math.min(img.naturalHeight - sy, box.height + pad * 2);
+    const sw = Math.min(src.w - sx, box.width + pad * 2);
+    const sh = Math.min(src.h - sy, box.height + pad * 2);
     const S = 144; const c = document.createElement('canvas'); c.width = S; c.height = S;
-    c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, S, S);
+    c.getContext('2d').drawImage(src.el, sx, sy, sw, sh, 0, 0, S, S);
     return c.toDataURL('image/jpeg', 0.9);
   } catch { return ''; }
 }
@@ -7691,20 +7830,25 @@ async function detectFacesForClip(clip, onFrame) {
     const img = new Image(); img.src = frames[fi];
     // eslint-disable-next-line no-await-in-loop
     try { await img.decode(); } catch { continue; }
+    // Detect AND crop against the same (possibly down-scaled) source, so the
+    // detection boxes line up with cropFace's coordinate space. Detecting/cropping
+    // on the raw img left cropFace with no .el/.w/.h → every crop threw and came
+    // back '', which showed the 🙂 placeholder for every face.
+    const src = faceSource(img);
     let dets = [];
     // eslint-disable-next-line no-await-in-loop
-    try { dets = await fa.detectAllFaces(img, new fa.SsdMobilenetv1Options({ minConfidence: 0.5 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; }
+    try { dets = await fa.detectAllFaces(src.el, new fa.SsdMobilenetv1Options({ minConfidence: 0.5 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; }
     for (const d of dets) {
       const box = d.detection.box; const area = box.width * box.height;
       // Skip faces that are too SMALL or low-confidence — their descriptors are noisy
       // and pollute a person's training set, which is what hurts recognition accuracy.
-      const minSide = Math.max(64, img.naturalWidth * 0.055);
+      const minSide = Math.max(64, src.w * 0.055);
       if (box.width < minSide || box.height < minSide) continue;
       if ((d.detection.score || 0) < 0.55) continue;
       const desc = Array.from(d.descriptor);
       const existing = collected.find((c) => faceDist(c.descriptor, desc) < 0.45);
-      if (existing) { if (area > existing.area) { existing.thumb = cropFace(img, box); existing.area = area; existing.descriptor = desc; } }
-      else collected.push({ descriptor: desc, thumb: cropFace(img, box), area });
+      if (existing) { if (area > existing.area) { existing.thumb = cropFace(src, box); existing.area = area; existing.descriptor = desc; } }
+      else collected.push({ descriptor: desc, thumb: cropFace(src, box), area });
     }
   }
   return { ready: true, faces: collected.map((c) => ({ descriptor: c.descriptor, thumb: c.thumb })) };
@@ -7851,6 +7995,44 @@ function dmapFolderIcon(dated, depth) { return dated ? '📅' : (depth === 0 ? '
 const FACE_CONFIRM_DIST = 0.46;   // <= this: auto-tag, very confident
 const FACE_SUGGEST_DIST = 0.54;   // ceiling passed to people:match; the backend applies
                                   // the strict digiKam-style vote/margin gate (see people:match)
+// --- persist the review across restarts (crops + descriptors + state) --------
+// Only the UNRESOLVED clusters are stored (confirmed faces already live in
+// people.json; skipped ones are dismissed). clipKeys is a Set → stored as array.
+function _serializePending(clusters) {
+  return (clusters || [])
+    .filter((c) => c && !c.skipped && !c.done && c.descriptor)
+    .map((c) => ({
+      thumb: c.thumb || '',
+      descriptor: c.descriptor,
+      descriptors: c.descriptors || [],
+      clipKeys: [...(c.clipKeys || [])],
+      suggest: c.suggest || null,
+      rejected: !!c.rejected,
+    }));
+}
+let _pendingSaveTimer = null;
+function schedulePendingSave(clusters) {
+  clearTimeout(_pendingSaveTimer);
+  _pendingSaveTimer = setTimeout(() => { try { window.api.savePendingFaces(_serializePending(clusters)); } catch { /* ignore */ } }, 700);
+}
+function savePendingNow(clusters) {
+  clearTimeout(_pendingSaveTimer);
+  try { return window.api.savePendingFaces(_serializePending(clusters)); } catch { return Promise.resolve(); }
+}
+async function loadPendingFaces() {
+  let list = [];
+  try { list = await window.api.getPendingFaces(); } catch { list = []; }
+  return (list || []).filter((c) => c && Array.isArray(c.descriptor)).map((c) => ({
+    thumb: c.thumb || '',
+    descriptor: c.descriptor,
+    descriptors: c.descriptors || [],
+    clipKeys: new Set(c.clipKeys || []),
+    suggest: c.suggest || null,
+    rejected: !!c.rejected,
+    done: false,
+  }));
+}
+
 async function scanFacesForClips(clipList, opts = {}) {
   if (!clipList || !clipList.length) { showToast('Select some clips first'); return; }
   // Skip clips already scanned in a previous (or interrupted) run — face scanning is
@@ -7858,7 +8040,17 @@ async function scanFacesForClips(clipList, opts = {}) {
   const toScan = opts.force ? clipList : clipList.filter((c) => !c._facesScanned);
   const skipped = clipList.length - toScan.length;
   if (!toScan.length) {
-    showToast(`Already scanned ${clipList.length === 1 ? 'this clip' : `all ${clipList.length} clips`} — nothing new (faces are remembered).`, 4000);
+    // Everything here was scanned before → don't re-scan. Reopen the SAVED review
+    // (crops + all) so you can keep confirming exactly where you left off.
+    const pending = await loadPendingFaces();
+    if (pending.length) { await showFaceReviewGrid(pending, state.scannedFiles, 0); return; }
+    // No saved review yet (e.g. first run after this update) — offer a ONE-TIME
+    // re-detect to build it. Once built it's remembered, so this won't ask again.
+    const again = await confirmDialog(
+      'No saved face review found.',
+      'Detect faces now? This runs once, then it’s remembered — you won’t be asked again.',
+      'Detect faces', 'Not now');
+    if (again) return scanFacesForClips(clipList, { ...opts, force: true });
     return;
   }
   const probe = await ensureFaceModels();
@@ -7866,7 +8058,9 @@ async function scanFacesForClips(clipList, opts = {}) {
   faceScanAborted = false;
   aiFollow = true; aiAborted = false; showFollowBtn(false);
   clearActivity();
-  const clusters = [];   // {thumb, descriptor, descriptors:[], clipKeys:Set, suggest}
+  // Start from the saved review so a new scan MERGES into what's already waiting
+  // (by descriptor) instead of losing it — the review is cumulative and remembered.
+  const clusters = await loadPendingFaces();   // {thumb, descriptor, descriptors:[], clipKeys:Set, suggest}
   let done = 0;
   for (const clip of toScan) {
     if (faceScanAborted) break;
@@ -7907,8 +8101,10 @@ async function scanFacesForClips(clipList, opts = {}) {
   if (faceScanAborted) { showToast(`Face scan stopped — ${done} scanned so far are remembered (resume to do the rest).`, 4500); }
   const toReview = clusters.length;
   if (!faceScanAborted) pcNotify('Face scan complete', `${toReview} face${toReview !== 1 ? 's' : ''} to review & confirm${skipped ? ` · skipped ${skipped} already-scanned` : ''}.`);
-  if (clusters.length) await showFaceReviewGrid(clusters, toScan, 0);   // await so Analyze can name AFTER you confirm
-  else if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`);
+  // Pass ALL scanned clips (not just this batch) so confirming a merged-in face
+  // from an earlier scan still tags its clips.
+  if (clusters.length) await showFaceReviewGrid(clusters, state.scannedFiles, 0);   // await so Analyze can name AFTER you confirm
+  else { savePendingNow(clusters); if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`); }
 }
 
 // digiKam-style face confirm GRID. Three sections: SUGGESTED (tentative match —
@@ -7930,7 +8126,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   </div>`;
   document.body.appendChild(ov);
   const scroll = ov.querySelector('.face-grid-scroll');
-  const close = () => { ov.remove(); refreshNames && refreshNames(); refreshAllClipPeople(); resolveGrid(); };
+  const close = () => { savePendingNow(clusters); ov.remove(); refreshNames && refreshNames(); refreshAllClipPeople(); resolveGrid(); };
   ov.querySelector('.fg-done').addEventListener('click', close);
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
 
@@ -7998,6 +8194,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       + section('Just confirmed', confirmed);
     if (!live.length) scroll.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">All faces handled ✓</p>';
     wire();
+    schedulePendingSave(clusters);   // persist the review after every change
     const anySuggested = suggested.length > 0;
     const btn = ov.querySelector('.fg-confirm-all');
     if (btn) btn.style.display = anySuggested ? '' : 'none';
@@ -8789,7 +8986,7 @@ function showPreferences() {
           <input type="text" class="pref-path" readonly value="${escapeAttr(pending)}" />
           <button type="button" class="btn pref-browse">Browse…</button>
         </div>
-        <p class="muted small pref-hint">Footage is copied here in the Upload step.</p>
+        <p class="muted small pref-hint">Footage is copied here in the Copy step.</p>
       </div>
     </section>
 
@@ -8974,6 +9171,7 @@ async function goHome() {
   $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
   state.phoneBackup = false;
   if (state.drive) $('driveBanner').classList.remove('hidden');
+  saveSession({ view: 'home' });   // back on Home → nothing to resume into next launch
   refreshDriveList();   // re-read removable drives when returning home
   renderPendingWork();  // refresh the "footage to deal with" banner (counts may have changed)
 }
@@ -9064,25 +9262,124 @@ async function phoneEnterChooser() {
 async function renderPhFast() {
   const el = $('phFast'); if (!el) return;
   let st = {}; try { st = await window.api.adbStatus(); } catch { st = {}; }
+  // "Pair over Wi-Fi (QR)" button — works whether or not fast transfer is on yet
+  // (pairing enables ADB itself), so the whole flow can be done without a cable.
+  const wifiBtn = '<button type="button" class="btn ghost" id="phPairWifi">📶 Pair over Wi-Fi (QR)</button>';
   if (st.useAdb) {
-    el.innerHTML = st.device
-      ? '⚡ Fast transfer on (ADB).'
-      : (st.unauthorized
-        ? '⚡ Fast transfer on — unlock your phone and tap <b>Allow</b> for USB debugging.'
-        : '⚡ Fast transfer on — connect your phone with <b>USB debugging</b> enabled (Settings → Developer options).');
-    return;
+    if (st.device) {
+      el.innerHTML = st.wireless
+        ? '⚡ Fast transfer on — <b>connected wirelessly</b>. You can unplug the cable. ' + wifiBtn
+        : '⚡ Fast transfer on (USB). ' + wifiBtn;
+    } else if (st.unauthorized) {
+      el.innerHTML = '⚡ Fast transfer on — unlock your phone and tap <b>Allow</b> for USB debugging.';
+    } else {
+      el.innerHTML = '⚡ Fast transfer on — pair over Wi-Fi, or plug in with <b>USB debugging</b> enabled. ' + wifiBtn;
+    }
+  } else {
+    el.innerHTML = 'Transfers use MTP (slow for big camera rolls). '
+      + '<button type="button" class="btn ghost" id="phFastOn">⚡ Turn on fast transfer</button> ' + wifiBtn;
   }
-  el.innerHTML = 'Transfers use MTP (slow for big camera rolls). <button type="button" class="btn ghost" id="phFastOn">⚡ Turn on fast transfer</button>';
   const b = el.querySelector('#phFastOn');
   if (b) b.addEventListener('click', async () => {
     b.disabled = true; b.textContent = 'Setting up…';
     let r = {}; try { r = await window.api.adbEnable(); } catch (e) { r = { ok: false, error: (e && e.message) }; }
     if (!r.ok) { showToast(`Couldn’t set up fast transfer: ${r.error || 'failed'}`, 6000); renderPhFast(); return; }
     if (r.unauthorized) showToast('Almost there — on your phone tap “Allow” for USB debugging, then back up.', 8000);
-    else if (!r.device) showToast('Fast transfer ready. Enable USB debugging on the phone (Settings → Developer options), then reconnect.', 9000);
+    else if (!r.device) showToast('Fast transfer ready. Pair over Wi-Fi, or enable USB debugging and reconnect.', 9000);
     else showToast('⚡ Fast transfer on — your phone will back up much faster now.', 5000);
     renderPhFast();
   });
+  const w = el.querySelector('#phPairWifi');
+  if (w) w.addEventListener('click', () => showWirelessPairModal());
+}
+
+// QR wireless-pairing dialog — mirrors Android Studio: show the ADB pairing QR, the
+// phone scans it under Wireless debugging → "Pair device with QR code", and the main
+// process discovers it over mDNS, pairs, and connects. Manual pairing-code entry is
+// offered as a fallback for networks that block mDNS discovery.
+async function showWirelessPairModal() {
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML = `<div class="modal-card wl-pair" style="width:min(460px,94vw);text-align:center">
+    <h3>📶 Pair phone over Wi-Fi</h3>
+    <div class="wl-body"><p class="muted small">Setting up…</p></div>
+    <div class="modal-actions" style="justify-content:center">
+      <button type="button" class="btn wl-close">Close</button>
+    </div></div>`;
+  document.body.appendChild(ov);
+  const body = ov.querySelector('.wl-body');
+  let unsub = null; let closed = false;
+  const cleanup = () => { closed = true; try { if (unsub) unsub(); } catch { /* */ } try { window.api.wirelessCancel(); } catch { /* */ } ov.remove(); };
+  ov.querySelector('.wl-close').addEventListener('click', cleanup);
+  ov.addEventListener('click', (e) => { if (e.target === ov) cleanup(); });
+
+  const finishOk = (address) => {
+    body.innerHTML = `<p class="wl-ok">✅ Connected wirelessly${address ? ` (${escapeHtml(address)})` : ''}! Your phone now appears under <b>Devices</b> — pick it to back up over Wi-Fi, no cable needed.</p>`;
+    showToast('📶 Phone paired over Wi-Fi — it’s now under Devices.', 5000);
+    renderPhFast();
+    try { refreshDriveList(); } catch { /* not on the home screen */ }
+    setTimeout(() => { if (!closed) { closed = true; ov.remove(); } }, 2800);
+  };
+  const showManual = () => {
+    try { window.api.wirelessCancel(); } catch { /* */ }
+    if (unsub) { try { unsub(); } catch { /* */ } unsub = null; }
+    body.innerHTML = `
+      <p class="small" style="text-align:left">On the phone open <b>Wireless debugging → Pair device with pairing code</b>. It shows an <b>IP address &amp; port</b> and a <b>6-digit code</b> — type those two here:</p>
+      <label class="pref-label">Pairing IP address &amp; port</label>
+      <input type="text" class="wl-hostport" placeholder="192.168.1.42:37135" style="width:100%" />
+      <label class="pref-label" style="margin-top:8px">Pairing code</label>
+      <input type="text" class="wl-code" placeholder="123456" inputmode="numeric" style="width:100%" />
+      <details style="margin-top:10px;text-align:left"><summary class="small muted" style="cursor:pointer">Didn’t connect after pairing? Add the connect address</summary>
+        <p class="small muted" style="margin-top:6px">On the phone go <b>back one screen</b> to the main <b>Wireless debugging</b> page — it shows an <b>IP address &amp; Port</b> at the top (a different port). Type that here:</p>
+        <input type="text" class="wl-connect" placeholder="192.168.1.42:41099" style="width:100%" />
+      </details>
+      <p class="wl-status muted small"></p>
+      <div class="modal-actions" style="justify-content:center;margin-top:10px">
+        <button type="button" class="btn primary wl-do">Pair</button>
+      </div>`;
+    const stEl = body.querySelector('.wl-status');
+    body.querySelector('.wl-do').addEventListener('click', async () => {
+      const hostport = body.querySelector('.wl-hostport').value.trim();
+      const code = body.querySelector('.wl-code').value.trim();
+      const connectAddr = body.querySelector('.wl-connect').value.trim();
+      if (!hostport || !code) { stEl.textContent = 'Enter both the address and the code.'; return; }
+      stEl.textContent = 'Pairing…';
+      let r = {}; try { r = await window.api.wirelessManualPair({ hostport, code, connectAddr }); } catch (e) { r = { ok: false, error: (e && e.message) }; }
+      if (r.ok) finishOk(r.address);
+      else stEl.textContent = r.error || 'Pairing failed — check the address and code.';
+    });
+  };
+
+  let begin = {};
+  try { begin = await window.api.wirelessBegin(); } catch (e) { begin = { ok: false, error: (e && e.message) }; }
+  if (closed) return;
+  if (!begin.ok) { body.innerHTML = `<p class="wl-err">Couldn’t start pairing: ${escapeHtml(begin.error || 'failed')}</p>`; return; }
+
+  const mdnsWarn = begin.mdnsOk ? '' : '<p class="wl-warn small" style="color:#c77">⚠ Wi-Fi discovery looks blocked on this network — if the phone doesn’t connect, use “Enter code manually”.</p>';
+  body.innerHTML = `
+    <p class="small">On your phone: <b>Settings → Developer options → Wireless debugging → Pair device with QR code</b>, then point it at this code.</p>
+    <img class="wl-qr" src="${begin.qr}" alt="ADB pairing QR" style="width:240px;height:240px;image-rendering:pixelated;margin:10px auto;display:block;border-radius:8px;background:#fff;padding:8px" />
+    <p class="wl-status muted small">Waiting for your phone to scan…</p>
+    ${mdnsWarn}
+    <p style="margin-top:6px"><button type="button" class="btn ghost wl-manual">Enter code manually instead</button></p>`;
+  const statusEl = body.querySelector('.wl-status');
+  unsub = window.api.onWirelessStatus((p) => {
+    if (!statusEl || closed) return;
+    if (p.phase === 'waiting') statusEl.textContent = 'Waiting for your phone to scan…';
+    else if (p.phase === 'pairing') statusEl.textContent = 'Phone found — pairing…';
+    else if (p.phase === 'connecting') statusEl.textContent = 'Paired — connecting…';
+  });
+  body.querySelector('.wl-manual').addEventListener('click', showManual);
+
+  let res = {};
+  try { res = await window.api.wirelessAwait(); } catch (e) { res = { ok: false, error: (e && e.message) }; }
+  if (closed || res.cancelled) return;   // user closed, or switched to manual entry
+  if (res.ok) finishOk(res.address);
+  else {
+    body.innerHTML = `<p class="wl-err">${escapeHtml(res.error || 'Pairing failed.')}</p>
+      <p style="margin-top:6px"><button type="button" class="btn ghost wl-manual2">Enter code manually</button></p>`;
+    body.querySelector('.wl-manual2').addEventListener('click', showManual);
+  }
 }
 
 function renderPhoneAlbums() {
@@ -9337,11 +9634,42 @@ async function enterRenameWithPhoneFiles(staged) {
   // a re-pull or a crash+relaunch doesn't lose your batching work.
   try { const drafts = await window.api.getDrafts(); const restored = applyDraftsToClips(drafts || {}); if (restored) showToast(`Restored your names on ${restored} clip${restored !== 1 ? 's' : ''} ✓`, 4000); } catch { /* ignore */ }
   buildRenameStep();
+  // The staged files live on disk in the temp folders — naming + the final copy both run
+  // off those, NOT the phone. Remember this as a resumable session so you can carry on
+  // WITHOUT plugging the phone back in (relaunch reopens it; Home shows a "continue" card).
+  saveSession({ view: 'phone', step: 1, sourcePath: phoneStagingDests().video, sourceDesc: 'Phone media', sourceKind: 'phone' });
   const nPh = state.scannedFiles.filter((c) => c.isPhoto).length;
   const nVid = state.scannedFiles.length - nPh;
   showToast(nVid
     ? `Photos pulled ✓ — name what you like, then Continue to copy your ${nVid} video${nVid !== 1 ? 's' : ''} off the phone.`
     : `${state.scannedFiles.length} pulled off your phone — name them, then continue ✓`, 6000);
+}
+
+// The phone-staged files sit locally in the temp folders after a pull — so naming/organizing
+// them needs NO phone. Re-scan those folders to recover unfinished staged media. Videos live
+// in "_Phone Video Temp" (session-specific — MOVED out when you send them to Uncompressed, so
+// its contents mean "unfinished"); photos in "Photos Temp" are COPIED out and can linger, so
+// they only ride along, they don't by themselves signal unfinished work.
+async function scanPhoneStagedDir(dir) {
+  if (!dir) return [];
+  let r; try { r = await window.api.scanVideos(dir); } catch { r = null; }
+  return (r && r.ok && Array.isArray(r.files)) ? r.files : [];
+}
+async function scanPhoneStaged() {
+  const { photo, video } = phoneStagingDests();
+  const videos = await scanPhoneStagedDir(video);
+  const photos = await scanPhoneStagedDir(photo);
+  return { videos, photos, unfinished: videos.length };   // `unfinished` drives the Home card
+}
+// Continue naming/organizing already-pulled phone media WITHOUT the phone connected.
+// Returns false when nothing's staged (already finished) so callers fall back to Home.
+async function resumePhoneStaged() {
+  const { videos, photos } = await scanPhoneStaged();
+  const seen = new Set();
+  const staged = [...videos, ...photos].filter((f) => { const k = f.sourcePath || `${f.name}|${f.size}`; return seen.has(k) ? false : (seen.add(k), true); });
+  if (!staged.length) return false;
+  await enterRenameWithPhoneFiles(staged);
+  return true;
 }
 
 // Jump straight to the Name & copy (rename) flow from any screen.
@@ -10181,6 +10509,8 @@ async function openFinalize() {
 
   const src = await window.api.getFinalizeSource();
   finScan.dir = src || '';
+  // Remember we're organizing → next launch reopens Organize straight away.
+  saveSession({ view: 'finalize', step: null, sourcePath: src || '', sourceDesc: 'Organize', sourceKind: 'finalize' });
   $('finSourceLine').textContent = src || 'Not chosen yet';
   if (src) finRunScan();
   else {

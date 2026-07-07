@@ -588,13 +588,21 @@ function applyAiResult(i, res, mode = 'all') {
   if (!clip || !res) return { ok: false };
   const capWords = (s, n) => slug(s).split('-').filter(Boolean).slice(0, n).join('-');
   const onlyEmpty = mode === 'empty';
-  let newSubject = '';
   // Only touch the subject when the user allows it (default: keep my subjects,
   // AI just fills description + metadata). An empty subject is still fillable.
   if (res.subject && (aiCfg.updateSubject || !clip.subject) && (!onlyEmpty || !clip.subject)) {
     const subj = capWords(res.subject, 3);
-    if (subjectsCache.map((s) => s.toLowerCase()).includes(subj)) { clip.subject = subj; clip._aiSubject = subj; rememberSubject(subj); }
-    else if (subj) newSubject = subj;
+    // The AI naming a clip with a fresh subject ("snow-walking") is the whole point —
+    // just USE it. We used to queue a confirm-question for every subject that wasn't
+    // already in your history, which meant hundreds of near-identical "is this a new
+    // subject?" prompts on a first import. Now the only cleverness is snapping a new
+    // subject onto one you ALREADY use when it's the same thing spelled differently
+    // (snow-walking == snow walking == snowwalking) so your vocabulary stays tidy
+    // instead of sprouting duplicates. A genuinely new subject is simply accepted.
+    if (subj) {
+      const finalSubj = matchKnownSubject(subj) || subj;
+      clip.subject = finalSubj; clip._aiSubject = finalSubj; rememberSubject(finalSubj);
+    }
   }
   if (res.shotType) clip.shotType = slug(res.shotType);   // kept for metadata/keywords even if folded into the description
   if ((res.description || res.shotType) && (!onlyEmpty || !clip.description)) {
@@ -621,7 +629,19 @@ function applyAiResult(i, res, mode = 'all') {
   syncRowInputs([i]);
   refreshNames();
   if (clip.subject || clip.description) flashNamed(i);
-  return { ok: true, newSubject, newCategory, note: res.note || '', switchedTo: res.switchedTo || '' };
+  return { ok: true, newCategory, note: res.note || '', switchedTo: res.switchedTo || '' };
+}
+
+// Snap an AI-generated subject onto one you ALREADY use when it's the same thing spelled
+// differently (canonical form ignores case/spaces/hyphens: snow-walking == snowwalking).
+// Returns the existing spelling to reuse, or '' when the subject is genuinely new (which
+// is fine — it's used as-is, no confirmation). Keeps the subject vocabulary from sprouting
+// near-duplicates without ever nagging the user about a perfectly good new subject.
+function matchKnownSubject(subj) {
+  const want = canon(subj);
+  if (!want) return '';
+  for (const s of subjectsCache) { if (canon(s) === want) return s; }
+  return '';
 }
 
 // Watchdog: guarantee an AI loop ALWAYS advances even if one call wedges (a model
@@ -981,7 +1001,8 @@ async function aiAnalyzeSelected() {
       okCount += 1;
       if (r.note) visionNote = r.note;
       if (r.switchedTo) aiCfg.model = r.switchedTo;   // broken vision model was swapped — stop re-trying it
-      if (r.newSubject) addAiQuestion({ type: 'subject', clipIndex: i, suggested: r.newSubject });
+      // New subjects are auto-accepted now (see applyAiResult) — no confirm flood. Only a
+      // genuinely new top-level CATEGORY still asks, since that creates a new root folder.
       if (r.newCategory) addAiQuestion({ type: 'category', clipIndex: i, field: 'category', suggested: r.newCategory });
     } else { failCount += 1; if (r && r.error) lastErr = r.error; logIssue('AI analyze', `${(state.scannedFiles[i] || {}).name || 'clip'}: ${(r && r.error) || 'no response'}`); }
   };
@@ -1223,139 +1244,150 @@ function showFeedbackExportDialog() {
   load(false);
 }
 
-// Review the AI's pending questions, one per step. Handles all question types:
-//  - subject / category : confirm a brand-new value (use new / existing / custom / skip)
-//  - rule               : remember a learned preference, or discard it
-// Resolves each question as it's answered; confirmed rules are committed to memory
-// in one batch at the end. Opened only via the ⚠ indicator → Review.
+// Review the AI's pending questions on ONE page — no more clicking Next through
+// hundreds of near-identical prompts. Everything the AI is unsure about is grouped and
+// shown at once, with sensible defaults already selected, so the common case is a single
+// glance + "Apply". Handles all question types:
+//  - confirm            : a clip the AI named — tweak subject/description inline (optional)
+//  - subject / category : a new value, GROUPED by suggestion so "use 'snow-walking' for
+//                         these 12 clips" is one decision, not twelve
+//  - rule               : remember a learned preference (checkbox)
+// Nothing is committed until you hit Apply; closing/Cancel leaves the questions pending.
+let aiReviewDlId = 0;
 function showAiReview() {
-  const items = aiQuestions.slice();   // snapshot of what to walk through
+  const items = aiQuestions.slice();   // snapshot to resolve on Apply
   if (!items.length) { showToast('No AI questions right now'); return; }
-  let step = 0;
-  const confirmedRules = [];
+  const rules = items.filter((it) => it.type === 'rule');
+  const confirms = items.filter((it) => it.type === 'confirm');
+  const valueItems = items.filter((it) => it.type === 'subject' || it.type === 'category');
+  // Collapse identical new-value suggestions into one row (one decision → many clips).
+  const groups = [];
+  const groupOf = new Map();
+  for (const it of valueItems) {
+    const key = `${it.type}|${it.field || ''}|${(it.suggested || '').toLowerCase()}`;
+    let g = groupOf.get(key);
+    if (!g) { g = { type: it.type, field: it.field, suggested: it.suggested, items: [] }; groupOf.set(key, g); groups.push(g); }
+    g.items.push(it);
+  }
+  const thumbImg = (clip) => (clip && clip.posterUrl ? `<img class="wiz-thumb" src="${escapeAttr(clip.posterUrl)}" alt="" />` : '<span class="wiz-thumb wiz-thumb-ph"></span>');
+
+  // --- Group rows (new subject / category) — radios: use suggestion / type instead / skip.
+  const dl = `airev-dl-${(aiReviewDlId += 1)}`;
+  const groupsHtml = groups.map((g, gi) => {
+    const kind = g.type === 'category' ? 'category' : 'subject';
+    const n = g.items.length;
+    return `<div class="airev-row" data-group="${gi}">
+      <div class="airev-row-hd"><b>${escapeHtml(g.suggested)}</b> <span class="muted small">— new ${kind} · ${n} clip${n !== 1 ? 's' : ''}</span></div>
+      <div class="airev-opts">
+        <label class="fin-radio"><input type="radio" name="airev-g${gi}" value="use" checked /> <span>Use it</span></label>
+        <label class="fin-radio"><input type="radio" name="airev-g${gi}" value="custom" /> <span>Use instead:</span> <input type="text" class="ai-input airev-custom" list="${dl}" placeholder="type a ${kind}" /></label>
+        <label class="fin-radio"><input type="radio" name="airev-g${gi}" value="skip" /> <span>Leave blank</span></label>
+      </div>
+    </div>`;
+  }).join('');
+  const existingVals = [...new Set([...(subjectsCache || []), ...Object.values(fieldHistoryCache || {}).flat()])].filter(Boolean);
+  const datalist = groups.length ? `<datalist id="${dl}">${existingVals.map((o) => `<option value="${escapeAttr(o)}"></option>`).join('')}</datalist>` : '';
+
+  // --- Confirm rows (clips the AI named) — inline subject/description, thumbnail only
+  // (a compact grid instead of a one-video-at-a-time carousel).
+  const confirmsHtml = confirms.map((it) => {
+    const clip = state.scannedFiles[it.clipIndex];
+    return `<div class="airev-clip" data-qid="${it.id}">
+      ${thumbImg(clip)}
+      <div class="airev-clip-fields">
+        <div class="airev-clip-name muted small">${escapeHtml(clip ? clip.name : '')}</div>
+        <input type="text" class="ai-input airev-cf-subject" value="${escapeAttr(clip ? (clip.subject || '') : '')}" placeholder="subject" />
+        <input type="text" class="ai-input airev-cf-desc" value="${escapeAttr(clip ? (clip.description || '') : '')}" placeholder="description" />
+      </div>
+    </div>`;
+  }).join('');
+
+  // --- Rule rows (things it learned) — a checkbox each, editable text.
+  const rulesHtml = rules.map((it, ri) => `<div class="airev-rule" data-qid="${it.id}">
+      <label class="fin-radio"><input type="checkbox" class="airev-rule-on" data-ri="${ri}" checked /> <span>Remember:</span></label>
+      <input type="text" class="ai-input airev-rule-text" value="${escapeAttr(it.rule)}" />
+      ${it.example ? `<div class="airev-rule-eg muted small">e.g. ${escapeHtml(it.example)}</div>` : ''}
+    </div>`).join('');
+
+  const section = (title, sub, inner) => inner
+    ? `<div class="airev-sec"><div class="airev-sec-hd">${title}${sub ? ` <span class="muted small">${sub}</span>` : ''}</div>${inner}</div>`
+    : '';
+
   const ov = document.createElement('div');
   ov.className = 'modal-overlay';
-  ov.innerHTML = `<div class="modal-card ai-wiz">
+  ov.innerHTML = `<div class="modal-card ai-wiz airev-card">
     <div class="illo mob-illo">${ILLO_ASK}</div>
-    <div class="ai-hd" style="margin-top:2px"><div class="ai-hd-text"><h3>Review AI questions</h3><p class="muted small">The AI only asks when it's unsure — confirm a new subject/category, or whether to remember something it learned.</p></div></div>
-    <div class="wiz-stepno muted small"></div>
-    <div class="wiz-body"></div>
+    <div class="ai-hd" style="margin-top:2px"><div class="ai-hd-text"><h3>Review AI questions</h3><p class="muted small">Everything the AI wasn't sure about — the defaults are already picked, so you can usually just hit Apply.</p></div></div>
+    <div class="airev-body">
+      ${section('Confirm clips', confirms.length ? `${confirms.length} named` : '', confirmsHtml)}
+      ${section('New values', groups.length ? `${groups.length}` : '', groupsHtml)}
+      ${section('Remember', rules.length ? `${rules.length}` : '', rulesHtml)}
+    </div>
+    ${datalist}
     <div class="modal-actions">
-      <button type="button" class="btn wiz-back">Back</button>
-      <button type="button" class="btn primary wiz-next">Next</button>
+      <button type="button" class="btn primary airev-apply">Apply${items.length > 1 ? ` all (${items.length})` : ''}</button>
+      <button type="button" class="btn airev-cancel">Cancel</button>
     </div></div>`;
   document.body.appendChild(ov);
   const $w = (s) => ov.querySelector(s);
-  const body = $w('.wiz-body');
-  let wizSelect = null;   // custom dropdown for "use an existing subject/category"
-  // Live looping preview of the clip being reviewed (decode-session-safe: only one
-  // <video> at a time — we free the grid's active video first).
-  let reviewVid = null;
-  function unmountReviewVideo() { if (reviewVid) { try { reviewVid.pause(); reviewVid.removeAttribute('src'); reviewVid.load(); reviewVid.remove(); } catch { /* ignore */ } reviewVid = null; } }
-  async function mountReviewVideo(clip, holder) {
-    unmountReviewVideo();
-    if (activeVideoIndex !== null) teardownVideo(activeVideoIndex);   // never two HEVC decoders
-    if (!clip || !holder) return;
-    const url = await window.api.mediaUrl(clip.sourcePath);
-    if (!holder.isConnected) return;   // stepped away while awaiting
-    const v = document.createElement('video');
-    v.className = 'wiz-video'; v.muted = true; v.loop = true; v.autoplay = true; v.playbackRate = currentSpeed;
-    v.addEventListener('error', () => { /* keep the poster fallback */ });
-    v.src = url;
-    holder.innerHTML = ''; holder.appendChild(v);
-    reviewVid = v;
-    v.play().catch(() => { /* autoplay race */ });
-  }
-  const close = () => { unmountReviewVideo(); ov.remove(); };
-  const thumbImg = (clip) => (clip && clip.posterUrl ? `<img class="wiz-thumb" src="${escapeAttr(clip.posterUrl)}" alt="" />` : '');
+  const close = () => ov.remove();
 
-  function render() {
-    const it = items[step];
-    $w('.wiz-stepno').textContent = `${step + 1} of ${items.length}`;
-    if (it.type === 'rule') {
-      unmountReviewVideo();   // no clip for rule steps
-      body.innerHTML = `
-        <div class="wiz-rule">
-          <p class="wiz-rule-q">Want me to remember this?</p>
-          <input type="text" class="wiz-rule-text ai-input" value="${escapeAttr(it.rule)}" />
-          ${it.example ? `<div class="wiz-rule-eg muted small">e.g. ${escapeHtml(it.example)}</div>` : ''}
-          <div class="wiz-options">
-            <label class="fin-radio"><input type="radio" name="wiz" value="remember" checked /> <span>Remember it (add to Memory)</span></label>
-            <label class="fin-radio"><input type="radio" name="wiz" value="discard" /> <span>Don't remember</span></label>
-          </div>
-        </div>`;
-    } else if (it.type === 'confirm') {
+  async function applyAll() {
+    const confirmedRules = [];
+    // Rules
+    rules.forEach((it, ri) => {
+      const on = ov.querySelector(`.airev-rule-on[data-ri="${ri}"]`);
+      if (on && on.checked) { const box = on.closest('.airev-rule'); const t = (box.querySelector('.airev-rule-text').value || '').trim(); if (t) confirmedRules.push({ text: t, example: it.example || '' }); }
+      resolveAiQuestion(it.id);
+    });
+    // Confirm clips — apply inline edits (corrections teach the AI)
+    const touched = [];
+    confirms.forEach((it) => {
       const clip = state.scannedFiles[it.clipIndex];
-      body.innerHTML = `
-        <div class="wiz-clip"><span class="wiz-media">${thumbImg(clip)}</span><span class="wiz-name">${escapeHtml(clip ? clip.name : '')}</span></div>
-        <p class="muted small" style="margin:4px 0 8px">The AI named this — fix anything wrong (your corrections teach it), or just hit Next if it's right.</p>
-        <label class="pref-label">Subject</label><input type="text" class="ai-input wiz-cf-subject" value="${escapeAttr(clip ? (clip.subject || '') : '')}" />
-        <label class="pref-label" style="margin-top:8px">Description</label><input type="text" class="ai-input wiz-cf-desc" value="${escapeAttr(clip ? (clip.description || '') : '')}" />`;
-      mountReviewVideo(clip, $w('.wiz-media'));
-    } else {
-      const clip = state.scannedFiles[it.clipIndex];
-      const kind = it.type === 'category' ? 'category' : 'subject';
-      const existing = it.type === 'category' ? (fieldHistoryCache[it.field || 'category'] || []) : subjectsCache;
-      body.innerHTML = `
-        <div class="wiz-clip"><span class="wiz-media">${thumbImg(clip)}</span><span class="wiz-name">${escapeHtml(clip ? clip.name : '')}</span></div>
-        <div class="wiz-options">
-          <label class="fin-radio"><input type="radio" name="wiz" value="new" checked /> <span>Use new ${kind}: <b>${escapeHtml(it.suggested)}</b></span></label>
-          <label class="fin-radio"><input type="radio" name="wiz" value="existing" /> <span>Use an existing ${kind}</span> <span class="wiz-existing-mount"></span></label>
-          <label class="fin-radio"><input type="radio" name="wiz" value="custom" /> <span>Type my own</span> <input type="text" class="wiz-custom ai-input" placeholder="${kind}" /></label>
-          <label class="fin-radio"><input type="radio" name="wiz" value="skip" /> <span>Skip (leave blank)</span></label>
-        </div>`;
-      wizSelect = createSelect({ value: existing[0] || '', placeholder: '(none yet)', empty: '(none yet)', style: 'min-width:150px' });
-      wizSelect.setOptions(existing.map((s) => ({ value: s, label: s })));
-      $w('.wiz-existing-mount').appendChild(wizSelect.el);
-      mountReviewVideo(clip, $w('.wiz-media'));
-    }
-    $w('.wiz-back').disabled = step === 0;
-    $w('.wiz-next').textContent = step === items.length - 1 ? 'Finish' : 'Next';
-  }
-  function applyCurrent() {
-    const it = items[step];
-    if (it.type === 'rule') {
-      const choice = ov.querySelector('input[name="wiz"]:checked').value;
-      if (choice === 'remember') { const t = ($w('.wiz-rule-text').value || '').trim(); if (t) confirmedRules.push({ text: t, example: it.example || '' }); }
-    } else if (it.type === 'confirm') {
-      const clip = state.scannedFiles[it.clipIndex];
-      if (clip) {
-        const ns = slug($w('.wiz-cf-subject').value);
-        const nd = slug($w('.wiz-cf-desc').value);
+      const box = ov.querySelector(`.airev-clip[data-qid="${it.id}"]`);
+      if (clip && box) {
+        const ns = slug(box.querySelector('.airev-cf-subject').value);
+        const nd = slug(box.querySelector('.airev-cf-desc').value);
         if (ns !== (clip.subject || '')) { recordAiEdit(clip, 'subject', ns); clip.subject = ns; if (ns) rememberSubject(ns); }
         if (nd !== (clip.description || '')) { recordAiEdit(clip, 'description', nd); clip.description = nd; if (nd) rememberDescription(nd); }
-        syncRowInputs([it.clipIndex]);
+        touched.push(it.clipIndex);
       }
-    } else {
-      const choice = ov.querySelector('input[name="wiz"]:checked').value;
-      const clip = state.scannedFiles[it.clipIndex];
+      resolveAiQuestion(it.id);
+    });
+    // New-value groups — one choice fans out to every clip in the group
+    groups.forEach((g, gi) => {
+      const sel = ov.querySelector(`input[name="airev-g${gi}"]:checked`);
+      const choice = sel ? sel.value : 'use';
       let value = '';
-      if (choice === 'new') value = it.suggested;
-      else if (choice === 'existing') value = (wizSelect && wizSelect.value) || '';
-      else if (choice === 'custom') value = slug($w('.wiz-custom').value);
-      if (clip && choice !== 'skip' && value) {
-        if (it.type === 'category') { clip[it.field || 'category'] = value; rememberField(it.field || 'category', value); }
-        else { clip.subject = value; rememberSubject(value); }
-        syncRowInputs([it.clipIndex]);
+      if (choice === 'use') value = g.suggested;
+      else if (choice === 'custom') value = slug((ov.querySelector(`.airev-row[data-group="${gi}"] .airev-custom`) || {}).value || '');
+      for (const it of g.items) {
+        const clip = state.scannedFiles[it.clipIndex];
+        if (clip && choice !== 'skip' && value) {
+          if (g.type === 'category') { clip[g.field || 'category'] = value; rememberField(g.field || 'category', value); }
+          else { clip.subject = value; rememberSubject(value); }
+          touched.push(it.clipIndex);
+        }
+        resolveAiQuestion(it.id);
       }
-    }
-    resolveAiQuestion(it.id);
-  }
-  $w('.wiz-back').addEventListener('click', () => { if (step > 0) { step -= 1; render(); } });
-  $w('.wiz-next').addEventListener('click', async () => {
-    applyCurrent();
-    if (step < items.length - 1) { step += 1; render(); return; }
+    });
+    if (touched.length) syncRowInputs([...new Set(touched)]);
     refreshNames();
     close();
     if (confirmedRules.length) {
       const r = await window.api.aiAddMemories(confirmedRules);
       if (r && r.ok && Array.isArray(r.memories)) aiCfg.memories = r.memories;
     }
-    maybeFlushEdits(true);   // learn from any corrections made in the confirm steps
+    maybeFlushEdits(true);   // learn from any corrections made here
     showToast('All caught up ✓');
-  });
-  ov.addEventListener('mousedown', (e) => { if (e.target === ov) { refreshNames(); close(); } });
-  render();
+  }
+  $w('.airev-apply').addEventListener('click', applyAll);
+  $w('.airev-cancel').addEventListener('click', close);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  // Typing in a "use instead" field selects its radio (so a typed value isn't ignored).
+  ov.querySelectorAll('.airev-custom').forEach((inp) => inp.addEventListener('input', () => {
+    const r = inp.closest('.airev-opts').querySelector('input[value="custom"]'); if (r) r.checked = true;
+  }));
 }
 
 // Full editor for one memory — write freely, optionally Refine with AI (compacts
@@ -1547,7 +1579,6 @@ function runAiOnClip(idx) {
     clearTask('ai');
     if (r && r.ok) {
       if (r.switchedTo) aiCfg.model = r.switchedTo;
-      if (r.newSubject) addAiQuestion({ type: 'subject', clipIndex: idx, suggested: r.newSubject });
       if (r.newCategory) addAiQuestion({ type: 'category', clipIndex: idx, field: 'category', suggested: r.newCategory });
       showToast(aiQuestions.length ? 'AI done · question to review ⚠' : 'AI done ✓');
       if (r.note) showToast(r.note, 8000);

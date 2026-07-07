@@ -547,6 +547,13 @@ ipcMain.handle('disk:freeSpace', async (_evt, folderPath) => {
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
 });
 
+// Does a path still exist + is it readable? Used by resume-on-launch to decide whether
+// last session's source (a card that may have been unplugged, or a folder) is reachable
+// before re-entering that flow.
+ipcMain.handle('path:exists', async (_evt, p) => {
+  try { if (!p) return false; await fsp.access(String(p)); return true; } catch { return false; }
+});
+
 // Lightweight index of imported source files (key = name+size) so a re-inserted
 // card's already-copied clips can be flagged and skipped. Capped to 30k entries.
 ipcMain.handle('imports:get', () => Object.keys(config.importIndex || {}));

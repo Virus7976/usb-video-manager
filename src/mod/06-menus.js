@@ -745,6 +745,7 @@ function showSettingsHub() {
     { ic: '🗂️', title: 'Organizing fields', sub: 'The metadata fields used to file footage', go: showOrganizeFields },
     { ic: '📂', title: 'Filing rules', sub: 'Where footage goes by subject / descriptor', go: () => showRoutingRules() },
     { ic: '🫥', title: 'People & faces', sub: 'Manage recognized people', go: showPeopleManager },
+    { ic: '📶', title: 'Pair phone (Wi-Fi)', sub: 'Scan a QR to back up your phone with no cable', go: () => showWirelessPairModal() },
     { ic: '🧭', title: 'Setup wizard', sub: 'Re-run guided onboarding (folders, AI, faces)', go: () => showSetupWizard() }
   ];
   ov.innerHTML = `<div class="modal-card settings-hub">

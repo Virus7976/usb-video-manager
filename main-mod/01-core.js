@@ -516,6 +516,10 @@ function createWindow() {
     minWidth: 600,
     minHeight: 560,
     show: false,
+    // The real app icon (512²) for the window + taskbar + Alt-Tab while running. The
+    // packaged .exe can't be re-iconed on this build box (needs wine/rcedit), so setting
+    // it here is what actually shows the brand icon instead of the generic Electron one.
+    icon: nativeImage.createFromPath(path.join(__dirname, 'src', 'assets', 'app-icon.png')),
     backgroundColor: isDark() ? '#202020' : '#f3f3f3',
     backgroundMaterial: 'mica',            // native Win11 Mica backdrop
     title: 'USB / SD Auto-Action',

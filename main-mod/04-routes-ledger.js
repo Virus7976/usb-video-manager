@@ -19,6 +19,7 @@ function createPreviewWindow() {
   previewWindow = new BrowserWindow({
     width: 540, height: 360, minWidth: 280, minHeight: 180,
     title: 'Preview', backgroundColor: '#000',
+    icon: nativeImage.createFromPath(path.join(__dirname, 'src', 'assets', 'app-icon.png')),
     backgroundMaterial: 'auto',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

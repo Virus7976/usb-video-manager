@@ -460,6 +460,7 @@ function addAiQuestion(q) {
   aiQuestions.push({ id: `q${(aiQid += 1)}`, _key, field: q.type === 'category' ? (q.field || 'category') : q.field, ...q });
   if ((q.type === 'subject' || q.type === 'category') && typeof q.clipIndex === 'number') markClipQuestion(q.clipIndex, true);
   renderAiHazard();
+  saveAiQuestions();
 }
 function resolveAiQuestion(id) {
   const q = aiQuestions.find((x) => x.id === id);
@@ -468,6 +469,45 @@ function resolveAiQuestion(id) {
   if ((q.type === 'subject' || q.type === 'category') && typeof q.clipIndex === 'number'
       && !aiQuestions.some((x) => x.clipIndex === q.clipIndex)) markClipQuestion(q.clipIndex, false);
   renderAiHazard();
+  saveAiQuestions();
+}
+
+// --- the review queue survives a restart -------------------------------------------------
+//
+// aiQuestions was pure memory. The AI would finish 100 clips with "Ask me to confirm" on, and
+// quitting before you got to the review lost every one of them: the names stayed, but the review
+// pass you were about to do was simply gone, with nothing to tell you it had existed.
+//
+// Persisted by clipKey (name__size), NEVER by clipIndex. An index is a position in
+// state.scannedFiles — it does not survive a rescan, and restoring by index would silently
+// re-attach "is this a new category?" to a completely different clip.
+function saveAiQuestions() {
+  try {
+    window.api.saveAiQueue(aiQuestions.map((q) => {
+      const clip = typeof q.clipIndex === 'number' ? state.scannedFiles[q.clipIndex] : null;
+      return { type: q.type, clipKey: clip ? clipKey(clip) : '', field: q.field || '', suggested: q.suggested || '', rule: q.rule || '' };
+    }));
+  } catch { /* non-fatal — the in-memory queue still drives this session */ }
+}
+
+// Rehydrate after a scan, resolving each question back to the clip it was actually about.
+// A question whose clip is no longer on the card is DROPPED — it has nothing to ask about.
+async function restoreAiQuestions() {
+  let saved = [];
+  try { saved = await window.api.getAiQueue() || []; } catch { return; }
+  if (!saved.length) return;
+  const byKey = new Map();
+  state.scannedFiles.forEach((c, i) => byKey.set(clipKey(c), i));
+
+  aiQuestions = [];
+  for (const q of saved) {
+    if (q.clipKey && !byKey.has(q.clipKey)) continue;                     // that clip isn't here any more
+    const clipIndex = q.clipKey ? byKey.get(q.clipKey) : undefined;
+    addAiQuestion({ type: q.type, clipIndex, field: q.field || undefined, suggested: q.suggested || undefined, rule: q.rule || undefined });
+  }
+  if (aiQuestions.length) {
+    showToast(`${aiQuestions.length} AI question${aiQuestions.length !== 1 ? 's' : ''} still waiting for you.`, 4500);
+  }
 }
 function markClipQuestion(i, on) {
   const clip = state.scannedFiles[i];
@@ -583,14 +623,120 @@ function toggleHazardPop() {
 // Apply an AI result {subject,description,shotType,category} to a clip. Subject /
 // category are auto-applied ONLY if already known; new ones are returned for the
 // user to confirm (don't invent silently).
+// Has the card been pulled out from under us?
+//
+// Nothing detected this. Yanking a card mid-analyse left the grid full of clips whose files no
+// longer existed, and every remaining one failed on its own — with aiCallGuard reporting each as
+// "Took too long — skipped this clip", a confidently wrong diagnosis of a completely different
+// problem. We ask the moment a clip fails, so the real cause is reported ONCE, and the run stops
+// instead of burning through the rest of the card producing nonsense.
+//
+// Checked on demand rather than relying on the drive:removed event, because auto-poll is OFF by
+// default in this app — the event alone would never fire for most users.
+let cardGoneReported = false;
+async function cardIsGone() {
+  if (!state.scannedDrive || state.scannedDrive === '__phone__') return false;
+  try { return !(await window.api.drivePresent(state.scannedDrive)); } catch { return false; }
+}
+
+// Stop everything in flight and say why. Idempotent — a run with 60 clips left will hit this
+// repeatedly, and the user should hear it once.
+function reportCardGone() {
+  aiAborted = true;
+  faceScanAborted = true;
+  if (cardGoneReported) return;
+  cardGoneReported = true;
+  clearTask('ai'); clearTask('faces');
+  clearAllAnalyzing();
+  showToast('The card was removed — stopping. Everything named so far is saved; plug it back in and pick up where you left off.', 9000);
+  logIssue('Card', `Removed mid-run (${state.scannedDrive}) — analysis stopped.`);
+}
+
+// Put the failure ON the card, with its reason in the tooltip. A count in a toast tells you 12
+// clips failed; it does not tell you WHICH — and with 100 clips that's the only question you have.
+function markClipFailed(i, why) {
+  const card = document.querySelector(`.rename-card[data-i="${i}"]`);
+  if (!card) return;
+  card.classList.toggle('ai-failed', !!why);
+  if (why) card.dataset.aiError = why; else delete card.dataset.aiError;
+  const prev = card.querySelector('.rename-preview');
+  if (prev) { if (why) prev.title = `AI couldn’t analyse this clip — ${why}`; else prev.removeAttribute('title'); }
+}
+
+// The clips this run couldn't analyze, in list order.
+function aiFailedClips() {
+  return state.scannedFiles.map((c, i) => ({ c, i })).filter(({ c }) => c && c._aiFailed);
+}
+
+// Offer to retry ONLY the clips that failed.
+//
+// Before this, a failure was a counter and a line in an in-memory log (capped at 400, gone on
+// restart, buried under Help → Activity log). With 100 clips there was no way to see which ones
+// failed, why, or to retry just those — the only recourse was re-running the whole batch, which
+// re-paid the full vision cost on the ones that had already worked.
+async function offerRetryFailed() {
+  const failed = aiFailedClips();
+  if (!failed.length) return;
+  // Group identical reasons so the dialog says something useful rather than listing 12 lines of
+  // the same timeout.
+  const byReason = {};
+  for (const { c } of failed) { const k = c._aiError || 'no response'; byReason[k] = (byReason[k] || 0) + 1; }
+  const reasons = Object.entries(byReason).sort((a, b) => b[1] - a[1])
+    .map(([why, n]) => `• ${escapeHtml(why)}${n > 1 ? ` — ${n} clips` : ''}`).join('<br>');
+
+  const ok = await confirmDialog(
+    `Retry the ${failed.length} clip${failed.length !== 1 ? 's' : ''} that failed?`,
+    `The rest were named and are untouched — only these are re-analysed.<br><br>${reasons}`,
+    'Retry those', 'Leave them'
+  );
+  if (!ok) return;
+
+  // Retry EXACTLY the failed clips, then put the user's selection back the way they left it —
+  // silently changing what's ticked is how a "helpful" retry loses someone's work.
+  const prevSelected = state.scannedFiles.map((c) => !!c.selected);
+  state.scannedFiles.forEach((c) => { c.selected = false; });
+  for (const { c } of failed) { c.selected = true; delete c._aiFailed; delete c._aiError; }
+  syncRowInputs(failed.map(({ i }) => i));
+  try {
+    // 'all' — a failed clip has no result to preserve. Preset, so the user isn't re-asked about
+    // face scanning / the same-shoot offer / the mode they have literally just answered.
+    await aiAnalyzeSelected({ mode: 'all' });
+  } finally {
+    state.scannedFiles.forEach((c, i) => { c.selected = prevSelected[i]; });
+    syncRowInputs(state.scannedFiles.map((_, i) => i));
+    updateBatchBar();
+  }
+}
+
+// Was this exact clip already analyzed AND named? The single answer to "is there work left to
+// do here", used to resume an interrupted run instead of redoing it.
+//
+// The observation is what the vision model SAW — it is written to clip-observations.json the
+// moment a clip is analyzed (keyed by the stable name__size fingerprint, so it survives a
+// replug and a new drive letter). Having one means the expensive part is already paid for.
+// Requiring a subject+description too means we never skip a clip whose analysis succeeded but
+// whose naming didn't — that one still has work left.
+function aiAlreadyAnalyzed(clip) {
+  if (!clip) return false;
+  const o = clipObsCache[clipKey(clip)];
+  return !!(o && o.obs && String(clip.subject || '').trim() && String(clip.description || '').trim());
+}
+
 function applyAiResult(i, res, mode = 'all') {
   const clip = state.scannedFiles[i];
   if (!clip || !res) return { ok: false };
   const capWords = (s, n) => slug(s).split('-').filter(Boolean).slice(0, n).join('-');
   const onlyEmpty = mode === 'empty';
-  // Only touch the subject when the user allows it (default: keep my subjects,
-  // AI just fills description + metadata). An empty subject is still fillable.
-  if (res.subject && (aiCfg.updateSubject || !clip.subject) && (!onlyEmpty || !clip.subject)) {
+  // "Start over — ignore what's there and name from scratch" has to actually DO that.
+  //
+  // The subject was gated on `aiCfg.updateSubject` (default FALSE: "keep my subjects, AI only
+  // fills description/metadata") regardless of the mode the user had just picked. Batch-rename-
+  // then-analyze is the normal flow, so every clip already HAS a subject by then — meaning Start
+  // over could never change a single subject, in any mode. It silently rewrote descriptions only.
+  // An explicit choice in the dialog beats a background default; the default still governs the
+  // other modes, where the user has NOT asked for their names to be replaced.
+  const startOver = mode === 'all';
+  if (res.subject && (startOver || aiCfg.updateSubject || !clip.subject) && (!onlyEmpty || !clip.subject)) {
     const subj = capWords(res.subject, 3);
     // The AI naming a clip with a fresh subject ("snow-walking") is the whole point —
     // just USE it. We used to queue a confirm-question for every subject that wasn't
@@ -955,29 +1101,36 @@ function showLedgerMatchDialog(matches, fresh) {
     ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(null); });
   });
 }
-async function aiAnalyzeSelected() {
+// `preset` runs the analysis with the dialogs already answered — used by "Retry failed", which
+// has just asked the user everything it needs and must not re-prompt for face scanning, the
+// same-shoot offer and the mode all over again.
+async function aiAnalyzeSelected(preset = null) {
   if (!requireAi()) return;
-  const idxs = state.scannedFiles.map((c, i) => (c.selected ? i : -1)).filter((i) => i >= 0);
+  let idxs = state.scannedFiles.map((c, i) => (c.selected ? i : -1)).filter((i) => i >= 0);
   if (!idxs.length) { showToast('Tick the clips you want to analyse first'); return; }
-  const faceChoice = await maybeOfferFaceScan(idxs);
-  if (faceChoice === 'cancel') return;
-  if (faceChoice === 'scan') {
-    // ONE pass: scan faces + let you confirm who's who, THEN keep going and name the
-    // clips with those people woven in (no more "scan, then Analyze again").
-    const sel = idxs.map((i) => state.scannedFiles[i]);
-    await scanFacesForClips(sel);
-    if (aiAborted) return;
-    // fall through to the naming phase below — people are now tagged on the clips.
+  if (!preset) {
+    const faceChoice = await maybeOfferFaceScan(idxs);
+    if (faceChoice === 'cancel') return;
+    if (faceChoice === 'scan') {
+      // ONE pass: scan faces + let you confirm who's who, THEN keep going and name the
+      // clips with those people woven in (no more "scan, then Analyze again").
+      const sel = idxs.map((i) => state.scannedFiles[i]);
+      await scanFacesForClips(sel);
+      if (aiAborted) return;
+      // fall through to the naming phase below — people are now tagged on the clips.
+    }
+    // Same-shoot detection: if these dates match a project filed before, offer to add
+    // them to it in the organize phase (tags clips with _ledgerRel for the dest map).
+    await maybeOfferLedgerProject(idxs);
   }
-  // Same-shoot detection: if these dates match a project filed before, offer to add
-  // them to it in the organize phase (tags clips with _ledgerRel for the dest map).
-  await maybeOfferLedgerProject(idxs);
   const hasContent = idxs.some((i) => {
     const c = state.scannedFiles[i];
     return c.subject || c.description || organizeFields.some((f) => c[f.id]);
   });
   const cachedCount = idxs.filter((i) => { const o = clipObsCache[clipKey(state.scannedFiles[i])]; return o && o.obs; }).length;
-  const dlg = await showAnalyzeDialog({ count: idxs.length, hasContent, cachedCount });
+  const dlg = preset
+    ? { mode: preset.mode || 'all', direction: preset.direction || aiRunDirection || '', remember: false, reuse: preset.reuse !== false }
+    : await showAnalyzeDialog({ count: idxs.length, hasContent, cachedCount });
   if (!dlg) return;
   const mode = dlg.mode;
   // Direction the user typed steers this run (folded into each clip's context)…
@@ -1004,8 +1157,45 @@ async function aiAnalyzeSelected() {
       // New subjects are auto-accepted now (see applyAiResult) — no confirm flood. Only a
       // genuinely new top-level CATEGORY still asks, since that creates a new root folder.
       if (r.newCategory) addAiQuestion({ type: 'category', clipIndex: i, field: 'category', suggested: r.newCategory });
-    } else { failCount += 1; if (r && r.error) lastErr = r.error; logIssue('AI analyze', `${(state.scannedFiles[i] || {}).name || 'clip'}: ${(r && r.error) || 'no response'}`); }
+      const okClip = state.scannedFiles[i];
+      if (okClip) { delete okClip._aiFailed; delete okClip._aiError; }   // a retry that worked clears the mark
+      markClipFailed(i, '');
+    } else {
+      failCount += 1;
+      const why = (r && r.error) || 'no response';
+      if (r && r.error) lastErr = r.error;
+      // MARK THE CLIP. A failure used to be a number in a counter and a line in an in-memory log
+      // (capped at 400, gone on restart, buried under Help → Activity log). With 100 clips you
+      // could not tell WHICH ones failed, WHY, or retry just those — the only move was to re-run
+      // the whole batch. The clip now carries its own failure, which is what makes "Retry failed"
+      // possible at all.
+      const clip = state.scannedFiles[i];
+      if (clip) { clip._aiFailed = true; clip._aiError = why; }
+      markClipFailed(i, why);
+      logIssue('AI analyze', `${(clip || {}).name || 'clip'}: ${why}`);
+    }
   };
+  cardGoneReported = false;   // a fresh run gets a fresh chance to report a removal
+
+  // RESUME. "Only name blank clips" used to still run the full vision pass on EVERY selected
+  // clip and then throw the answer away inside applyAiResult (which gates subject/description/
+  // category on being blank). So cancelling at clip 40 of 100 and hitting Analyze again
+  // re-watched all 100 — the work was remembered, and then redone anyway.
+  //
+  // A clip counts as already analyzed when we have the observation we extracted from it AND it
+  // got named. Re-running such a clip in `empty` mode can only reproduce the shotType and tags
+  // it already carries, so skipping it changes nothing except the time you get back.
+  if (mode === 'empty') {
+    const before = idxs.length;
+    idxs = idxs.filter((i) => !aiAlreadyAnalyzed(state.scannedFiles[i]));
+    const skipped = before - idxs.length;
+    if (skipped) {
+      setAiRunOrder(idxs);   // the live stage must show the work we're ACTUALLY doing
+      showToast(`Picking up where you left off — skipping ${skipped} clip${skipped !== 1 ? 's' : ''} already analyzed.`, 4000);
+    }
+    if (!idxs.length) { showToast('Every selected clip is already analyzed ✓', 3500); return; }
+  }
+
   let done = 0;
   if (aiCfg.multiPass) {
     // PHASE 1 — the vision model "looks" at EVERY clip first (it stays loaded the
@@ -1051,14 +1241,24 @@ async function aiAnalyzeSelected() {
   } else {
     for (const i of idxs) {
       if (aiAborted) break;
-      setTask('ai', aiModelLabel(), done + 1, idxs.length, 'analyzing', state.scannedFiles[i].name);
-      markClipAnalyzing(i, 'analyzing');
+      const clip = state.scannedFiles[i];
+      // Feed back what we already saw in this clip, when the user ticked Reuse. `dlg.reuse`
+      // used to be read in exactly ONE place — inside the multiPass branch — and multiPass is
+      // OFF by default, so for a default install the "Reuse earlier analysis of N clips
+      // (faster)" checkbox did literally nothing. It reuses now in both modes.
+      const cached = dlg.reuse ? (clipObsCache[clipKey(clip)] || {}).obs || '' : '';
+      setTask('ai', aiModelLabel(), done + 1, idxs.length, cached ? 'reusing' : 'analyzing', clip.name);
+      markClipAnalyzing(i, cached ? 'reusing' : 'analyzing');
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, mode, { quiet: true });
+      const r = await aiSuggestClip(i, mode, { observation: cached, quiet: true });
       queueQuestions(i, r);
       markClipAnalyzing(i, false);
       flushDraftSave();   // persist each named clip immediately — survives a mid-run crash
       done += 1;
+      // A failure is the moment to ask whether the CARD is still there. If it isn't, stop: every
+      // remaining clip would fail too, and each would be misreported as its own model timeout.
+      // eslint-disable-next-line no-await-in-loop
+      if (!(r && r.ok) && await cardIsGone()) { reportCardGone(); break; }
     }
   }
   clearAllAnalyzing();
@@ -1067,6 +1267,13 @@ async function aiAnalyzeSelected() {
   if (failCount && !okCount) showToast(`AI couldn't name any clips — ${lastErr || 'check the model in AI settings'}`, 6000);
   else if (failCount) showToast(`AI named ${okCount}, ${failCount} failed${lastErr ? ` (${lastErr})` : ''} · ${q} to review`, 5000);
   else { showToast(`AI analysed ${okCount} clip${okCount !== 1 ? 's' : ''}${q ? ` · ${q} to review` : ''}${mode === 'empty' ? ' (filled empty fields only)' : ''}`); pcNotify('AI analysis done', `Named ${okCount} clip${okCount !== 1 ? 's' : ''}${q ? ` · ${q} to review` : ''}.`); }
+  // OFFER THE RETRY. A toast saying "12 failed" is not actionable — it disappears, and the only
+  // recourse was re-running the whole batch (re-paying the vision cost on the 88 that worked).
+  // The clips carry their own failure now, so we can retry precisely those.
+  //
+  // `!preset` is what stops this recursing: a run STARTED by offerRetryFailed is itself a preset
+  // run, so a retry that fails again reports and stops rather than re-offering forever.
+  if (failCount && !aiAborted && !preset) await offerRetryFailed();
   if (visionNote) showToast(visionNote, 8000);   // tell the user we auto-swapped a broken vision model
   aiRunDirection = '';   // direction was for this run only (it’s saved to memory if requested)
   maybeFlushEdits(true);   // distil any edits the user made during/after this run
@@ -1420,11 +1627,11 @@ function showMemoryEditor(initial, onSave) {
     if (!text) { showToast('Write something first'); return; }
     if (!requireAi()) return;
     original = { text: q('.me-text').value, example: q('.me-eg').value };
-    const btn = q('.me-refine'); btn.disabled = true; q('.me-status').textContent = 'Refining…';
-    const r = await window.api.aiRefineMemory(text);
-    btn.disabled = false;
+    const btn = q('.me-refine'); q('.me-status').textContent = 'Refining…';
+    const r = await withBusyBtn(btn, null, () => window.api.aiRefineMemory(text),
+      (msg) => { q('.me-status').textContent = `Couldn’t refine: ${msg}`; });
     if (r && r.ok) { q('.me-text').value = r.text; if (r.example) q('.me-eg').value = r.example; q('.me-status').textContent = 'Refined ✓'; q('.me-revert').classList.remove('hidden'); }
-    else { q('.me-status').textContent = `Couldn’t refine: ${r ? r.error : 'please try again'}`; }
+    else if (r) { q('.me-status').textContent = `Couldn’t refine: ${r.error || 'please try again'}`; }
   });
   q('.me-revert').addEventListener('click', () => {
     if (original) { q('.me-text').value = original.text; q('.me-eg').value = original.example; q('.me-status').textContent = 'Reverted'; q('.me-revert').classList.add('hidden'); }
@@ -1502,10 +1709,11 @@ function showImportDialog(onAdd) {
     const text = q('.imp-text').value.trim();
     const path = ov.dataset.path || '';
     if (!text && !path) { showToast('Paste notes or choose a file'); return; }
-    const btn = q('.imp-extract'); btn.disabled = true; q('.imp-status').textContent = 'Reading & extracting…';
-    const r = await window.api.aiImportDoc(text ? { text } : { path });
-    btn.disabled = false;
-    if (!r || !r.ok) { q('.imp-status').textContent = `Couldn’t extract: ${r ? r.error : 'please try again'}`; return; }
+    const btn = q('.imp-extract'); q('.imp-status').textContent = 'Reading & extracting…';
+    // Reads a file AND calls the LLM — two independent ways to reject.
+    const r = await withBusyBtn(btn, null, () => window.api.aiImportDoc(text ? { text } : { path }),
+      (msg) => { q('.imp-status').textContent = `Couldn’t extract: ${msg}`; });
+    if (!r || !r.ok) { if (r) q('.imp-status').textContent = `Couldn’t extract: ${r.error || 'please try again'}`; return; }
     proposed = r.proposed || [];
     q('.imp-status').textContent = `Found ${proposed.length} rule${proposed.length !== 1 ? 's' : ''}`;
     const res = q('.imp-results'); res.innerHTML = '';
@@ -1633,15 +1841,24 @@ async function applyRowNameToSelected(i) {
     .map((c, idx) => ({ c, idx }))
     .filter(({ c }) => c.selected || c === src);
   for (const { c } of targets) {
-    if (copyDate) { c.date = src.date; c.dateLocked = src.dateLocked || !!src.date; }
-    c.subject = src.subject;
-    c.description = src.description;
-    for (const fld of organizeFields) c[fld.id] = src[fld.id];
+    // Only propagate fields that are actually FILLED — the same rule applyBatch already follows
+    // ("Only apply fields you actually filled — so you can batch-tag one field without wiping each
+    // clip's name"). This copied unconditionally, so hitting ⤓ on a row whose description happened
+    // to be empty WIPED the description and every custom organize field on all the ticked clips —
+    // including AI-generated values the user could not even see, because cleanGrid hides the meta
+    // row by default. You'd propagate one subject and silently destroy 40 descriptions.
+    if (copyDate && src.date) { c.date = src.date; c.dateLocked = true; }
+    if (src.subject) c.subject = src.subject;
+    if (src.description) c.description = src.description;
+    if (src.location) c.location = src.location;   // was omitted entirely — every other path copies it
+    for (const fld of organizeFields) if (src[fld.id]) c[fld.id] = src[fld.id];
   }
   syncRowInputs(targets.map((t) => t.idx));
-  rememberSubject(src.subject);
-  rememberDescription(src.description);
+  if (src.subject) rememberSubject(src.subject);
+  if (src.description) rememberDescription(src.description);
+  if (src.location) rememberLocation(src.location);
   for (const fld of organizeFields) rememberField(fld.id, src[fld.id]);
+  flushDraftSave();                 // this rewrote up to N clips — persist it NOW, not on a debounce
   clearSelection();                 // applied → untick the group
   refreshNames();
 }

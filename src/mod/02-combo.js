@@ -192,11 +192,27 @@ function attachCombo(input, getList, getNext) {
       // hover also highlights a row, but Enter must NOT grab that — you typed a value
       // and want to keep it, e.g. "vlog" shouldn't become whatever's under the cursor.)
       const navigating = !!(flyout && flyout._navigated && flyout._highlight >= 0 && flyout._items[flyout._highlight]);
+      // Returns TRUE when Enter moved us to another field — i.e. this handler CONSUMED it.
+      //
+      // That return value is the fix for a real bug. This keydown is on the <input>; the batch
+      // dialog's own keydown is on the overlay, an ancestor, in the bubble phase. Every Enter path
+      // here ends in advance() → closePopover(), so by the time the overlay's handler ran, its guard
+      // (`if (openPopover && openPopover._comboInput && openPopover._navigated) return;`) was checking
+      // an openPopover that was ALWAYS null. The guard could never fire. So Enter in the batch
+      // dialog's subject field advanced to the description AND applied the batch, closing the dialog
+      // with description/location/context still empty — the whole subject→desc→location→context chain
+      // wired into buildBatchDialog was dead code. Arrow-down + Enter did the same: it accepted the
+      // suggestion and immediately applied.
+      //
+      // Enter on the LAST field (no getNext) still bubbles, so it submits the dialog — which is what
+      // you'd want there.
       const advance = () => {
         ghost.innerHTML = ''; ghost.dataset.match = '';
         closePopover();
         const next = getNext && getNext();
-        if (next) next.focus(); else input.blur();
+        if (next) { next.focus(); return true; }
+        input.blur();
+        return false;
       };
 
       if (e.shiftKey) {
@@ -209,9 +225,10 @@ function attachCombo(input, getList, getNext) {
           closePopover();
           input.focus();
           try { const p = input.value.length; input.setSelectionRange(p, p); } catch { /* ignore */ }
+          e.stopPropagation();   // handled here — don't let an ancestor also act on it
         } else {
           // Just typing → keep what's typed (ignore the suggestion) and advance.
-          advance();
+          if (advance()) e.stopPropagation();
         }
         return;
       }
@@ -224,7 +241,7 @@ function attachCombo(input, getList, getNext) {
         input.value = m;
         input.dispatchEvent(new Event('input', { bubbles: true }));
       }
-      advance();
+      if (advance()) e.stopPropagation();
     } else if ((e.key === 'ArrowRight' || e.key === 'End') && m
                && input.selectionStart === input.value.length) {
       e.preventDefault();
@@ -244,8 +261,42 @@ function nextDescField(input) { return sameRowField(input, '.f-desc'); }
 function nextClipField(input, sel) {
   const card = input.closest('.rename-card');
   if (!card) return null;
-  const i = Number(card.dataset.i);
-  const nextCard = document.querySelector(`.rename-card[data-i="${i + 1}"]`);
+
+  // Walk the DOM, not the array index.
+  //
+  // This used to look for `.rename-card[data-i="${i + 1}"]` — the next clip by ARRAY POSITION. But
+  // buildRenameStep renders GROUPED BY DAY, newest day first (dayDividers is on by default). With
+  // clips 0-9 on the older day and 10-19 on the newer, the grid shows 10-19 first: Enter on the
+  // visually-last card of that group (index 19) looked for index 20, found nothing, and blurred —
+  // the sweep dead-ended in the middle of the list. And Enter on index 9 (the visually LAST card)
+  // jumped to index 10, scrolling all the way back to the TOP.
+  //
+  // It also ignored two other things: cards past the 100-card render window don't exist in the DOM
+  // yet (focusClip calls renameEnsureRendered for exactly this reason), and cards hidden by the
+  // active filter are display:none — .focus() on them silently does nothing, so the sweep just lost
+  // focus into a hidden row.
+  //
+  // Next-in-the-DOM, skipping hidden cards, is what the user actually means by "next clip".
+  const visible = (el) => el.offsetParent !== null || el.style.display !== 'none';
+  let nextCard = null;
+  for (let el = card.nextElementSibling; el; el = el.nextElementSibling) {
+    if (!el.classList || !el.classList.contains('rename-card')) continue;   // skip day dividers
+    if (!visible(el)) continue;                                             // skip filtered-out clips
+    nextCard = el;
+    break;
+  }
+  // Nothing left in the DOM — but the list is windowed, so there may simply be another chunk to
+  // render. Build it, then look again.
+  if (!nextCard) {
+    const i = Number(card.dataset.i);
+    try { if (typeof renameEnsureRendered === 'function') renameEnsureRendered(i + 1); } catch { /* ignore */ }
+    for (let el = card.nextElementSibling; el; el = el.nextElementSibling) {
+      if (!el.classList || !el.classList.contains('rename-card')) continue;
+      if (!visible(el)) continue;
+      nextCard = el;
+      break;
+    }
+  }
   if (!nextCard) return null;
   nextCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
   return nextCard.querySelector(sel);

@@ -9,8 +9,19 @@ const state = {
   drive: null,        // { mountpoint, description, ... }
   scannedFiles: [],   // [{ sourcePath, name, ext, size }]
   copied: [],         // [{ sourcePath, destPath, name, ext, size }]
+  scannedDrive: null, // the mountpoint these clips came from, or '__phone__'
   intakeFolder: null
 };
+
+// Are the loaded clips a PHONE backup? Derived from what is actually loaded, never a flag.
+//
+// This used to be a mutable `state.phoneBackup` that goHome() set to false while leaving the phone
+// clips in state.scannedFiles — so re-entering via "Name & copy clips" ran the CARD copy path on
+// phone files. That copied them straight from the staging temp dir into "01 - Uncompressed",
+// bypassing the deliberate "Send to Uncompressed" gate that exists so Tdarr can't grab them before
+// they're ready — and then offered the staging temp files to the Delete step. A flag can drift from
+// the truth; scannedDrive IS the truth.
+const isPhoneFlow = () => state.scannedDrive === '__phone__';
 
 const $ = (id) => document.getElementById(id);
 
@@ -175,6 +186,36 @@ let cfg = null;
   }, true);
 })();
 
+// Run an async action with a button parked in a busy state, ALWAYS putting it back.
+//
+// Every "disable the button → await the main process → re-enable it" site in this app used
+// to re-enable on the happy path only. An IPC call that REJECTED (ffmpeg missing, EPERM,
+// Ollama stopped mid-request, card yanked) therefore left the button disabled and stranded
+// on its busy label — "Filing…", "Deleting…", "Grouping…" — with no error and no way back
+// short of restarting. This is the one primitive that owns that concern; the `finally` is
+// the whole point, so route every busy-button through it rather than hand-rolling it again.
+//
+// Returns whatever `fn` returns; rethrows nothing — a rejection is handed to `onError`
+// (default: surface it) so callers never have to remember a catch either.
+async function withBusyBtn(btn, busyLabel, fn, onError) {
+  if (!btn) return fn();
+  const prevLabel = btn.textContent;
+  const prevDisabled = !!btn.disabled;
+  btn.disabled = true;
+  if (busyLabel) btn.textContent = busyLabel;
+  try {
+    return await fn();
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    if (typeof onError === 'function') onError(msg);
+    else { try { showToast(`That didn’t work — ${msg}`, 6000); logIssue('UI', msg); } catch { /* ignore */ } }
+    return undefined;
+  } finally {
+    btn.disabled = prevDisabled;
+    btn.textContent = prevLabel;
+  }
+}
+
 (async function init() {
   applyTheme(await window.api.getTheme());
   window.api.onThemeChange(applyTheme);
@@ -241,6 +282,13 @@ let cfg = null;
   // A drive being detected refreshes the home Devices list (you pick from it) rather
   // than auto-jumping, so you always see every available drive.
   window.api.onDriveDetected(() => refreshDriveList());
+  // A card going AWAY is an event too. If it's the one we're working on, stop and say so — rather
+  // than letting previews, AI and copy fail file-by-file with misleading per-clip errors. (Only
+  // fires when auto-poll is on; cardIsGone() covers the rest by asking on demand.)
+  window.api.onDriveRemoved((p) => {
+    refreshDriveList();
+    if (p && p.mountpoint && state.scannedDrive === p.mountpoint) reportCardGone();
+  });
   window.api.onDriveOptions((drives) => onDriveOptions(drives));
   refreshDriveList();   // populate the device list at startup
   renderPendingWork();  // "you've got footage to deal with" — surfaced on every launch
@@ -855,14 +903,23 @@ async function startFlow() {
   $('scanState').innerHTML = `<div class="scan-busy"><span class="illo scan-illo">${ILLO_SCAN}</span><p class="scan-busy-tx">Scanning the card for photos &amp; video…</p></div>`;
   $('scanState').classList.remove('hidden');
 
-  const res = await window.api.scanVideos(state.drive.mountpoint);
-  if (!res.ok) {
-    $('scanState').textContent = `Scan failed: ${res.error}`;
+  // A throw here (card yanked mid-scan) used to leave the "Scanning the card…" spinner
+  // turning forever with no message and Done stuck disabled. `res.ok` was also read with no
+  // null-guard, so a resolved-undefined crashed on the very same line.
+  let res = null;
+  try {
+    res = await window.api.scanVideos(state.drive.mountpoint);
+  } catch (e) {
+    res = { ok: false, error: (e && e.message) || String(e) };
+  }
+  if (!res || !res.ok) {
+    $('scanState').textContent = `Scan failed: ${res ? res.error : 'unknown error'}`;
     return;
   }
   // Seed each clip with the structured-naming fields. Date defaults to the file's
   // modified time (instant); refined from video metadata when its preview loads.
   state.scannedDrive = state.drive.mountpoint;
+  resetClipFilter();   // a filter left on from the PREVIOUS card must not silently hide this one's clips
   state.scannedFiles = res.files.map((f) => {
     const clip = {
       ...f,
@@ -904,13 +961,49 @@ async function startFlow() {
   // footage, not naming you might want to discard) — so it remembers run-to-run and
   // never re-prompts to scan faces you already scanned.
   await applyPeopleFromDrafts();
+  await restoreCopiedFromLog();
 
   buildRenameStep();
+  // AFTER the list exists — restoring questions marks their cards, so the cards have to be there.
+  await restoreAiQuestions();
+  updateBatchBar();   // ticks restored from drafts must be reflected in the batch bar
   if (resumeJumpPending) { resumeJumpPending = false; setTimeout(() => jumpNextUnnamed(), 80); }
   if (!hadPrior) maybeOfferBatchStart();   // only offer "fresh batch" when there's no prior work
 }
 // Restore ONLY people + facesScanned from saved drafts, regardless of whether the
 // user restored the naming draft. Keeps face tagging persistent across runs.
+// Rebuild "what I already copied off THIS card" after a scan, so the Delete step is reachable in
+// a LATER session — which is how the card actually gets cleared: copy → let Tdarr compress →
+// organize days later → only then wipe. `state.copied` was memory-only, so a restart turned the
+// Delete step into a silent no-op and the sole way to clear a card was to copy the whole thing
+// again.
+//
+// It is rebuilt from the INTERSECTION of what is physically on the card right now and what we
+// logged, matched on the stable name__size fingerprint. That is what scopes it: another card's
+// clips are not on this card, so they can never appear here — which is the bug that let the phone
+// flow list a previous card's files. And copied:get has already dropped any record whose copy no
+// longer exists on disk, so we never offer to delete a file whose only other copy is gone.
+//
+// None of this is an authority to delete. delete:source re-hashes source against dest itself and
+// refuses whatever it cannot prove — a stale record here gets refused, never wrongly actioned.
+async function restoreCopiedFromLog() {
+  state.copied = [];
+  if (!state.scannedFiles.length) return;
+  let log = {};
+  try { log = await window.api.getCopied(state.scannedFiles.map((c) => clipKey(c))) || {}; } catch { return; }
+  const found = [];
+  for (const c of state.scannedFiles) {
+    const rec = log[clipKey(c)];
+    if (!rec || !rec.dest) continue;
+    c._alreadyImported = true;
+    found.push({ sourcePath: c.sourcePath, destPath: rec.dest, name: c.name, ext: c.ext, size: c.size });
+  }
+  state.copied = found;
+  if (found.length) {
+    showToast(`${found.length} clip${found.length !== 1 ? 's' : ''} on this card ${found.length !== 1 ? 'were' : 'was'} already copied — you can clear them from the Delete step.`, 5000);
+  }
+}
+
 async function applyPeopleFromDrafts() {
   let drafts = {};
   try { drafts = await window.api.getDrafts(); } catch { return; }
@@ -950,6 +1043,11 @@ function maybeOfferBatchStart() {
 $('cancelFlowBtn').addEventListener('click', () => {
   $('flow').classList.add('hidden');
   $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
+  // Cancelling is a decision to LEAVE this card. It never cleared the saved session, so the next
+  // launch resumed straight back into the card you had just deliberately backed out of. goHome()
+  // has always done this correctly — Cancel just never did.
+  saveSession({ view: 'home' });
+  state.copied = [];   // the copy→verify→delete session ends here, same as goHome
 });
 
 // ---------------------------------------------------------------------------
@@ -1032,7 +1130,12 @@ function buildDraftMap() {
       peopleAuto: Array.isArray(clip.peopleAuto) ? clip.peopleAuto : [],   // unconfirmed face guesses
       tags: Array.isArray(clip.tags) ? clip.tags : [],
       facesScanned: !!clip._facesScanned,
-      ledgerRel: clip._ledgerRel || ''
+      ledgerRel: clip._ledgerRel || '',
+      // Which clips you had TICKED. Not persisted before, so every restart dropped the selection
+      // and you had to re-tick before you could resume an analyze run — and the fastest way to
+      // re-tick is "select all", which is exactly what walks you back into re-analysing clips that
+      // were already done.
+      selected: !!clip.selected
     };
     for (const fld of organizeFields) d[fld.id] = clip[fld.id] || '';
     map[clipKey(clip)] = d;
@@ -1124,6 +1227,7 @@ function applyDraftsToClips(drafts) {
     if (Array.isArray(d.tags) && d.tags.length) clip.tags = addUnique(clip.tags, d.tags);
     if (d.facesScanned) clip._facesScanned = true;
     if (d.ledgerRel) clip._ledgerRel = d.ledgerRel;
+    if (d.selected) clip.selected = true;   // put the ticks back — see buildDraftMap
     for (const fld of organizeFields) if (d[fld.id]) clip[fld.id] = d[fld.id];
     n += 1;
   }
@@ -1189,7 +1293,26 @@ function applyVersionToClips(map) {
     clip.context = d.context || '';
     clip.shotType = d.shotType || '';
     clip.observation = d.observation || '';
-    if (d.date) { clip.date = d.date; clip.dateLocked = true; } else { clip.dateLocked = false; }
+    // The snapshot HAS these — buildDraftMap has always captured them — but the restore simply never
+    // read them back. So "Restore" from the automatic "Before AI analyze" save point could not undo
+    // what the AI had actually done: the tags it merged in and the people that face-scanning wrote
+    // survived the rollback permanently, and were then re-persisted by the draft save that follows.
+    // The undo was quietly partial, which is worse than no undo.
+    clip.people = Array.isArray(d.people) ? d.people.slice() : [];
+    clip.peopleAuto = Array.isArray(d.peopleAuto) ? d.peopleAuto.slice() : [];
+    clip.tags = Array.isArray(d.tags) ? d.tags.slice() : [];
+    clip._facesScanned = !!d.facesScanned;
+    clip._ledgerRel = d.ledgerRel || '';
+    // A version restore is meant to set each field EXACTLY. The date branch only cleared the LOCK and
+    // left the wrong date in place, still driving finalName() — so a date wrongly stamped across a
+    // batch survived the very rollback meant to undo it.
+    //
+    // But it must NOT be blanked either: buildDraftMap only records a date the user CHOSE
+    // (dateLocked), so "no date in the snapshot" means "this clip was on its natural date", not "this
+    // clip had no date". Blanking would throw away the file's real capture date. Restore the natural
+    // default — the same expression the scan uses.
+    if (d.date) { clip.date = d.date; clip.dateLocked = true; }
+    else { clip.date = phoneDateOf(clip.name) || toDateStr(clip.mtimeMs) || ''; clip.dateLocked = false; }
     for (const fld of organizeFields) clip[fld.id] = d[fld.id] || '';
     n += 1;
   }
@@ -1455,11 +1578,27 @@ function attachCombo(input, getList, getNext) {
       // hover also highlights a row, but Enter must NOT grab that — you typed a value
       // and want to keep it, e.g. "vlog" shouldn't become whatever's under the cursor.)
       const navigating = !!(flyout && flyout._navigated && flyout._highlight >= 0 && flyout._items[flyout._highlight]);
+      // Returns TRUE when Enter moved us to another field — i.e. this handler CONSUMED it.
+      //
+      // That return value is the fix for a real bug. This keydown is on the <input>; the batch
+      // dialog's own keydown is on the overlay, an ancestor, in the bubble phase. Every Enter path
+      // here ends in advance() → closePopover(), so by the time the overlay's handler ran, its guard
+      // (`if (openPopover && openPopover._comboInput && openPopover._navigated) return;`) was checking
+      // an openPopover that was ALWAYS null. The guard could never fire. So Enter in the batch
+      // dialog's subject field advanced to the description AND applied the batch, closing the dialog
+      // with description/location/context still empty — the whole subject→desc→location→context chain
+      // wired into buildBatchDialog was dead code. Arrow-down + Enter did the same: it accepted the
+      // suggestion and immediately applied.
+      //
+      // Enter on the LAST field (no getNext) still bubbles, so it submits the dialog — which is what
+      // you'd want there.
       const advance = () => {
         ghost.innerHTML = ''; ghost.dataset.match = '';
         closePopover();
         const next = getNext && getNext();
-        if (next) next.focus(); else input.blur();
+        if (next) { next.focus(); return true; }
+        input.blur();
+        return false;
       };
 
       if (e.shiftKey) {
@@ -1472,9 +1611,10 @@ function attachCombo(input, getList, getNext) {
           closePopover();
           input.focus();
           try { const p = input.value.length; input.setSelectionRange(p, p); } catch { /* ignore */ }
+          e.stopPropagation();   // handled here — don't let an ancestor also act on it
         } else {
           // Just typing → keep what's typed (ignore the suggestion) and advance.
-          advance();
+          if (advance()) e.stopPropagation();
         }
         return;
       }
@@ -1487,7 +1627,7 @@ function attachCombo(input, getList, getNext) {
         input.value = m;
         input.dispatchEvent(new Event('input', { bubbles: true }));
       }
-      advance();
+      if (advance()) e.stopPropagation();
     } else if ((e.key === 'ArrowRight' || e.key === 'End') && m
                && input.selectionStart === input.value.length) {
       e.preventDefault();
@@ -1507,8 +1647,42 @@ function nextDescField(input) { return sameRowField(input, '.f-desc'); }
 function nextClipField(input, sel) {
   const card = input.closest('.rename-card');
   if (!card) return null;
-  const i = Number(card.dataset.i);
-  const nextCard = document.querySelector(`.rename-card[data-i="${i + 1}"]`);
+
+  // Walk the DOM, not the array index.
+  //
+  // This used to look for `.rename-card[data-i="${i + 1}"]` — the next clip by ARRAY POSITION. But
+  // buildRenameStep renders GROUPED BY DAY, newest day first (dayDividers is on by default). With
+  // clips 0-9 on the older day and 10-19 on the newer, the grid shows 10-19 first: Enter on the
+  // visually-last card of that group (index 19) looked for index 20, found nothing, and blurred —
+  // the sweep dead-ended in the middle of the list. And Enter on index 9 (the visually LAST card)
+  // jumped to index 10, scrolling all the way back to the TOP.
+  //
+  // It also ignored two other things: cards past the 100-card render window don't exist in the DOM
+  // yet (focusClip calls renameEnsureRendered for exactly this reason), and cards hidden by the
+  // active filter are display:none — .focus() on them silently does nothing, so the sweep just lost
+  // focus into a hidden row.
+  //
+  // Next-in-the-DOM, skipping hidden cards, is what the user actually means by "next clip".
+  const visible = (el) => el.offsetParent !== null || el.style.display !== 'none';
+  let nextCard = null;
+  for (let el = card.nextElementSibling; el; el = el.nextElementSibling) {
+    if (!el.classList || !el.classList.contains('rename-card')) continue;   // skip day dividers
+    if (!visible(el)) continue;                                             // skip filtered-out clips
+    nextCard = el;
+    break;
+  }
+  // Nothing left in the DOM — but the list is windowed, so there may simply be another chunk to
+  // render. Build it, then look again.
+  if (!nextCard) {
+    const i = Number(card.dataset.i);
+    try { if (typeof renameEnsureRendered === 'function') renameEnsureRendered(i + 1); } catch { /* ignore */ }
+    for (let el = card.nextElementSibling; el; el = el.nextElementSibling) {
+      if (!el.classList || !el.classList.contains('rename-card')) continue;
+      if (!visible(el)) continue;
+      nextCard = el;
+      break;
+    }
+  }
   if (!nextCard) return null;
   nextCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
   return nextCard.querySelector(sel);
@@ -1776,16 +1950,37 @@ function peopleChipsHTML(clip) {
     return `<span class="clip-person-chip${guess ? ' unconfirmed' : ''}"${guess ? ' title="Auto-detected face — unconfirmed guess. Confirm on the person\'s profile."' : ''}>${escapeHtml(n)}${guess ? '?' : ''}<button type="button" class="cpc-x" data-name="${escapeAttr(n)}" title="Remove ${escapeAttr(n)}">×</button></span>`;
   }).join('');
 }
-// All the keyword tags that get embedded in the file at Finalize (mirrors main's
-// buildEmbedTags) — so the user can SEE exactly what metadata will be written.
+// All the keyword tags that get embedded in the file at Finalize — so the user can SEE
+// exactly what metadata will be written. This MUST agree with main's buildEmbedTags
+// (main-mod/09-ipc-boot.js), or the preview promises keywords the file never gets.
+// It drifted twice: main dedups case-INsensitively via uniqStrings() while this used a
+// plain Set (so "Sunset" + "sunset" both showed here but only one was embedded), and main
+// spreads m.keywords where this only read clip.tags. Keep the element order identical to
+// main's list too — the preview is meant to be a literal readout of the embed.
 function clipEmbedKeywords(clip) {
   const fieldVals = organizeFields.map((f) => clip[f.id]).filter(Boolean);
   const date = clip.date || '';
   const year = /^(\d{4})/.test(date) ? date.slice(0, 4) : '';
-  const words = [...new Set(`${clip.subject || ''} ${clip.description || ''} ${clip.location || ''}`.split(/[\s\-_]+/))].filter((w) => w && w.length > 1);
-  const kws = [clip.subject, clip.location, clip.shotType, clip.category, clip.project, ...fieldVals, ...(clip.people || []), ...(clip.tags || []), date, year, ...words]
-    .filter((k) => k && String(k).length > 1);
-  return [...new Set(kws.map((k) => String(k)))];
+  // Mirrors main's uniqStrings(): trim, drop empties, dedup case-insensitively, first casing wins.
+  const uniq = (arr) => {
+    const seen = new Set(); const out = [];
+    for (const x of (arr || [])) {
+      const v = String(x == null ? '' : x).trim();
+      if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); out.push(v); }
+    }
+    return out;
+  };
+  const words = uniq(`${clip.subject || ''} ${clip.description || ''} ${clip.location || ''}`.split(/[\s\-_]+/));
+  // clip.tags is what becomes meta.keywords when the clip is saved, so it occupies the
+  // same slot main's m.keywords does. A clip loaded from saved metadata already has
+  // .keywords — prefer that, since it is literally what main will be handed.
+  const extra = Array.isArray(clip.keywords) ? clip.keywords : (Array.isArray(clip.tags) ? clip.tags : []);
+  return uniq([
+    clip.subject, clip.location, clip.shotType, clip.category, clip.project, ...fieldVals,
+    ...extra,
+    ...(Array.isArray(clip.people) ? clip.people : []),
+    date, year, ...words,
+  ]).filter((k) => k.length > 1);
 }
 // ---- Tags (digiKam-style) ---------------------------------------------------
 // Custom keyword tags the user adds (on top of the auto keywords the AI derives
@@ -2010,22 +2205,55 @@ function ensureClipFilterBar() {
     applyClipFilter();
   }));
 }
+// Does this clip pass the ACTIVE filter? One predicate, so what you can SEE and what a bulk action
+// TOUCHES can never disagree.
+//
+// This logic used to live inline in applyClipFilter, which only set card.style.display — while
+// "select all" ticked every clip in state.scannedFiles regardless. So filtering to "Unnamed",
+// hitting select-all and applying a subject silently overwrote every NAMED clip too: the ones
+// deliberately hidden from view, that the user had already finished. A bulk edit must never reach a
+// clip the user cannot see.
+function clipMatchesFilter(c) {
+  if (!c) return false;
+  const q = (clipFilterText || '').trim().toLowerCase();
+  const named = !!(c.subject && c.subject.trim());
+  let ok = true;
+  if (clipFilterMode === 'unnamed') ok = !named;
+  else if (clipFilterMode === 'named') ok = named;
+  else if (clipFilterMode === 'people') ok = Array.isArray(c.people) && c.people.length > 0;
+  else if (clipFilterMode === 'selected') ok = !!c.selected;
+  if (ok && q) {
+    const hay = [c.name, c.subject, c.description, c.location, c.date, ...(Array.isArray(c.people) ? c.people : []), ...(Array.isArray(c.tags) ? c.tags : [])].filter(Boolean).join(' ').toLowerCase();
+    ok = hay.includes(q);
+  }
+  return ok;
+}
+// Is a filter actually narrowing anything right now?
+function clipFilterActive() { return clipFilterMode !== 'all' || !!(clipFilterText || '').trim(); }
+
+// A new card starts with no filter.
+//
+// clipFilterMode/clipFilterText are module-level and were never reset, while ensureClipFilterBar()
+// early-returns if the bar already exists — so a filter left on from the PREVIOUS card silently hid
+// clips on the next one. With mode 'selected' and nothing yet ticked, the rename grid came up
+// completely empty and looked like the scan had failed.
+function resetClipFilter() {
+  clipFilterMode = 'all';
+  clipFilterText = '';
+  const bar = document.getElementById('clipFilterBar');
+  if (!bar) return;
+  const input = bar.querySelector('.cf-input');
+  if (input) input.value = '';
+  bar.querySelectorAll('.cf-chip').forEach((b) => b.classList.toggle('active', b.dataset.f === 'all'));
+}
+
 function applyClipFilter() {
   const list = $('renameList'); if (!list) return;
   const q = (clipFilterText || '').trim().toLowerCase();
   let shown = 0; const total = state.scannedFiles.length;
   list.querySelectorAll('.rename-card').forEach((card) => {
     const i = Number(card.dataset.i); const c = state.scannedFiles[i]; if (!c) return;
-    let ok = true;
-    const named = !!(c.subject && c.subject.trim());
-    if (clipFilterMode === 'unnamed') ok = !named;
-    else if (clipFilterMode === 'named') ok = named;
-    else if (clipFilterMode === 'people') ok = Array.isArray(c.people) && c.people.length > 0;
-    else if (clipFilterMode === 'selected') ok = !!c.selected;
-    if (ok && q) {
-      const hay = [c.name, c.subject, c.description, c.location, c.date, ...(Array.isArray(c.people) ? c.people : []), ...(Array.isArray(c.tags) ? c.tags : [])].filter(Boolean).join(' ').toLowerCase();
-      ok = hay.includes(q);
-    }
+    const ok = clipMatchesFilter(c);
     const disp = ok ? '' : 'none';
     if (card.style.display !== disp) card.style.display = disp;   // only write when it changes (avoids layout thrash)
     if (ok) shown += 1;
@@ -2060,14 +2288,16 @@ function selectClipRange(a, b) {
 // the same shoot — fastest path to batch-naming a card's worth of footage).
 function selectDay(day) {
   let nSel = 0;
+  const scoped = clipFilterActive();
   state.scannedFiles.forEach((c, j) => {
     if ((c.date || '') !== day) return;
+    if (scoped && !clipMatchesFilter(c)) return;   // same rule as select-all: never tick what's hidden
     c.selected = true; nSel += 1;
     const cb = document.querySelector(`[data-check="${j}"]`); if (cb) cb.checked = true;
     const card = cb && cb.closest('.rename-card'); if (card) card.classList.add('selected');
   });
   updateBatchBar();
-  showToast(`Selected ${nSel} clip${nSel !== 1 ? 's' : ''} from ${day || 'no date'} ✓`, 2000);
+  showToast(`Selected ${nSel} clip${nSel !== 1 ? 's' : ''} from ${day || 'no date'}${scoped ? ' matching the filter' : ''} ✓`, 2000);
 }
 // Hotkey: select everything between the first and last already-selected clips.
 function selectBetweenSelected() {
@@ -2614,6 +2844,7 @@ function addAiQuestion(q) {
   aiQuestions.push({ id: `q${(aiQid += 1)}`, _key, field: q.type === 'category' ? (q.field || 'category') : q.field, ...q });
   if ((q.type === 'subject' || q.type === 'category') && typeof q.clipIndex === 'number') markClipQuestion(q.clipIndex, true);
   renderAiHazard();
+  saveAiQuestions();
 }
 function resolveAiQuestion(id) {
   const q = aiQuestions.find((x) => x.id === id);
@@ -2622,6 +2853,45 @@ function resolveAiQuestion(id) {
   if ((q.type === 'subject' || q.type === 'category') && typeof q.clipIndex === 'number'
       && !aiQuestions.some((x) => x.clipIndex === q.clipIndex)) markClipQuestion(q.clipIndex, false);
   renderAiHazard();
+  saveAiQuestions();
+}
+
+// --- the review queue survives a restart -------------------------------------------------
+//
+// aiQuestions was pure memory. The AI would finish 100 clips with "Ask me to confirm" on, and
+// quitting before you got to the review lost every one of them: the names stayed, but the review
+// pass you were about to do was simply gone, with nothing to tell you it had existed.
+//
+// Persisted by clipKey (name__size), NEVER by clipIndex. An index is a position in
+// state.scannedFiles — it does not survive a rescan, and restoring by index would silently
+// re-attach "is this a new category?" to a completely different clip.
+function saveAiQuestions() {
+  try {
+    window.api.saveAiQueue(aiQuestions.map((q) => {
+      const clip = typeof q.clipIndex === 'number' ? state.scannedFiles[q.clipIndex] : null;
+      return { type: q.type, clipKey: clip ? clipKey(clip) : '', field: q.field || '', suggested: q.suggested || '', rule: q.rule || '' };
+    }));
+  } catch { /* non-fatal — the in-memory queue still drives this session */ }
+}
+
+// Rehydrate after a scan, resolving each question back to the clip it was actually about.
+// A question whose clip is no longer on the card is DROPPED — it has nothing to ask about.
+async function restoreAiQuestions() {
+  let saved = [];
+  try { saved = await window.api.getAiQueue() || []; } catch { return; }
+  if (!saved.length) return;
+  const byKey = new Map();
+  state.scannedFiles.forEach((c, i) => byKey.set(clipKey(c), i));
+
+  aiQuestions = [];
+  for (const q of saved) {
+    if (q.clipKey && !byKey.has(q.clipKey)) continue;                     // that clip isn't here any more
+    const clipIndex = q.clipKey ? byKey.get(q.clipKey) : undefined;
+    addAiQuestion({ type: q.type, clipIndex, field: q.field || undefined, suggested: q.suggested || undefined, rule: q.rule || undefined });
+  }
+  if (aiQuestions.length) {
+    showToast(`${aiQuestions.length} AI question${aiQuestions.length !== 1 ? 's' : ''} still waiting for you.`, 4500);
+  }
 }
 function markClipQuestion(i, on) {
   const clip = state.scannedFiles[i];
@@ -2737,14 +3007,120 @@ function toggleHazardPop() {
 // Apply an AI result {subject,description,shotType,category} to a clip. Subject /
 // category are auto-applied ONLY if already known; new ones are returned for the
 // user to confirm (don't invent silently).
+// Has the card been pulled out from under us?
+//
+// Nothing detected this. Yanking a card mid-analyse left the grid full of clips whose files no
+// longer existed, and every remaining one failed on its own — with aiCallGuard reporting each as
+// "Took too long — skipped this clip", a confidently wrong diagnosis of a completely different
+// problem. We ask the moment a clip fails, so the real cause is reported ONCE, and the run stops
+// instead of burning through the rest of the card producing nonsense.
+//
+// Checked on demand rather than relying on the drive:removed event, because auto-poll is OFF by
+// default in this app — the event alone would never fire for most users.
+let cardGoneReported = false;
+async function cardIsGone() {
+  if (!state.scannedDrive || state.scannedDrive === '__phone__') return false;
+  try { return !(await window.api.drivePresent(state.scannedDrive)); } catch { return false; }
+}
+
+// Stop everything in flight and say why. Idempotent — a run with 60 clips left will hit this
+// repeatedly, and the user should hear it once.
+function reportCardGone() {
+  aiAborted = true;
+  faceScanAborted = true;
+  if (cardGoneReported) return;
+  cardGoneReported = true;
+  clearTask('ai'); clearTask('faces');
+  clearAllAnalyzing();
+  showToast('The card was removed — stopping. Everything named so far is saved; plug it back in and pick up where you left off.', 9000);
+  logIssue('Card', `Removed mid-run (${state.scannedDrive}) — analysis stopped.`);
+}
+
+// Put the failure ON the card, with its reason in the tooltip. A count in a toast tells you 12
+// clips failed; it does not tell you WHICH — and with 100 clips that's the only question you have.
+function markClipFailed(i, why) {
+  const card = document.querySelector(`.rename-card[data-i="${i}"]`);
+  if (!card) return;
+  card.classList.toggle('ai-failed', !!why);
+  if (why) card.dataset.aiError = why; else delete card.dataset.aiError;
+  const prev = card.querySelector('.rename-preview');
+  if (prev) { if (why) prev.title = `AI couldn’t analyse this clip — ${why}`; else prev.removeAttribute('title'); }
+}
+
+// The clips this run couldn't analyze, in list order.
+function aiFailedClips() {
+  return state.scannedFiles.map((c, i) => ({ c, i })).filter(({ c }) => c && c._aiFailed);
+}
+
+// Offer to retry ONLY the clips that failed.
+//
+// Before this, a failure was a counter and a line in an in-memory log (capped at 400, gone on
+// restart, buried under Help → Activity log). With 100 clips there was no way to see which ones
+// failed, why, or to retry just those — the only recourse was re-running the whole batch, which
+// re-paid the full vision cost on the ones that had already worked.
+async function offerRetryFailed() {
+  const failed = aiFailedClips();
+  if (!failed.length) return;
+  // Group identical reasons so the dialog says something useful rather than listing 12 lines of
+  // the same timeout.
+  const byReason = {};
+  for (const { c } of failed) { const k = c._aiError || 'no response'; byReason[k] = (byReason[k] || 0) + 1; }
+  const reasons = Object.entries(byReason).sort((a, b) => b[1] - a[1])
+    .map(([why, n]) => `• ${escapeHtml(why)}${n > 1 ? ` — ${n} clips` : ''}`).join('<br>');
+
+  const ok = await confirmDialog(
+    `Retry the ${failed.length} clip${failed.length !== 1 ? 's' : ''} that failed?`,
+    `The rest were named and are untouched — only these are re-analysed.<br><br>${reasons}`,
+    'Retry those', 'Leave them'
+  );
+  if (!ok) return;
+
+  // Retry EXACTLY the failed clips, then put the user's selection back the way they left it —
+  // silently changing what's ticked is how a "helpful" retry loses someone's work.
+  const prevSelected = state.scannedFiles.map((c) => !!c.selected);
+  state.scannedFiles.forEach((c) => { c.selected = false; });
+  for (const { c } of failed) { c.selected = true; delete c._aiFailed; delete c._aiError; }
+  syncRowInputs(failed.map(({ i }) => i));
+  try {
+    // 'all' — a failed clip has no result to preserve. Preset, so the user isn't re-asked about
+    // face scanning / the same-shoot offer / the mode they have literally just answered.
+    await aiAnalyzeSelected({ mode: 'all' });
+  } finally {
+    state.scannedFiles.forEach((c, i) => { c.selected = prevSelected[i]; });
+    syncRowInputs(state.scannedFiles.map((_, i) => i));
+    updateBatchBar();
+  }
+}
+
+// Was this exact clip already analyzed AND named? The single answer to "is there work left to
+// do here", used to resume an interrupted run instead of redoing it.
+//
+// The observation is what the vision model SAW — it is written to clip-observations.json the
+// moment a clip is analyzed (keyed by the stable name__size fingerprint, so it survives a
+// replug and a new drive letter). Having one means the expensive part is already paid for.
+// Requiring a subject+description too means we never skip a clip whose analysis succeeded but
+// whose naming didn't — that one still has work left.
+function aiAlreadyAnalyzed(clip) {
+  if (!clip) return false;
+  const o = clipObsCache[clipKey(clip)];
+  return !!(o && o.obs && String(clip.subject || '').trim() && String(clip.description || '').trim());
+}
+
 function applyAiResult(i, res, mode = 'all') {
   const clip = state.scannedFiles[i];
   if (!clip || !res) return { ok: false };
   const capWords = (s, n) => slug(s).split('-').filter(Boolean).slice(0, n).join('-');
   const onlyEmpty = mode === 'empty';
-  // Only touch the subject when the user allows it (default: keep my subjects,
-  // AI just fills description + metadata). An empty subject is still fillable.
-  if (res.subject && (aiCfg.updateSubject || !clip.subject) && (!onlyEmpty || !clip.subject)) {
+  // "Start over — ignore what's there and name from scratch" has to actually DO that.
+  //
+  // The subject was gated on `aiCfg.updateSubject` (default FALSE: "keep my subjects, AI only
+  // fills description/metadata") regardless of the mode the user had just picked. Batch-rename-
+  // then-analyze is the normal flow, so every clip already HAS a subject by then — meaning Start
+  // over could never change a single subject, in any mode. It silently rewrote descriptions only.
+  // An explicit choice in the dialog beats a background default; the default still governs the
+  // other modes, where the user has NOT asked for their names to be replaced.
+  const startOver = mode === 'all';
+  if (res.subject && (startOver || aiCfg.updateSubject || !clip.subject) && (!onlyEmpty || !clip.subject)) {
     const subj = capWords(res.subject, 3);
     // The AI naming a clip with a fresh subject ("snow-walking") is the whole point —
     // just USE it. We used to queue a confirm-question for every subject that wasn't
@@ -3109,29 +3485,36 @@ function showLedgerMatchDialog(matches, fresh) {
     ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(null); });
   });
 }
-async function aiAnalyzeSelected() {
+// `preset` runs the analysis with the dialogs already answered — used by "Retry failed", which
+// has just asked the user everything it needs and must not re-prompt for face scanning, the
+// same-shoot offer and the mode all over again.
+async function aiAnalyzeSelected(preset = null) {
   if (!requireAi()) return;
-  const idxs = state.scannedFiles.map((c, i) => (c.selected ? i : -1)).filter((i) => i >= 0);
+  let idxs = state.scannedFiles.map((c, i) => (c.selected ? i : -1)).filter((i) => i >= 0);
   if (!idxs.length) { showToast('Tick the clips you want to analyse first'); return; }
-  const faceChoice = await maybeOfferFaceScan(idxs);
-  if (faceChoice === 'cancel') return;
-  if (faceChoice === 'scan') {
-    // ONE pass: scan faces + let you confirm who's who, THEN keep going and name the
-    // clips with those people woven in (no more "scan, then Analyze again").
-    const sel = idxs.map((i) => state.scannedFiles[i]);
-    await scanFacesForClips(sel);
-    if (aiAborted) return;
-    // fall through to the naming phase below — people are now tagged on the clips.
+  if (!preset) {
+    const faceChoice = await maybeOfferFaceScan(idxs);
+    if (faceChoice === 'cancel') return;
+    if (faceChoice === 'scan') {
+      // ONE pass: scan faces + let you confirm who's who, THEN keep going and name the
+      // clips with those people woven in (no more "scan, then Analyze again").
+      const sel = idxs.map((i) => state.scannedFiles[i]);
+      await scanFacesForClips(sel);
+      if (aiAborted) return;
+      // fall through to the naming phase below — people are now tagged on the clips.
+    }
+    // Same-shoot detection: if these dates match a project filed before, offer to add
+    // them to it in the organize phase (tags clips with _ledgerRel for the dest map).
+    await maybeOfferLedgerProject(idxs);
   }
-  // Same-shoot detection: if these dates match a project filed before, offer to add
-  // them to it in the organize phase (tags clips with _ledgerRel for the dest map).
-  await maybeOfferLedgerProject(idxs);
   const hasContent = idxs.some((i) => {
     const c = state.scannedFiles[i];
     return c.subject || c.description || organizeFields.some((f) => c[f.id]);
   });
   const cachedCount = idxs.filter((i) => { const o = clipObsCache[clipKey(state.scannedFiles[i])]; return o && o.obs; }).length;
-  const dlg = await showAnalyzeDialog({ count: idxs.length, hasContent, cachedCount });
+  const dlg = preset
+    ? { mode: preset.mode || 'all', direction: preset.direction || aiRunDirection || '', remember: false, reuse: preset.reuse !== false }
+    : await showAnalyzeDialog({ count: idxs.length, hasContent, cachedCount });
   if (!dlg) return;
   const mode = dlg.mode;
   // Direction the user typed steers this run (folded into each clip's context)…
@@ -3158,8 +3541,45 @@ async function aiAnalyzeSelected() {
       // New subjects are auto-accepted now (see applyAiResult) — no confirm flood. Only a
       // genuinely new top-level CATEGORY still asks, since that creates a new root folder.
       if (r.newCategory) addAiQuestion({ type: 'category', clipIndex: i, field: 'category', suggested: r.newCategory });
-    } else { failCount += 1; if (r && r.error) lastErr = r.error; logIssue('AI analyze', `${(state.scannedFiles[i] || {}).name || 'clip'}: ${(r && r.error) || 'no response'}`); }
+      const okClip = state.scannedFiles[i];
+      if (okClip) { delete okClip._aiFailed; delete okClip._aiError; }   // a retry that worked clears the mark
+      markClipFailed(i, '');
+    } else {
+      failCount += 1;
+      const why = (r && r.error) || 'no response';
+      if (r && r.error) lastErr = r.error;
+      // MARK THE CLIP. A failure used to be a number in a counter and a line in an in-memory log
+      // (capped at 400, gone on restart, buried under Help → Activity log). With 100 clips you
+      // could not tell WHICH ones failed, WHY, or retry just those — the only move was to re-run
+      // the whole batch. The clip now carries its own failure, which is what makes "Retry failed"
+      // possible at all.
+      const clip = state.scannedFiles[i];
+      if (clip) { clip._aiFailed = true; clip._aiError = why; }
+      markClipFailed(i, why);
+      logIssue('AI analyze', `${(clip || {}).name || 'clip'}: ${why}`);
+    }
   };
+  cardGoneReported = false;   // a fresh run gets a fresh chance to report a removal
+
+  // RESUME. "Only name blank clips" used to still run the full vision pass on EVERY selected
+  // clip and then throw the answer away inside applyAiResult (which gates subject/description/
+  // category on being blank). So cancelling at clip 40 of 100 and hitting Analyze again
+  // re-watched all 100 — the work was remembered, and then redone anyway.
+  //
+  // A clip counts as already analyzed when we have the observation we extracted from it AND it
+  // got named. Re-running such a clip in `empty` mode can only reproduce the shotType and tags
+  // it already carries, so skipping it changes nothing except the time you get back.
+  if (mode === 'empty') {
+    const before = idxs.length;
+    idxs = idxs.filter((i) => !aiAlreadyAnalyzed(state.scannedFiles[i]));
+    const skipped = before - idxs.length;
+    if (skipped) {
+      setAiRunOrder(idxs);   // the live stage must show the work we're ACTUALLY doing
+      showToast(`Picking up where you left off — skipping ${skipped} clip${skipped !== 1 ? 's' : ''} already analyzed.`, 4000);
+    }
+    if (!idxs.length) { showToast('Every selected clip is already analyzed ✓', 3500); return; }
+  }
+
   let done = 0;
   if (aiCfg.multiPass) {
     // PHASE 1 — the vision model "looks" at EVERY clip first (it stays loaded the
@@ -3205,14 +3625,24 @@ async function aiAnalyzeSelected() {
   } else {
     for (const i of idxs) {
       if (aiAborted) break;
-      setTask('ai', aiModelLabel(), done + 1, idxs.length, 'analyzing', state.scannedFiles[i].name);
-      markClipAnalyzing(i, 'analyzing');
+      const clip = state.scannedFiles[i];
+      // Feed back what we already saw in this clip, when the user ticked Reuse. `dlg.reuse`
+      // used to be read in exactly ONE place — inside the multiPass branch — and multiPass is
+      // OFF by default, so for a default install the "Reuse earlier analysis of N clips
+      // (faster)" checkbox did literally nothing. It reuses now in both modes.
+      const cached = dlg.reuse ? (clipObsCache[clipKey(clip)] || {}).obs || '' : '';
+      setTask('ai', aiModelLabel(), done + 1, idxs.length, cached ? 'reusing' : 'analyzing', clip.name);
+      markClipAnalyzing(i, cached ? 'reusing' : 'analyzing');
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, mode, { quiet: true });
+      const r = await aiSuggestClip(i, mode, { observation: cached, quiet: true });
       queueQuestions(i, r);
       markClipAnalyzing(i, false);
       flushDraftSave();   // persist each named clip immediately — survives a mid-run crash
       done += 1;
+      // A failure is the moment to ask whether the CARD is still there. If it isn't, stop: every
+      // remaining clip would fail too, and each would be misreported as its own model timeout.
+      // eslint-disable-next-line no-await-in-loop
+      if (!(r && r.ok) && await cardIsGone()) { reportCardGone(); break; }
     }
   }
   clearAllAnalyzing();
@@ -3221,6 +3651,13 @@ async function aiAnalyzeSelected() {
   if (failCount && !okCount) showToast(`AI couldn't name any clips — ${lastErr || 'check the model in AI settings'}`, 6000);
   else if (failCount) showToast(`AI named ${okCount}, ${failCount} failed${lastErr ? ` (${lastErr})` : ''} · ${q} to review`, 5000);
   else { showToast(`AI analysed ${okCount} clip${okCount !== 1 ? 's' : ''}${q ? ` · ${q} to review` : ''}${mode === 'empty' ? ' (filled empty fields only)' : ''}`); pcNotify('AI analysis done', `Named ${okCount} clip${okCount !== 1 ? 's' : ''}${q ? ` · ${q} to review` : ''}.`); }
+  // OFFER THE RETRY. A toast saying "12 failed" is not actionable — it disappears, and the only
+  // recourse was re-running the whole batch (re-paying the vision cost on the 88 that worked).
+  // The clips carry their own failure now, so we can retry precisely those.
+  //
+  // `!preset` is what stops this recursing: a run STARTED by offerRetryFailed is itself a preset
+  // run, so a retry that fails again reports and stops rather than re-offering forever.
+  if (failCount && !aiAborted && !preset) await offerRetryFailed();
   if (visionNote) showToast(visionNote, 8000);   // tell the user we auto-swapped a broken vision model
   aiRunDirection = '';   // direction was for this run only (it’s saved to memory if requested)
   maybeFlushEdits(true);   // distil any edits the user made during/after this run
@@ -3574,11 +4011,11 @@ function showMemoryEditor(initial, onSave) {
     if (!text) { showToast('Write something first'); return; }
     if (!requireAi()) return;
     original = { text: q('.me-text').value, example: q('.me-eg').value };
-    const btn = q('.me-refine'); btn.disabled = true; q('.me-status').textContent = 'Refining…';
-    const r = await window.api.aiRefineMemory(text);
-    btn.disabled = false;
+    const btn = q('.me-refine'); q('.me-status').textContent = 'Refining…';
+    const r = await withBusyBtn(btn, null, () => window.api.aiRefineMemory(text),
+      (msg) => { q('.me-status').textContent = `Couldn’t refine: ${msg}`; });
     if (r && r.ok) { q('.me-text').value = r.text; if (r.example) q('.me-eg').value = r.example; q('.me-status').textContent = 'Refined ✓'; q('.me-revert').classList.remove('hidden'); }
-    else { q('.me-status').textContent = `Couldn’t refine: ${r ? r.error : 'please try again'}`; }
+    else if (r) { q('.me-status').textContent = `Couldn’t refine: ${r.error || 'please try again'}`; }
   });
   q('.me-revert').addEventListener('click', () => {
     if (original) { q('.me-text').value = original.text; q('.me-eg').value = original.example; q('.me-status').textContent = 'Reverted'; q('.me-revert').classList.add('hidden'); }
@@ -3656,10 +4093,11 @@ function showImportDialog(onAdd) {
     const text = q('.imp-text').value.trim();
     const path = ov.dataset.path || '';
     if (!text && !path) { showToast('Paste notes or choose a file'); return; }
-    const btn = q('.imp-extract'); btn.disabled = true; q('.imp-status').textContent = 'Reading & extracting…';
-    const r = await window.api.aiImportDoc(text ? { text } : { path });
-    btn.disabled = false;
-    if (!r || !r.ok) { q('.imp-status').textContent = `Couldn’t extract: ${r ? r.error : 'please try again'}`; return; }
+    const btn = q('.imp-extract'); q('.imp-status').textContent = 'Reading & extracting…';
+    // Reads a file AND calls the LLM — two independent ways to reject.
+    const r = await withBusyBtn(btn, null, () => window.api.aiImportDoc(text ? { text } : { path }),
+      (msg) => { q('.imp-status').textContent = `Couldn’t extract: ${msg}`; });
+    if (!r || !r.ok) { if (r) q('.imp-status').textContent = `Couldn’t extract: ${r.error || 'please try again'}`; return; }
     proposed = r.proposed || [];
     q('.imp-status').textContent = `Found ${proposed.length} rule${proposed.length !== 1 ? 's' : ''}`;
     const res = q('.imp-results'); res.innerHTML = '';
@@ -3787,15 +4225,24 @@ async function applyRowNameToSelected(i) {
     .map((c, idx) => ({ c, idx }))
     .filter(({ c }) => c.selected || c === src);
   for (const { c } of targets) {
-    if (copyDate) { c.date = src.date; c.dateLocked = src.dateLocked || !!src.date; }
-    c.subject = src.subject;
-    c.description = src.description;
-    for (const fld of organizeFields) c[fld.id] = src[fld.id];
+    // Only propagate fields that are actually FILLED — the same rule applyBatch already follows
+    // ("Only apply fields you actually filled — so you can batch-tag one field without wiping each
+    // clip's name"). This copied unconditionally, so hitting ⤓ on a row whose description happened
+    // to be empty WIPED the description and every custom organize field on all the ticked clips —
+    // including AI-generated values the user could not even see, because cleanGrid hides the meta
+    // row by default. You'd propagate one subject and silently destroy 40 descriptions.
+    if (copyDate && src.date) { c.date = src.date; c.dateLocked = true; }
+    if (src.subject) c.subject = src.subject;
+    if (src.description) c.description = src.description;
+    if (src.location) c.location = src.location;   // was omitted entirely — every other path copies it
+    for (const fld of organizeFields) if (src[fld.id]) c[fld.id] = src[fld.id];
   }
   syncRowInputs(targets.map((t) => t.idx));
-  rememberSubject(src.subject);
-  rememberDescription(src.description);
+  if (src.subject) rememberSubject(src.subject);
+  if (src.description) rememberDescription(src.description);
+  if (src.location) rememberLocation(src.location);
   for (const fld of organizeFields) rememberField(fld.id, src[fld.id]);
+  flushDraftSave();                 // this rewrote up to N clips — persist it NOW, not on a debounce
   clearSelection();                 // applied → untick the group
   refreshNames();
 }
@@ -4028,10 +4475,31 @@ function updateBatchBar() {
   $('applyBatch').textContent = `Apply to ${count}`;
   $('selectAllClips').checked = count > 0 && count === state.scannedFiles.length;
 
-  // Default the batch date to the first selected clip so a batch shares one
-  // identical name (versions then differentiate). User can still override it.
-  if (count > 0 && !$('batchDate').dataset.value && sel[0].date) {
-    setDateField($('batchDate'), sel[0].date);
+  // Default the batch date so a same-day batch shares one identical name (versions then
+  // differentiate) — but ONLY when every selected clip already has that same date.
+  //
+  // This used to auto-fill from the FIRST selected clip, and applyBatch applies whatever is in the
+  // field (copyDateMode defaults to 'always', so it doesn't even ask). So the ordinary flow —
+  // Select all → type a subject → "Apply to N" — silently overwrote EVERY clip's real capture date
+  // with the first clip's, and set dateLocked, which permanently blocks ffprobe from correcting it
+  // afterwards. On a card holding two shoots, the older day's clips were stamped with the newer
+  // day's date and the day dividers collapsed into one. The date was the only field applied without
+  // the user ever typing it.
+  //
+  // `_auto` marks a value WE filled in. A date the user picked is never touched.
+  const dateEl = $('batchDate');
+  if (dateEl.dataset.auto === '1' || !dateEl.dataset.value) {
+    const dates = new Set(sel.map((c) => c.date).filter(Boolean));
+    if (count > 0 && dates.size === 1) {
+      setDateField(dateEl, [...dates][0]);
+      dateEl.dataset.auto = '1';
+    } else {
+      // A mixed-date selection (or none) gets NO shared date — each clip keeps its own. This also
+      // clears a stale auto-date left over from a previous selection, which used to survive an
+      // untick-everything and then be stamped onto a completely different day's clips.
+      setDateField(dateEl, '');
+      delete dateEl.dataset.auto;
+    }
   }
   renderCheckedStrip();
   refreshPreviewGrid();   // keep the pop-out grid wall in sync with the selection
@@ -4300,9 +4768,24 @@ if ($('batchLocation')) {
 // The command-bar organizing-field inputs are built dynamically (buildCommandBarFields).
 $('selectAllClips').addEventListener('change', (e) => {
   const on = e.target.checked;
-  state.scannedFiles.forEach((c) => { c.selected = on; });
-  document.querySelectorAll('[data-check]').forEach((cb) => { cb.checked = on; });
-  document.querySelectorAll('.rename-card').forEach((card) => card.classList.toggle('selected', on));
+  // "Select all" means all the clips you can SEE. It used to tick every clip in state.scannedFiles
+  // regardless of the active filter — so filtering to "Unnamed", hitting select-all and applying a
+  // subject silently overwrote every NAMED clip too: the ones deliberately hidden, that were
+  // already finished. A bulk edit must never reach a clip the user cannot see.
+  const scoped = clipFilterActive();
+  state.scannedFiles.forEach((c) => {
+    if (scoped && !clipMatchesFilter(c)) return;   // hidden → untouched, ticked or not
+    c.selected = on;
+  });
+  // Reflect it only on the rows that are actually on screen.
+  document.querySelectorAll('.rename-card').forEach((card) => {
+    const c = state.scannedFiles[Number(card.dataset.i)];
+    if (scoped && !clipMatchesFilter(c)) return;
+    card.classList.toggle('selected', on);
+    const cb = card.querySelector('[data-check]');
+    if (cb) cb.checked = on;
+  });
+  if (scoped && on) showToast(`Selected the ${state.scannedFiles.filter(clipMatchesFilter).length} clip(s) matching the current filter — the rest are untouched.`, 3500);
   updateBatchBar();
 });
 
@@ -4607,6 +5090,11 @@ async function togglePreviewWindow() {
 }
 // Focus + scroll to a clip when its grid tile is clicked in the preview window.
 function focusClipFromPreview(i) {
+  // The pop-out grid wall pushes EVERY in-scope clip, but the rename list only renders 100 cards at
+  // a time. Clicking a tile for clip #250 on the second monitor therefore found no card and silently
+  // gave up — no jump, no feedback, nothing. focusClip() has always called this for exactly this
+  // reason; this path just never did.
+  try { if (typeof renameEnsureRendered === 'function') renameEnsureRendered(i); } catch { /* ignore */ }
   const card = document.querySelector(`.rename-card[data-i="${i}"]`);
   if (!card) return;
   card.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -4664,6 +5152,32 @@ function showToast(msg, ms = 1800) {
   appToastEl.classList.add('show');
   clearTimeout(appToastTimer);
   appToastTimer = setTimeout(() => appToastEl.classList.remove('show'), ms);
+}
+
+// A toast that can be ACTED on. An "undo" the user has to go hunting for in a menu is not an
+// offer — it has to be here, at the moment they'd want it, on the thing that just happened.
+function showToastAction(msg, actionLabel, onAction, ms = 8000) {
+  if (!appToastEl) {
+    appToastEl = document.createElement('div');
+    appToastEl.className = 'zoom-toast app-toast';
+    document.body.appendChild(appToastEl);
+  }
+  appToastEl.textContent = '';
+  const tx = document.createElement('span');
+  tx.textContent = msg;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'toast-action';
+  btn.textContent = actionLabel;
+  btn.addEventListener('click', () => {
+    clearTimeout(appToastTimer);
+    appToastEl.classList.remove('show');
+    try { onAction(); } catch { /* the action owns its own errors */ }
+  });
+  appToastEl.append(tx, btn);
+  appToastEl.classList.add('show');
+  clearTimeout(appToastTimer);
+  appToastTimer = setTimeout(() => { appToastEl.classList.remove('show'); appToastEl.textContent = ''; }, ms);
 }
 
 // What (if anything) already uses this key — for rejecting clashing bindings.
@@ -4968,6 +5482,9 @@ $('batchDate').addEventListener('click', (e) => {
   if (openPopover) { closePopover(); return; }
   openCalendar($('batchDate'), $('batchDate').dataset.value || '', (ds) => {
     setDateField($('batchDate'), ds);
+    // The user CHOSE this date — drop the auto flag so updateBatchBar stops managing the field and
+    // never clears or overwrites their choice.
+    delete $('batchDate').dataset.auto;
     updateBatchBar();
   });
 });
@@ -6146,6 +6663,21 @@ const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
 // metadata; "Suggest with AI" reads the real tree + clip content to refine it;
 // you can move clips and create folders, then Apply files them (editable mode).
 // ---------------------------------------------------------------------------
+
+// THE PLAN — published so the Organize "Run" step files exactly where the map says.
+//
+// There used to be two filing systems that disagreed. The map (which the user actually
+// interacts with, inline in Organize step 2) filed via projects:move into the Projects tree.
+// The step-3 "Run" button called finalize:run, which ignored the map entirely and filed by
+// [category, project] into the Compressed folder — and those two fields are normally EMPTY
+// (the rename grid hides them by default, and the AI only sets a category that already
+// exists). So subdirParts() returned [], organizeMove() found the file already in place, and
+// Run reported "N skipped, 0 moved". The user planned a whole tree and Run did nothing.
+//
+// Now there is one plan. The map is the source of truth; Run just executes it (and adds the
+// embed / NAS mirror / Resolve CSV on top).
+let lastDestPlan = null;   // { root, byPath: { [sourcePath]: 'Client/Alps-2026/2026-07-12' } }
+function currentDestPlan() { return lastDestPlan; }
 // Record successfully-filed clips into the persistent project ledger, then (if AI
 // is on) refresh the AI summary for each touched project in the background.
 async function recordToLedger(clips, placement, results) {
@@ -6551,7 +7083,12 @@ async function showDestinationMap(rawClips, opts = {}) {
   }
   // Dispatcher: every re-render goes through here so all existing callers honour the
   // current view. renderTree() is kept as the alias the rest of the code calls.
-  function render() { if (viewMode === 'tree') renderTreeView(); else renderPlan(); }
+  // Every recompute and every manual move funnels through render(), so this is the one place
+  // that keeps the published plan in step with what the user is actually looking at.
+  function publishPlan() {
+    lastDestPlan = { root: String(root || '').replace(/[\\/]+$/, ''), byPath: { ...placement } };
+  }
+  function render() { publishPlan(); if (viewMode === 'tree') renderTreeView(); else renderPlan(); }
   function renderTree() { render(); }
   function renderTreeView() {
     const el = q('.dmap-tree'); el.innerHTML = '';
@@ -7222,11 +7759,9 @@ async function showDestinationMap(rawClips, opts = {}) {
       mk.type = 'button'; mk.className = 'btn subtle sw-mkrules'; mk.textContent = '✨ Save these answers as filing rules…';
       mk.addEventListener('click', async () => {
         const text = ctxLabel(); if (!text.trim()) { showToast('Answer a question first'); return; }
-        mk.disabled = true; mk.textContent = 'Thinking…';
-        const res = await window.api.aiParseRules({ text, folders: folderPaths });
-        mk.disabled = false; mk.textContent = '✨ Save these answers as filing rules…';
+        const res = await withBusyBtn(mk, 'Thinking…', () => window.api.aiParseRules({ text, folders: folderPaths }));
         if (res && res.ok && res.rules.length) { closeW(); showRoutingRules(folderPaths, () => { recomputeAuto(); renderTree(); }, clips.map((c) => ({ name: c.name, subject: c.subject, location: c.location, description: c.description, date: c.date })), res.rules); }
-        else showToast(res && res.error ? res.error : 'No rules to propose from those answers');
+        else if (res) showToast(res.error ? res.error : 'No rules to propose from those answers');
       });
       body.appendChild(mk);
     }
@@ -7452,17 +7987,49 @@ async function showDestinationMap(rawClips, opts = {}) {
         const rel = placement[c.key] || 'misc';
         return { from: c.sourcePath, toDir: `${rootClean}/${rel}`, rel, name: c.name, meta: (embed && c._ref && c._ref.meta) ? c._ref.meta : null };
       });
+      // CONFIRM FIRST. Apply MOVES every clip on the map — including anything still sitting in
+      // "Needs you"/_Unsorted, which lands in `misc`. It went straight through with no confirmation
+      // at all, which is a lot of file movement to trigger with one click. Say what will happen,
+      // and call out the clips that have no real home yet, since those are the ones you'd regret.
+      const miscN = clips.filter((c) => !placement[c.key]).length;
+      const folders = new Set(moves.map((m) => m.rel)); folders.delete('misc');
+      const ok = await confirmDialog(
+        `File ${moves.length} clip${moves.length !== 1 ? 's' : ''} into your Projects tree?`,
+        `They move into ${escapeHtml(rootClean)} across ${folders.size} folder${folders.size !== 1 ? 's' : ''}${embed ? ', with their metadata embedded' : ''}.`
+        + (miscN ? `<br><br>⚠ ${miscN} clip${miscN !== 1 ? 's have' : ' has'} no folder on the map and will go into <b>misc</b> — go back and place ${miscN !== 1 ? 'them' : 'it'} if that's not what you want.` : '')
+        + `<br><br>You can undo this straight afterwards.`,
+        'File them', 'Cancel'
+      );
+      if (!ok) return;
       const btn = q('.dmap-apply'); btn.disabled = true; btn.textContent = embed ? 'Embedding & filing…' : 'Filing…';
       aiActivity(embed ? 'Embedding metadata and filing clips…' : 'Filing clips…', '');
-      const r = await window.api.projectsMove({ moves, embed });
-      const okN = (r.results || []).filter((x) => x.ok).length;
-      const failN = (r.results || []).length - okN;
+      // Bulk moves + exiftool embedding: this REJECTS in the real world (locked file, EPERM).
+      // Without the finally, Apply stayed disabled reading "Filing…" and the aiActivity
+      // spinner span forever — the dialog was dead with no way back.
+      let r = null;
+      try {
+        r = await window.api.projectsMove({ moves, embed });
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        aiActivityDone(`Filing failed — ${msg}`);
+        showToast(`Filing failed — ${msg}`, 6000);
+        logIssue('Organize', msg);
+        return;
+      } finally {
+        btn.disabled = false; btn.textContent = 'Apply — file clips';
+      }
+      const okN = (r && r.results || []).filter((x) => x.ok).length;
+      const failN = (r && r.results || []).length - okN;
       // Remember every filed clip in the project ledger (powers same-shoot detection
       // + the per-project AI summary), then refresh summaries for touched projects.
       try { recordToLedger(clips, placement, r.results || []); } catch (e) { /* non-fatal */ }
       aiActivityDone(`Filed ${okN}${failN ? `, ${failN} failed` : ''} into your Projects tree ✓`);
-      showToast(`Filed ${okN}${failN ? `, ${failN} failed` : ''} ✓`, failN ? 6000 : 3500);
-      btn.disabled = false; btn.textContent = 'Apply — file clips';
+      // Offer the undo RIGHT HERE. projects:move already records everything needed to reverse the
+      // run (config.lastOrganize, main-mod/02-media.js:427) and undoLastOrganize() has always
+      // worked — it was just buried in a menu, so at the one moment you'd want it (having watched
+      // 200 clips move somewhere you didn't intend) you had no idea it existed.
+      if (okN) showToastAction(`Filed ${okN}${failN ? `, ${failN} failed` : ''} ✓`, 'Undo', () => undoLastOrganize(), failN ? 10000 : 8000);
+      else showToast(`Nothing was filed${failN ? ` — ${failN} failed` : ''}`, 6000);
       if (typeof opts.onApplied === 'function') opts.onApplied(r);
       else close();
     });
@@ -7535,7 +8102,10 @@ function showDestinationMapAuto() {
   if (onOrganize) {
     const sel = (finSelected().length ? finSelected() : finMatched());
     if (!sel.length) { showToast('No matched clips to map'); return; }
-    showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ref: f })), {
+    // _ledgerRel — the same-shoot project the user already confirmed. The inline map (renderFinMap)
+    // carries it; this second entry point did not, so opening the map from HERE quietly lost the
+    // decision and dropped those clips into _Unsorted. Two call sites, one had the bug.
+    showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ledgerRel: (f.meta && f.meta.ledgerRel) || '', _ref: f })), {
       editable: true,
       // Edits made in the map stick to the compressed file's stored metadata so
       // the next Organize/Finalize embeds the corrected subject/location.
@@ -7725,11 +8295,10 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
     pq('.re-interpret').addEventListener('click', async () => {
       const text = pq('.re-nl').value.trim(); if (!text) { showToast('Type a description first'); return; }
       if (!requireAi()) return;
-      const btn = pq('.re-interpret'); btn.disabled = true; btn.textContent = '…';
-      const res = await window.api.aiParseRules({ text, folders: folderPaths });
-      btn.disabled = false; btn.textContent = 'Interpret';
+      const btn = pq('.re-interpret');
+      const res = await withBusyBtn(btn, '…', () => window.api.aiParseRules({ text, folders: folderPaths }));
       if (res && res.ok && res.rules.length) { closeP(false); verifyRules(res.rules); }
-      else showToast(res && res.error ? res.error : 'Could not interpret that');
+      else if (res) showToast(res.error ? res.error : 'Could not interpret that');
     });
     pq('.re-save').addEventListener('click', async () => {
       const match = pq('.re-match').value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
@@ -7761,13 +8330,34 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
 let _faceReady = null;
 let faceScanAborted = false;
 function faceDist(a, b) { let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i += 1) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
+
+// face-api.min.js is 1.3 MB and bundles TensorFlow.js. It used to sit in index.html as a
+// blocking <script> ahead of renderer.js, so EVERY launch paid to read, parse and execute
+// it — including the many sessions that never open face recognition. Inject it on first
+// use instead. The promise is cached, so N concurrent callers share ONE <script> insert;
+// on failure the cache is cleared so a later attempt can retry.
+let _faceLibPromise = null;
+function loadFaceApiLib() {
+  if (window.faceapi && window.faceapi.nets) return Promise.resolve(window.faceapi);
+  if (_faceLibPromise) return _faceLibPromise;
+  _faceLibPromise = new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = 'face-api.min.js';
+    s.onload = () => resolve(window.faceapi || null);
+    s.onerror = () => { _faceLibPromise = null; resolve(null); };   // not vendored in / unreadable
+    document.head.appendChild(s);
+  });
+  return _faceLibPromise;
+}
+
 async function ensureFaceModels() {
   if (_faceReady) return _faceReady;
   _faceReady = (async () => {
-    const fa = window.faceapi;
+    // Pulls the library in on demand — this is the first point any face path reaches.
+    const fa = await loadFaceApiLib();
     // The library + the model weights are BUNDLED with the app (no manual setup) —
     // a failure here is the engine not starting, not missing files.
-    if (window.__noFaceApi || !fa || !fa.nets) { _faceReady = null; return { ok: false, error: 'the face-recognition engine couldn’t start (the local library didn’t load).', kind: 'lib' }; }
+    if (!fa || !fa.nets) { _faceReady = null; return { ok: false, error: 'the face-recognition engine couldn’t start (the local library didn’t load).', kind: 'lib' }; }
     try {
       const url = 'face-models';   // bundled weights, served next to index.html
       await fa.nets.ssdMobilenetv1.loadFromUri(url);
@@ -7863,7 +8453,12 @@ async function collectClipFaces(clip, clusters, keys) {
   const r = clip._ref || clip;
   // Which clips a confirmed face should tag. Normally just this clip; in Quick mode we
   // scan one clip per subject and pass the whole group's keys so confirming tags them all.
-  const attach = (Array.isArray(keys) && keys.length) ? keys : [clip.key || clip.sourcePath];
+  // clipKey() — the stable name__size fingerprint, NOT the absolute path. Scanned clips have no
+  // `.key` field (main-mod/02-media.js never emits one), so this used to always fall through to
+  // sourcePath: `E:\DCIM\GX010023.MP4`. Replug the card and it comes back as `F:` — the face
+  // review still showed the faces, but confirming them tagged ZERO clips, silently. Every other
+  // store in the app (drafts, observations) is keyed by clipKey for exactly this reason.
+  const attach = (Array.isArray(keys) && keys.length) ? keys : [clipKey(clip)];
   let fr = null;
   pushActivity(`Scanning ${clip.name} for faces…`, 'face');
   try { fr = await detectFacesForClip({ sourcePath: clip.sourcePath }, (fi, ft) => { if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); }); } catch { return 0; }
@@ -8060,43 +8655,57 @@ async function scanFacesForClips(clipList, opts = {}) {
   clearActivity();
   // Start from the saved review so a new scan MERGES into what's already waiting
   // (by descriptor) instead of losing it — the review is cumulative and remembered.
-  const clusters = await loadPendingFaces();   // {thumb, descriptor, descriptors:[], clipKeys:Set, suggest}
+  let clusters = [];   // {thumb, descriptor, descriptors:[], clipKeys:Set, suggest}
   let done = 0;
-  for (const clip of toScan) {
-    if (faceScanAborted) break;
-    const ci = state.scannedFiles.indexOf(clip);   // the live scan overlay on the card
-    setTask('faces', 'Face scan', done + 1, toScan.length, 'scanning', clip.name);
-    markClipAnalyzing(ci, 'face scan');
-    pushActivity(`Scanning ${clip.name} for faces…`, 'face');
-    // eslint-disable-next-line no-await-in-loop
-    const res = await detectFacesForClip(clip, (fi, ft) => { setTask('faces', 'Face scan', done + 1, toScan.length, `frame ${fi}/${ft}`, clip.name); if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); });
-    markClipAnalyzing(ci, false);
-    pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
-    // Remember this clip was scanned (even if nothing matched) so we never re-nag,
-    // and PERSIST it now so a mid-stream cutoff still remembers what's done.
-    clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
-    const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
-    flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
-    for (const f of res.faces) {
+  // detectFacesForClip spawns ffmpeg to pull frames, and matchPerson/savePerson hit the
+  // face DB — any of them can REJECT. Without the finally, a throw left the footer "Face
+  // scan" task pinned in the conveyor forever and the clip card stuck under its spinning
+  // `analyzing` overlay, with no error surfaced. (scanFacesAuto and collectClipFaces already
+  // guard these exact calls — this path just never got the same treatment.) Whatever we
+  // clustered before the failure is kept: the review grid below is cumulative by design.
+  try {
+    clusters = await loadPendingFaces();
+    for (const clip of toScan) {
+      if (faceScanAborted) break;
+      const ci = state.scannedFiles.indexOf(clip);   // the live scan overlay on the card
+      setTask('faces', 'Face scan', done + 1, toScan.length, 'scanning', clip.name);
+      markClipAnalyzing(ci, 'face scan');
+      pushActivity(`Scanning ${clip.name} for faces…`, 'face');
       // eslint-disable-next-line no-await-in-loop
-      const m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST });
-      const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
-      const matched = !!(m && m.match);   // backend already applied the strict gate
-      // NEVER auto-tag or auto-confirm. Recognized faces become SUGGESTIONS you confirm
-      // in the Review grid, and are saved to the person's profile as UNCONFIRMED.
-      let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
-      if (!c) { c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null }; clusters.push(c); pushActivity(matched ? `Looks like ${m.match.name} — needs your confirmation` : 'New face — will ask you to name it', 'face', f.thumb); }
-      c.descriptors.push(f.descriptor); c.clipKeys.add(clip.key || clip.sourcePath);
-      if (matched) {
-        if (!c.suggest || dist < c.suggest.dist) c.suggest = { id: m.match.id, name: m.match.name, dist };
-        notePerson(m.match.name, f.thumb);
+      const res = await detectFacesForClip(clip, (fi, ft) => { setTask('faces', 'Face scan', done + 1, toScan.length, `frame ${fi}/${ft}`, clip.name); if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); });
+      markClipAnalyzing(ci, false);
+      pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
+      // Remember this clip was scanned (even if nothing matched) so we never re-nag,
+      // and PERSIST it now so a mid-stream cutoff still remembers what's done.
+      clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
+      const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
+      flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
+      for (const f of res.faces) {
         // eslint-disable-next-line no-await-in-loop
-        await window.api.savePerson({ name: m.match.name, descriptors: [f.descriptor], thumb: f.thumb, confirmed: false });
+        const m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST });
+        const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
+        const matched = !!(m && m.match);   // backend already applied the strict gate
+        // NEVER auto-tag or auto-confirm. Recognized faces become SUGGESTIONS you confirm
+        // in the Review grid, and are saved to the person's profile as UNCONFIRMED.
+        let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
+        if (!c) { c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null }; clusters.push(c); pushActivity(matched ? `Looks like ${m.match.name} — needs your confirmation` : 'New face — will ask you to name it', 'face', f.thumb); }
+        c.descriptors.push(f.descriptor); c.clipKeys.add(clipKey(clip));   // stable across replug — see collectClipFaces
+        if (matched) {
+          if (!c.suggest || dist < c.suggest.dist) c.suggest = { id: m.match.id, name: m.match.name, dist };
+          notePerson(m.match.name, f.thumb);
+          // eslint-disable-next-line no-await-in-loop
+          await window.api.savePerson({ name: m.match.name, descriptors: [f.descriptor], thumb: f.thumb, confirmed: false });
+        }
       }
+      done += 1;
     }
-    done += 1;
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    logIssue('Faces', `Face scan stopped: ${msg}`);
+    showToast(`Face scan stopped — ${msg}. The ${done} clip${done !== 1 ? 's' : ''} already scanned are remembered.`, 5500);
+  } finally {
+    clearAllAnalyzing(); clearTask('faces');
   }
-  clearAllAnalyzing(); clearTask('faces');
   scheduleDraftSave();   // make sure the last clips' scanned-flags persist
   if (faceScanAborted) { showToast(`Face scan stopped — ${done} scanned so far are remembered (resume to do the rest).`, 4500); }
   const toReview = clusters.length;
@@ -8116,7 +8725,11 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   try { people = await window.api.getPeople(); } catch { people = []; }
   return new Promise((resolveGrid) => {
   const names = people.map((p) => p.name);
-  const byKey = {}; for (const c of clipList) byKey[c.key || c.sourcePath] = c;
+  // Resolve a cluster's clipKeys back to clips by BOTH the stable fingerprint and the absolute
+  // path: clusters written before the key fix are still sitting in faces-pending.json keyed by
+  // path, and a pending review is exactly the work we must never drop on the floor.
+  const byKey = {};
+  for (const c of clipList) { byKey[clipKey(c)] = c; if (c.sourcePath) byKey[c.sourcePath] = c; }
   clusters.forEach((c, i) => { c._i = i; });
   const ov = document.createElement('div'); ov.className = 'modal-overlay';
   ov.innerHTML = `<div class="modal-card face-grid-card">
@@ -8130,11 +8743,19 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   ov.querySelector('.fg-done').addEventListener('click', close);
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
 
+  // Confirming a face is REAL WORK — it's the whole point of the review grid — so it has to be
+  // persisted the instant it happens. It wasn't: tagging only mutated clip.people in memory,
+  // while close() ran savePendingNow(), which DROPS every confirmed cluster from
+  // faces-pending.json. So confirming faces and then crashing (or being killed) lost the tags
+  // from the clips AND from the pending review — the work existed nowhere. It survived only by
+  // luck, if a later edit or a window blur happened to trigger a flush first.
   function tagClips(cl, name) {
     for (const k of cl.clipKeys) { const c = byKey[k]; if (c) c.people = [...new Set([...(c.people || []), name])]; }
+    flushDraftSave();
   }
   function untagClips(cl, name) {
     for (const k of cl.clipKeys) { const c = byKey[k]; if (c && Array.isArray(c.people)) c.people = c.people.filter((n) => n !== name); }
+    flushDraftSave();
   }
   async function assign(cl, name) {
     name = String(name || '').trim();
@@ -8240,11 +8861,17 @@ function showFaceSetup(reason) {
   const close = () => ov.remove();
   ov.querySelector('.fs-ok').addEventListener('click', close);
   ov.querySelector('.fs-retry').addEventListener('click', async () => {
-    const btn = ov.querySelector('.fs-retry'); btn.disabled = true; btn.textContent = 'Loading…';
-    _faceReady = null;
-    const r = await ensureFaceModels();
-    if (r && r.ok) { close(); showToast('Face recognition ready ✓'); }
-    else { btn.disabled = false; btn.textContent = 'Try again'; const p = ov.querySelector('.fs-reason'); if (p) p.textContent = `Still couldn’t start — ${(r && r.error) || 'unknown error'} Make sure your graphics drivers are up to date.`; }
+    const btn = ov.querySelector('.fs-retry');
+    const fail = (why) => { const p = ov.querySelector('.fs-reason'); if (p) p.textContent = `Still couldn’t start — ${why || 'unknown error'} Make sure your graphics drivers are up to date.`; };
+    // _faceReady is nulled to force a real retry — so if ensureFaceModels THREW, the old code
+    // left the memo cleared AND the button dead on "Loading…": face recognition was
+    // unrecoverable without a restart. withBusyBtn's finally always gives the button back.
+    await withBusyBtn(btn, 'Loading…', async () => {
+      _faceReady = null;
+      const r = await ensureFaceModels();
+      if (r && r.ok) { close(); showToast('Face recognition ready ✓'); }
+      else fail((r && r.error) || 'unknown error');
+    }, fail);
   });
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
 }
@@ -8525,10 +9152,20 @@ function showModelStore(opts = {}) {
       if (p.error) { statusEl.textContent = `Error: ${p.error}`; return; }
       statusEl.textContent = `${name}: ${p.status || 'working'}${p.percent != null ? ` · ${p.percent}%` : ''}`;
     });
-    const r = await window.api.aiPull(name);
-    if (unsub) { unsub(); unsub = null; }
-    pulling = false;
-    return r && r.ok;
+    // ai:pull talks to Ollama over HTTP, so it can REJECT (daemon stopped mid-download).
+    // Without the `finally`, that left `pulling` stuck true — every later download was
+    // refused with "A download is already running" until the app restarted — and orphaned
+    // the progress listener.
+    try {
+      const r = await window.api.aiPull(name);
+      return !!(r && r.ok);
+    } catch (e) {
+      statusEl.textContent = `Error: ${(e && e.message) || 'download failed'}`;
+      return false;
+    } finally {
+      if (unsub) { unsub(); unsub = null; }
+      pulling = false;
+    }
   }
   async function load() {
     q('.ms-status').textContent = 'Loading…';
@@ -8901,20 +9538,19 @@ function showAiSettings() {
   });
   $$('.ai-learn-btn').addEventListener('click', async () => {
     const btn = $$('.ai-learn-btn'); const st = $$('.ai-learn-status');
-    btn.disabled = true; st.classList.remove('hidden'); st.textContent = 'Reading your names and learning your style…';
-    const r = await window.api.aiLearnNames(learnDir ? { dir: learnDir } : {});
-    btn.disabled = false;
-    if (!r || !r.ok) { st.textContent = `Couldn't learn: ${r ? r.error : 'please try again'}`; return; }
+    st.classList.remove('hidden'); st.textContent = 'Reading your names and learning your style…';
+    const r = await withBusyBtn(btn, null, () => window.api.aiLearnNames(learnDir ? { dir: learnDir } : {}),
+      (msg) => { st.textContent = `Couldn't learn: ${msg}`; });
+    if (!r || !r.ok) { if (r) st.textContent = `Couldn't learn: ${r.error || 'please try again'}`; return; }
     st.textContent = `Read ${r.examples} of your names.`;
     if (!(r.proposed && r.proposed.length)) { st.textContent += ' No new rules to add — your style is already captured.'; return; }
     showProposedRulesDialog('Rules learned from your style', `From ${r.examples} of your own names. Tick the ones to remember.`, r.proposed, (mems) => { c.memories = mems.map((m) => ({ ...m })); renderMems(); });
   });
   // Tidy & group: consolidate many tiny memories into fewer grouped ones (confirm).
   $$('.ai-mem-tidy').addEventListener('click', async () => {
-    const btn = $$('.ai-mem-tidy'); const old = btn.textContent; btn.disabled = true; btn.textContent = 'Grouping…';
-    const r = await window.api.aiConsolidateMemories();
-    btn.disabled = false; btn.textContent = old;
-    if (!r || !r.ok) { showToast(`Couldn't group: ${r ? r.error : 'please try again'}`); return; }
+    const btn = $$('.ai-mem-tidy');
+    const r = await withBusyBtn(btn, 'Grouping…', () => window.api.aiConsolidateMemories());
+    if (!r || !r.ok) { if (r) showToast(`Couldn't group: ${r.error || 'please try again'}`); return; }
     showProposedRulesDialog('Tidy & group memories', `This replaces your ${r.before} memories with these ${r.proposed.length} grouped ones. Tick to keep, then Apply.`,
       r.proposed, (mems) => { c.memories = mems.map((m) => ({ ...m })); renderMems(); }, { replace: true });
   });
@@ -9169,7 +9805,11 @@ async function goHome() {
   $('finalize').classList.add('hidden');
   $('phone').classList.add('hidden');
   $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
-  state.phoneBackup = false;
+  // (no phoneBackup flag to reset — isPhoneFlow() is derived from state.scannedDrive)
+  // Leaving the flow ends the copy→verify→delete session. Anything we copied belonged to THAT
+  // session; carrying it home meant a later, unrelated flow could still offer to delete it.
+  // (Deleting from a card is only ever allowed as a deliberate act within the flow that copied it.)
+  state.copied = [];
   if (state.drive) $('driveBanner').classList.remove('hidden');
   saveSession({ view: 'home' });   // back on Home → nothing to resume into next launch
   refreshDriveList();   // re-read removable drives when returning home
@@ -9309,7 +9949,11 @@ async function showWirelessPairModal() {
   document.body.appendChild(ov);
   const body = ov.querySelector('.wl-body');
   let unsub = null; let closed = false;
-  const cleanup = () => { closed = true; try { if (unsub) unsub(); } catch { /* */ } try { window.api.wirelessCancel(); } catch { /* */ } ov.remove(); };
+  // ONE place that drops the wireless:status subscription. It used to be open-coded in each
+  // exit path, and the success path (finishOk) forgot it — so every successful pairing
+  // orphaned a live listener holding a detached statusEl for the life of the app.
+  const dropSub = () => { if (unsub) { try { unsub(); } catch { /* */ } unsub = null; } };
+  const cleanup = () => { closed = true; dropSub(); try { window.api.wirelessCancel(); } catch { /* */ } ov.remove(); };
   ov.querySelector('.wl-close').addEventListener('click', cleanup);
   ov.addEventListener('click', (e) => { if (e.target === ov) cleanup(); });
 
@@ -9318,11 +9962,11 @@ async function showWirelessPairModal() {
     showToast('📶 Phone paired over Wi-Fi — it’s now under Devices.', 5000);
     renderPhFast();
     try { refreshDriveList(); } catch { /* not on the home screen */ }
-    setTimeout(() => { if (!closed) { closed = true; ov.remove(); } }, 2800);
+    setTimeout(() => { if (!closed) { closed = true; dropSub(); ov.remove(); } }, 2800);
   };
   const showManual = () => {
     try { window.api.wirelessCancel(); } catch { /* */ }
-    if (unsub) { try { unsub(); } catch { /* */ } unsub = null; }
+    dropSub();
     body.innerHTML = `
       <p class="small" style="text-align:left">On the phone open <b>Wireless debugging → Pair device with pairing code</b>. It shows an <b>IP address &amp; port</b> and a <b>6-digit code</b> — type those two here:</p>
       <label class="pref-label">Pairing IP address &amp; port</label>
@@ -9609,8 +10253,15 @@ async function phoneCopy() {
 // Load the staged local files into the rename flow as clips — so phone photos AND
 // videos get the FULL treatment (AI naming, faces, tags) in the normal rename screen.
 async function enterRenameWithPhoneFiles(staged) {
-  state.phoneBackup = true;
+  // scannedDrive below IS the phone marker — isPhoneFlow() derives from it.
   state.scannedDrive = '__phone__';
+  resetClipFilter();   // same as the card path — a stale filter must not hide this batch's clips
+  // state.copied is "what THIS flow copied, and may therefore offer to delete from its source".
+  // It was only ever cleared in startFlow's fresh-scan branch, so entering the phone flow after
+  // a card import left the PREVIOUS CARD's clips in it — and the shared "3 Delete" step pill
+  // (:520 gates on state.copied.length) would happily list them. You were one pill-click from
+  // deleting a card from inside the phone flow. A new flow starts with nothing to delete.
+  state.copied = [];
   state.scannedFiles = staged.map((f) => {
     const clip = {
       ...f,
@@ -9689,9 +10340,15 @@ document.querySelectorAll('.steps .step').forEach((stepEl) => {
       if (n === 2) { const cs = await window.api.copyStatus(); if (cs && cs.active) goToCopyProgress(cs); return; }
       if (!(await confirmLeaveTransfer())) return;
     }
-    if (n === 1 && state.scannedFiles.length) buildRenameStep();
-    else if (n === 2 && state.scannedFiles.length) buildUploadStep();
-    else if (n === 3 && state.copied.length) buildDeleteStep();
+    // Say WHY a step won't open. These guards used to fail completely silently: you clicked the
+    // pill, nothing happened, nothing was said, and there was no way to tell whether the app was
+    // broken or you'd missed a prerequisite.
+    if (n === 1 && !state.scannedFiles.length) { showToast('Nothing scanned yet — pick a drive first.'); return; }
+    if (n === 2 && !state.scannedFiles.length) { showToast('Nothing scanned yet — pick a drive first.'); return; }
+    if (n === 3 && !state.copied.length) { showToast('Nothing has been copied off this card yet — copy first, then you can clear it.', 4000); return; }
+    if (n === 1) buildRenameStep();
+    else if (n === 2) buildUploadStep();
+    else if (n === 3) buildDeleteStep();
   });
 });
 
@@ -9739,11 +10396,16 @@ function buildUploadStep() {
   renderUploadList();
   renderPhoneDest();
   refreshUploadFreeSpace();
-  if (state.phoneBackup) $('copyStartBtn').textContent = 'Copy out';
-  // AUTO MODE: once you've batched your photos and continued, copy out to Uncompressed
-  // on its own — no extra click. (Copying never deletes anything.)
-  if (autoMode() && state.phoneBackup && !copyInProgress) {
-    showToast('⚡ Auto mode — copying to Uncompressed…', 3000);
+  if (isPhoneFlow()) $('copyStartBtn').textContent = 'Copy out';
+  // AUTO MODE: once you've named/batched and continued, copy out on its own — no extra click.
+  //
+  // This was gated on isPhoneFlow(), so on a CARD auto mode did nothing at all — despite the
+  // toggle promising "Pick a device — it pulls, copies & analyzes." A GoPro card is a device.
+  // Safe by construction: we're on the copy step (so naming is done), runCopy still does its
+  // free-space check and still asks before copying into a volume that can't hold it, and copying
+  // never deletes — clearing the card remains a deliberate act on the Delete step.
+  if (autoMode() && !copyInProgress) {
+    showToast(isPhoneFlow() ? '⚡ Auto mode — copying to Uncompressed…' : '⚡ Auto mode — copying to intake…', 3000);
     setTimeout(() => { if (!copyInProgress && !$('step2').classList.contains('hidden')) runCopy(); }, 800);
   }
 }
@@ -9767,7 +10429,7 @@ async function refreshUploadFreeSpace() {
 function renderPhoneDest() {
   let box = document.getElementById('phoneDestBox');
   const photos = clipPhotos().length;
-  if (!state.phoneBackup && !photos) { if (box) box.remove(); return; }
+  if (!isPhoneFlow() && !photos) { if (box) box.remove(); return; }
   if (!box) {
     box = document.createElement('div'); box.id = 'phoneDestBox'; box.className = 'phone-dest';
     const slot = document.getElementById('phoneDestSlot');
@@ -9919,8 +10581,28 @@ async function distributeFlowPhotos() {
   const { jobs, routedN } = buildPhotoJobs(photos, true);
   if (!jobs.length) return '';
   $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
-  let copied = 0; let failed = 0;
-  try { const r = await window.api.distributePhotos({ jobs }); copied = (r && r.copied) || 0; failed = (r && r.failed) || 0; } catch { failed = jobs.length; }
+  let copied = 0; let failed = 0; let results = [];
+  try { const r = await window.api.distributePhotos({ jobs }); copied = (r && r.copied) || 0; failed = (r && r.failed) || 0; results = (r && r.results) || []; } catch { failed = jobs.length; }
+
+  // Photos are FOOTAGE too, and they were being treated as a side-effect: they never entered
+  // state.copied (so they could never be cleared off the card — the delete step simply didn't
+  // know they existed) and they never got a finalMeta record (so everything the AI worked out
+  // about them was thrown away the moment they left the card). Both are fixed here, off the
+  // per-job results, so a photo whose copy FAILED is never offered for deletion.
+  const landed = new Map();   // sourcePath -> the first destination that verified
+  for (const r of results) { if (r && r.ok && !landed.has(r.src)) landed.set(r.src, r.dest); }
+  const safePhotos = photos.filter((p) => landed.has(p.sourcePath));
+  if (safePhotos.length) {
+    for (const p of safePhotos) {
+      state.copied.push({ sourcePath: p.sourcePath, destPath: landed.get(p.sourcePath), name: p.name, ext: p.ext, size: p.size });
+    }
+    try {
+      window.api.recordCopied(safePhotos.map((p) => ({
+        key: clipKey(p), source: p.sourcePath, dest: landed.get(p.sourcePath), name: p.name,
+      })));
+    } catch { /* non-fatal */ }
+    saveFlowFinalMeta(safePhotos);   // carry the AI's work forward to Organize, same as videos
+  }
   const names = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ') || 'Photos Temp';
   // Surface partial failures instead of implying every photo copied (the copy is now
   // fingerprint-verified, so "failed" means a real, unverifiable copy — worth showing).
@@ -9959,17 +10641,26 @@ async function runPhoneCopy() {
     try { window.api.setProgress(p.total ? p.done / p.total : -1); } catch { /* ignore */ }
   });
   let res = { ok: true, copied: 0 };
-  if (renameJobs.length) { try { res = await window.api.copyPhoneVideos({ jobs: renameJobs }); } catch (e) { res = { ok: false, error: e.message }; } }
-
-  // Distribute the renamed PHOTOS (already in Photos Temp) to computer/NAS + Projects.
-  const { jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false);
   let distributed = 0;
-  if (pjobs.length) {
-    $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
-    try { const r2 = await window.api.distributePhotos({ jobs: pjobs }); distributed = (r2 && r2.copied) || 0; } catch { /* non-fatal */ }
+  let pjobs = []; let dests = {}; let routedN = 0;
+  // The two awaits below are individually try/caught, but buildPhotoJobs() between them is
+  // NOT — and a sync throw there would unwind past `copyInProgress = false`, jamming the
+  // worst latch in the app (it nags "Leave the transfer view?" on every navigation, hijacks
+  // the step pills and blocks auto-mode, permanently). The latch release belongs in a
+  // finally so it holds no matter what runs in here.
+  try {
+    if (renameJobs.length) { try { res = await window.api.copyPhoneVideos({ jobs: renameJobs }); } catch (e) { res = { ok: false, error: e.message }; } }
+
+    // Distribute the renamed PHOTOS (already in Photos Temp) to computer/NAS + Projects.
+    ({ jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false));
+    if (pjobs.length) {
+      $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
+      try { const r2 = await window.api.distributePhotos({ jobs: pjobs }); distributed = (r2 && r2.copied) || 0; } catch { /* non-fatal */ }
+    }
+  } finally {
+    off(); clearTask('phone-copy'); copyInProgress = false; hideCopyChip();
+    try { window.api.setProgress(-1); } catch { /* ignore */ }
   }
-  off(); clearTask('phone-copy'); copyInProgress = false; hideCopyChip();
-  try { window.api.setProgress(-1); } catch { /* ignore */ }
   // Remember what we just backed up (by original phone name+size) so next time the
   // smart chooser knows it's no longer "new". Photos were already pulled to Photos Temp
   // (failed ones never reach scannedFiles); videos only count if NONE failed to copy —
@@ -10011,27 +10702,45 @@ async function sendPendingVideosToUncompressed() {
   const jobs = (phonePendingVideos || []).slice();
   if (!jobs.length) { showToast('No staged videos to send'); return; }
   const btn = document.getElementById('phSendUncompressedBtn');
+  const restoreLabel = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   setTask('phone-send', 'Sending to Uncompressed', 0, jobs.length, 'moving', '');
   const off = window.api.onPhoneCopyProgress((p) => setTask('phone-send', 'Sending to Uncompressed', p.done || 0, p.total || jobs.length, 'moving', p.name || ''));
   let res = { copied: 0 };
-  try { res = await window.api.copyPhoneVideos({ jobs }); } catch { /* ignore */ }
-  off(); clearTask('phone-send');
+  let err = null;
+  try { res = await window.api.copyPhoneVideos({ jobs }); } catch (e) { err = (e && e.message) || String(e); }
+  finally { off(); clearTask('phone-send'); }
+  // This used to `catch { /* ignore */ }` and then claim success with a ✓ regardless — a
+  // failed send reported "0 videos → Uncompressed ✓" and cleared the pending list, so the
+  // videos were silently never sent and the button vanished. Keep them pending on failure.
+  if (err) {
+    if (btn) { btn.disabled = false; btn.textContent = restoreLabel; }
+    showToast(`Couldn’t send to Uncompressed — ${err}. They’re still pending — try again.`, 6000);
+    logIssue('Phone', `Send to Uncompressed failed: ${err}`);
+    return;
+  }
   phonePendingVideos = [];
   if (btn) { btn.classList.add('hidden'); }
   showToast(`${(res && res.copied) || 0} video${((res && res.copied) !== 1) ? 's' : ''} → 01 - Uncompressed — Tdarr can compress them now ✓`, 5000);
 }
 
 async function runCopy() {
-  if (state.phoneBackup) return runPhoneCopy();
+  if (isPhoneFlow()) return runPhoneCopy();   // derived from the clips actually loaded — a flag could drift
   maybeFlushEdits(true);   // learn from any AI-name edits before this batch leaves
   const clips = filesToCopy();
   const files = clips.map((f) => ({
     sourcePath: f.sourcePath, name: f.name, ext: f.ext, size: f.size, newName: finalStem(f)
   }));
   if (!files.length) {
-    // Photos-only card (no video) → just back up the photos.
-    if (clipPhotos().length) { const s = await distributeFlowPhotos(); showDone(s || 'Photos backed up'); }
+    // Photos-only card (no video) → back up the photos, then offer the Delete step exactly as the
+    // video path does. Photos used to dead-end here: backed up, but invisible to the delete step,
+    // so a photos-only card could never be cleared through the app at all.
+    if (clipPhotos().length) {
+      const s = await distributeFlowPhotos();
+      showDone(s || 'Photos backed up');
+      const watching = !$('flow').classList.contains('hidden') && !$('step2').classList.contains('hidden');
+      if (state.copied.length && watching) setTimeout(() => buildDeleteStep(), 500);
+    }
     return;
   }
   // SPACE CHECK — make sure the intake (and NAS) can actually hold this import before
@@ -10056,18 +10765,54 @@ async function runCopy() {
   copyInProgress = true;
   showCopyingUI();
   subscribeProgress();
-  const res = await window.api.startCopy(files, state.intakeFolder);
-  copyInProgress = false;
-  unsubscribeProgress();
-  hideCopyChip();
+  // startCopy moves multi-GB across removable media — the likeliest call in the app to
+  // REJECT (card yanked, disk full, EPERM). The teardown below therefore has to be in a
+  // `finally`: a stuck `copyInProgress` doesn't just leak the progress subscription, it
+  // nags "Leave the transfer view?" on every navigation (08-people.js:1436), hijacks the
+  // step pills into copyStatus() (:514) and blocks auto-mode from ever copying again
+  // (:571) — for the rest of the session. Nothing short of a restart cleared it.
+  let res = null; let err = null;
+  try {
+    res = await window.api.startCopy(files, state.intakeFolder);
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  } finally {
+    copyInProgress = false;
+    unsubscribeProgress();
+    hideCopyChip();
+  }
+  if (err) {
+    buildUploadStep();
+    $('copyLabel').textContent = `Copy failed: ${err}`;
+    showToast(`Copy failed — ${err}`, 6000);
+    logIssue('Copy', err);
+    return;
+  }
+
+  // A cancelled or failed copy STILL copied some files, and those are complete and verified —
+  // copy:start only pushes a file into `copied` after it has been fingerprint-checked against the
+  // card. Both of these paths used to just `return`, throwing that list away: the clips were on
+  // disk, but the app had forgotten them. So they could never be cleared off the card, and the next
+  // run copied them AGAIN, landing beside the originals as " (1)" duplicates. Record what landed.
+  const keepPartial = (why) => {
+    const done = (res && Array.isArray(res.copied)) ? res.copied : [];
+    if (!done.length) return;
+    state.copied = done;
+    try {
+      window.api.recordCopied(done.map((c) => ({ key: clipKey(c), source: c.sourcePath, dest: c.destPath, name: c.name })));
+    } catch { /* non-fatal */ }
+    showToast(`${done.length} clip${done.length !== 1 ? 's' : ''} copied and verified before the ${why} — they're safe, and you can clear them from the Delete step.`, 7000);
+  };
 
   if (res && res.cancelled) {
+    keepPartial('cancel');
     buildUploadStep();
-    $('copyLabel').textContent = 'Copy cancelled';
+    $('copyLabel').textContent = `Copy cancelled${state.copied.length ? ` — ${state.copied.length} already copied and kept` : ''}`;
     return;
   }
   if (!res || !res.ok) {
-    if (!(res && res.cancelled)) logIssue('Copy', (res && res.error) || 'unknown error');
+    keepPartial('failure');
+    logIssue('Copy', (res && res.error) || 'unknown error');
     $('copyLabel').textContent = `Copy failed: ${res ? res.error : 'unknown error'}`;
     $('copyStartBtn').classList.remove('hidden');
     $('copyStartBtn').disabled = false;
@@ -10077,6 +10822,15 @@ async function runCopy() {
   }
   if (res.nas && res.nas.failed) logIssue('NAS backup', `${res.nas.failed} file(s) failed to back up to NAS`);
   state.copied = res.copied;
+  // Remember what we copied, DURABLY. Clearing the card is deliberately a separate, later act —
+  // compress, organize days on, and only then wipe. But this list used to live only in memory, so
+  // a restart made the Delete step a silent no-op and the ONLY way to clear a card was to copy the
+  // whole thing again. Keyed by the stable name__size fingerprint → survives replug and restart.
+  try {
+    window.api.recordCopied(state.copied.map((c) => ({
+      key: clipKey(c), source: c.sourcePath, dest: c.destPath, name: c.name,
+    })));
+  } catch { /* non-fatal — the in-memory list still drives this session */ }
   // Persist a metadata record keyed by the FINAL filename so the Finalize step can
   // match the re-encoded compressed file and write its metadata (incl. observation/
   // people, which is what lets Organize place footage correctly).
@@ -10103,7 +10857,11 @@ async function runCopy() {
   $('copyPct').textContent = '100%';
   // Auto-analyze the copied footage in the BACKGROUND (if AI is on) so it's already
   // analyzed by the time you organize — then re-save its metadata. Fire-and-forget.
-  autoBackgroundEnrich(clips);   // silent face-tag (auto mode) + vision analysis
+  // Photos are analysable — getContactSheet feeds the vision model the photo ITSELF rather than an
+  // ffmpeg frame grid (main-mod/06-copy-transfer.js:731). But `clips` here is filesToCopy(), which
+  // strips photos out, so on a card they were silently never enriched: no observation, no people,
+  // no tags, nothing for Organize to place them by. (The phone path already passes everything.)
+  autoBackgroundEnrich([...clips, ...clipPhotos()]);   // silent face-tag (auto mode) + vision analysis
   // Only auto-advance to Delete if the user is still watching the copy; if they
   // navigated away, leave them be (they can reach Delete via the step tabs).
   const watching = !$('flow').classList.contains('hidden') && !$('step2').classList.contains('hidden');
@@ -10138,6 +10896,12 @@ function saveFlowFinalMeta(clips) {
     };
     for (const fld of organizeFields) rec[fld.id] = clip[fld.id] || '';
     rec.tags = Array.isArray(clip.tags) ? clip.tags : [];
+    // The same-shoot decision the user ALREADY confirmed ("Part of an existing project?" →
+    // "Will file N clips into 'X' at the organize step"). It was only ever persisted into
+    // renameDrafts — and the drafts for copied clips are deleted immediately after the copy —
+    // so by the time Organize ran, the answer was gone and the promise was quietly broken. It
+    // has to ride in finalMeta, which is what actually survives the trip to the Organize step.
+    rec.ledgerRel = clip._ledgerRel || clip.ledgerRel || '';
     rec.keywords = [clip.subject, clip.location, clip.shotType, ...organizeFields.map((f) => clip[f.id]), ...rec.tags].filter(Boolean);
     map[finalName(clip)] = rec;
   }
@@ -10160,30 +10924,41 @@ async function autoAnalyzeAfterCopyRun(clips) {
   showToast(`Analyzing ${sample ? `${reps.length} subject${reps.length !== 1 ? 's' : ''}` : `${reps.length} clip${reps.length !== 1 ? 's' : ''}`} in the background for organizing…`, 4500);
   setAiRunClips(reps);
   let done = 0;
-  for (const c of reps) {
-    if (aiAborted) break;
-    const i = state.scannedFiles.indexOf(c);
-    setTask('ai', aiModelLabel(), done + 1, reps.length, 'analyzing', c.name);
-    aiStageAdvance(c, 'analyzing');
-    try { if (i >= 0) await aiSuggestClip(i, 'empty', { quiet: true }); } catch { /* keep going */ }
-    if (sample) {
-      const obs = obsOf(c);
-      for (const sib of (groups[key(c)] || [])) { if (sib !== c && obs && !obsOf(sib)) { sib.observation = obs; try { clipObsCache[clipKey(sib)] = { obs, ts: Date.now() }; window.api.saveClipObs({ key: clipKey(sib), obs }); } catch { /* ignore */ } } }
+  // The per-clip suggest is already guarded, but setTask/aiStageAdvance/saveFlowFinalMeta
+  // are not — and our ONLY caller (08-people.js:214) wraps this whole call in a
+  // `catch { /* non-fatal */ }`. So a throw in here used to leave autoAnalyzeRunning stuck
+  // true with NO error surfaced anywhere, and the guard at the top of this function then
+  // silently refused every later auto-analyze for the rest of the session.
+  try {
+    for (const c of reps) {
+      if (aiAborted) break;
+      const i = state.scannedFiles.indexOf(c);
+      setTask('ai', aiModelLabel(), done + 1, reps.length, 'analyzing', c.name);
+      aiStageAdvance(c, 'analyzing');
+      try { if (i >= 0) await aiSuggestClip(i, 'empty', { quiet: true }); } catch { /* keep going */ }
+      if (sample) {
+        const obs = obsOf(c);
+        for (const sib of (groups[key(c)] || [])) { if (sib !== c && obs && !obsOf(sib)) { sib.observation = obs; try { clipObsCache[clipKey(sib)] = { obs, ts: Date.now() }; window.api.saveClipObs({ key: clipKey(sib), obs }); } catch { /* ignore */ } } }
+      }
+      done += 1;
     }
-    done += 1;
+    saveFlowFinalMeta(clips);   // re-save so Organize gets the new observations/people
+    if (!aiAborted) showToast('Footage analyzed — it’ll place itself correctly when you organize ✓', 4000);
+  } catch (e) {
+    logIssue('AI', `Background analysis stopped: ${(e && e.message) || e}`);
+  } finally {
+    clearTask('ai'); aiStageClose();
+    autoAnalyzeRunning = false;
   }
-  clearTask('ai'); aiStageClose();
-  saveFlowFinalMeta(clips);   // re-save so Organize gets the new observations/people
-  autoAnalyzeRunning = false;
-  if (!aiAborted) showToast('Footage analyzed — it’ll place itself correctly when you organize ✓', 4000);
 }
 
 $('cancelCopyBtn').addEventListener('click', async () => {
   const ok = await confirmDialog('Cancel the copy?', 'Files already copied stay in the intake folder.', 'Cancel copy', 'Keep copying');
   if (!ok) return;
-  $('cancelCopyBtn').disabled = true;
-  $('cancelCopyBtn').textContent = 'Cancelling…';
-  await window.api.cancelCopy();
+  // If cancelCopy REJECTED, the button stayed disabled on "Cancelling…" forever — meaning a
+  // runaway copy had no working stop button at all. Restore it so the cancel can be retried.
+  await withBusyBtn($('cancelCopyBtn'), 'Cancelling…', () => window.api.cancelCopy(),
+    (msg) => showToast(`Couldn’t cancel — ${msg}. Try again.`, 6000));
 });
 
 // ---------------------------------------------------------------------------
@@ -10361,13 +11136,46 @@ $('deleteConfirmBtn').addEventListener('click', async () => {
   if (failedIdx.length) body += ` ⚠ ${failedIdx.length} file${failedIdx.length > 1 ? 's' : ''} could NOT be verified and will be KEPT on the card.`;
   const ok = await confirmDialog(`Delete ${verifiedIdx.length} verified file${verifiedIdx.length > 1 ? 's' : ''} from the card?`, body, 'Delete verified', 'Cancel');
   if (!ok) return;
-  const paths = verifiedIdx.map((i) => state.copied[i].sourcePath);
+  // Send {source, dest} pairs, not bare paths: delete:source re-verifies every file against
+  // its copy in the main process and REFUSES anything it can't prove was copied. This gate is
+  // deliberately duplicated there — it must not depend on this renderer being correct.
+  const items = verifiedIdx.map((i) => ({ source: state.copied[i].sourcePath, dest: state.copied[i].destPath }));
   btn.disabled = true; btn.textContent = 'Deleting…';
-  const results = await window.api.deleteSource(paths);
+  // Card yanked / permission denied is precisely when a delete rejects — and that used to
+  // strand the button disabled at "Deleting…" with step 3 never completing.
+  let results = null;
+  try {
+    results = await window.api.deleteSource(items);
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    showToast(`Couldn’t delete from the card — ${msg}`, 6000);
+    logIssue('Delete', msg);
+    return;
+  } finally {
+    btn.disabled = false; btn.textContent = restore;
+  }
+  results = Array.isArray(results) ? results : [];
+  // The card no longer holds these — drop them from the durable copied log so a later scan of this
+  // card doesn't keep offering to delete files that are already gone. (A REFUSED file was NOT
+  // deleted and must stay in the log, so it can still be dealt with.)
+  try {
+    const deleted = new Set(results.filter((r) => r.ok).map((r) => r.path));
+    const gone = state.copied.filter((c) => deleted.has(c.sourcePath)).map((c) => clipKey(c));
+    if (gone.length) window.api.forgetCopied(gone);
+  } catch { /* non-fatal */ }
   const okCount = results.filter((r) => r.ok).length;
-  const delFail = results.length - okCount;
+  // A REFUSED file is not a failed delete — it means the main-process gate caught a file this
+  // screen believed was verified when it wasn't. That's the safety net firing, and it points at
+  // a real bug, so say so plainly instead of burying it in "couldn't be deleted".
+  const refused = results.filter((r) => r.refused);
+  const delFail = results.filter((r) => !r.ok && !r.refused).length;
+  if (refused.length) {
+    refused.forEach((r) => logIssue('Delete', `REFUSED (kept on card): ${r.path} — ${r.error}`));
+    showToast(`⚠ ${refused.length} file${refused.length > 1 ? 's were' : ' was'} NOT deleted — the safety check couldn’t confirm the copy. They’re still on the card.`, 8000);
+  }
   let msg = `Copied ${state.copied.length} clip${state.copied.length > 1 ? 's' : ''} to intake · ${okCount} verified & removed from card`;
   if (delFail) msg += ` · ${delFail} couldn’t be deleted`;
+  if (refused.length) msg += ` · ${refused.length} kept (safety check)`;
   if (failedIdx.length) msg += ` · ${failedIdx.length} kept (couldn’t verify)`;
   finishFlow(msg);
 });
@@ -10444,7 +11252,11 @@ function renderFinMap() {
   const host = $('finMapHost'); if (!host) return;
   const sel = (finSelected().length ? finSelected() : finMatched());
   if (!sel.length) { host.innerHTML = '<p class="muted small">No matched clips — go back to the Match step and tick some.</p>'; return; }
-  showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ref: f })), {
+  // _ledgerRel closes the loop on the same-shoot offer: the destination map reads it (07-organize-
+  // map.js:86,166,277) to file these clips straight into the project the user already confirmed.
+  // It was never carried out of finalMeta into here, so the map always saw '' and the clips fell
+  // through to _Unsorted — the app asked, the user answered, and then it ignored the answer.
+  showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ledgerRel: (f.meta && f.meta.ledgerRel) || '', _ref: f })), {
     editable: true,
     host,
     embedMeta: () => $('finEmbed').checked,
@@ -10526,8 +11338,16 @@ async function finRunScan() {
   $('finScanState').classList.remove('hidden');
   $('finScanState').innerHTML = `<div class="scan-busy"><span class="illo scan-illo">${ILLO_SCAN}</span><p class="scan-busy-tx">Scanning your compressed clips…</p></div>`;
   $('finList').innerHTML = '';
-  const res = await window.api.finalizeScan(finScan.dir, { includePhotos: !!uiPrefs.finalizePhotos });
-  $('finScanState').classList.add('hidden');
+  // A throw here used to leave the "Scanning your compressed clips…" spinner turning forever
+  // with finNext1Btn never enabled — Organize step 1 was simply dead, and silent about it.
+  let res = null;
+  try {
+    res = await window.api.finalizeScan(finScan.dir, { includePhotos: !!uiPrefs.finalizePhotos });
+  } catch (e) {
+    res = { ok: false, error: (e && e.message) || String(e) };
+  } finally {
+    $('finScanState').classList.add('hidden');
+  }
   if (!res || !res.ok) {
     $('finSummaryLine').textContent = `Scan failed: ${res ? res.error : 'unknown error'}`;
     $('finNext1Btn').disabled = true;
@@ -11066,14 +11886,33 @@ async function openCompress() {
       }
       setTask('compress', 'Compressing', (p.index || 0) + 1, files.length, p.phase || 'compressing', p.name || '');
     });
-    const res = await window.api.compressRun({ files, outDir: cmpState.out, settings: { preset: cmpState.preset, skipExisting: $$('#cmpSkip').checked } });
-    if (cmpOff) { cmpOff(); cmpOff = null; }
-    clearTask('compress');
-    cmpState.running = false;
+    // compress:run can REJECT (ffmpeg missing, EPERM on the out dir) — not just resolve
+    // {ok:false}. The cleanup below therefore has to live in a `finally`: without it one
+    // failed run wedged the dialog forever (Run+Close hidden, inputs disabled, task chip
+    // stuck) AND orphaned the progress listener, which then double-wrote the rows on the
+    // next run. Never `await` an IPC call between a subscribe and its unsubscribe without one.
+    let res = null; let err = null;
+    try {
+      res = await window.api.compressRun({ files, outDir: cmpState.out, settings: { preset: cmpState.preset, skipExisting: $$('#cmpSkip').checked } });
+    } catch (e) {
+      err = (e && e.message) || String(e);
+    } finally {
+      if (cmpOff) { cmpOff(); cmpOff = null; }
+      clearTask('compress');
+      cmpState.running = false;
+      $$('#cmpCancel').classList.add('hidden'); $$('#cmpClose').classList.remove('hidden');
+    }
+    if (err) {
+      // Put the dialog back the way it was so the run can actually be retried.
+      ov.querySelectorAll('.cmp-pick, .cmp-preset, #cmpSkip, #cmpSelAll, .cmp-cb').forEach((el) => { el.disabled = false; });
+      $$('#cmpRun').classList.remove('hidden');
+      showToast(`Compress failed — ${err}`, 6000);
+      logIssue('Compress', err);
+      return;
+    }
     const ok = (res && res.results || []).filter((r) => r.ok && !r.skipped);
     const failed = (res && res.results || []).filter((r) => !r.ok);
     const saved = ok.reduce((s, r) => s + Math.max(0, (r.inBytes || 0) - (r.outBytes || 0)), 0);
-    $$('#cmpCancel').classList.add('hidden'); $$('#cmpClose').classList.remove('hidden');
     if (ok.length) $$('#cmpOrganize').classList.remove('hidden');
     showToast(res && res.cancelled ? `Stopped — ${ok.length} compressed` : `Compressed ${ok.length} clip${ok.length !== 1 ? 's' : ''}${saved ? ` · saved ${fmtBytes(saved)}` : ''}${failed.length ? ` · ${failed.length} failed` : ''} ✓`, 6000);
     if (failed.length) failed.forEach((r) => logIssue('Compress', `${r.name}: ${r.error || 'failed'}`));
@@ -11125,7 +11964,11 @@ $('finPickBtn').addEventListener('click', async () => {
 $('finNext1Btn').addEventListener('click', () => { if (finSelected().length) setFinStep(2); });
 $('finBack2Btn').addEventListener('click', () => setFinStep(1));
 $('finNext2Btn').addEventListener('click', () => {
-  if ($('finOrganize').checked && finDestMode === 'custom' && !finCustomDest) {
+  // When the map has a plan, IT decides the destination — the legacy finDestMode radios are in
+  // the hidden #finLegacyOrg block and the user cannot even see them, so gating Continue on them
+  // would block the step for a reason nobody could act on.
+  const plan = currentDestPlan();
+  if (!(plan && plan.root) && $('finOrganize').checked && finDestMode === 'custom' && !finCustomDest) {
     showToast('Pick a destination folder, or switch to “organize in place”'); return;
   }
   setFinStep(3);
@@ -11169,14 +12012,26 @@ $('finRunBtn').addEventListener('click', async () => {
   if (!matched.length) { showToast('Tick at least one clip to run on'); return; }
   const options = { embed: $('finEmbed').checked, csv: $('finCsv').checked, organize: $('finOrganize').checked, nas: $('finNas').checked };
   if (!options.embed && !options.csv && !options.organize && !options.nas) { showToast('Pick at least one action on the Organize step'); return; }
-  const dest = finEffectiveDest();
+
+  // THE PLAN the user made on the destination map (Organize step 2) is what Run executes. Run
+  // used to ignore it entirely and file by [category, project] into the Compressed folder — and
+  // those fields are normally empty, so it moved nothing and cheerfully reported "0 moved".
+  const plan = currentDestPlan();
+  const planned = (c) => (plan && plan.byPath[c.sourcePath]) || '';
+  const usePlan = !!(plan && plan.root && matched.some(planned));
+
+  const dest = usePlan ? plan.root : finEffectiveDest();
   if (options.organize && !dest) { showToast('Pick a destination folder first'); return; }
   if (options.nas && !finNasPathVal) { showToast('Pick a NAS folder, or untick the NAS backup'); return; }
 
   if (options.organize) {
+    const unplanned = usePlan ? matched.filter((c) => !planned(c)).length : 0;
+    const where = usePlan
+      ? `Files move into your Projects tree at ${dest}, exactly where the map on the Organize step shows them.${unplanned ? ` ${unplanned} clip${unplanned !== 1 ? 's have' : ' has'} no place on the map yet and will be skipped — go back and file ${unplanned !== 1 ? 'them' : 'it'} first.` : ''}`
+      : `Files move into ${dest}\\${finLevels.map(finLevelLabel).map((s) => s.toLowerCase()).join('\\')}\\…`;
     const ok = await confirmDialog(
       `Organize ${matched.length} clip${matched.length !== 1 ? 's' : ''}?`,
-      `Files move into ${dest}\\${finLevels.map(finLevelLabel).map((s) => s.toLowerCase()).join('\\')}\\… Re-running is safe — existing folders are reused and duplicates are skipped.`,
+      `${where} Re-running is safe — existing folders are reused and duplicates are skipped.`,
       'Run', 'Cancel'
     );
     if (!ok) return;
@@ -11205,14 +12060,28 @@ $('finRunBtn').addEventListener('click', async () => {
     $('finLabel').textContent = `${phase} ${p.index + 1}/${p.total}: ${p.name}`;
   });
 
-  const summary = await window.api.finalizeRun({
-    dir: finScan.dir, items: matched, options,
-    organizeDest: dest, folderLevels: finLevels, nasPath: finNasPathVal
-  });
-  if (finUnsub) { finUnsub(); finUnsub = null; }
+  // finalize:run does exiftool spawns and cross-device moves, so it can REJECT outright
+  // (a locked file on Windows throws EBUSY) rather than resolve {ok:false}. A throw used to
+  // skip the unsubscribe AND leave finRunBtn disabled — the Finalize screen was dead until
+  // the app restarted. Unsubscribe in a `finally`, and treat a throw exactly like {ok:false}.
+  let summary = null; let err = null;
+  try {
+    summary = await window.api.finalizeRun({
+      // Each item carries the folder the map put it in. A clip with no place on the map sends no
+      // `rel`, so finalize:run leaves it where it is rather than inventing a destination for it.
+      dir: finScan.dir,
+      items: usePlan ? matched.map((c) => ({ ...c, rel: planned(c) })) : matched,
+      options,
+      organizeDest: dest, folderLevels: finLevels, nasPath: finNasPathVal
+    });
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  } finally {
+    if (finUnsub) { finUnsub(); finUnsub = null; }
+  }
 
-  if (!summary || !summary.ok) {
-    $('finLabel').textContent = `Failed: ${summary ? summary.error : 'unknown error'}`;
+  if (err || !summary || !summary.ok) {
+    $('finLabel').textContent = `Failed: ${err || (summary ? summary.error : 'unknown error')}`;
     $('finRunBtn').disabled = false;
     return;
   }
@@ -11226,6 +12095,9 @@ $('finRunBtn').addEventListener('click', async () => {
   if (options.organize) stats.push(['moved', summary.moved, '']);
   if (options.nas) stats.push(['backed up', summary.backedUp, '']);
   if (summary.skipped) stats.push(['skipped', summary.skipped, '']);
+  // Clips with no place on the map were deliberately left alone. Say so — a silently-omitted
+  // clip is exactly how "Run did nothing and didn't tell me" happens.
+  if (summary.unplanned) stats.push([`not filed (no place on the map)`, summary.unplanned, 'warn']);
   if (summary.errors && summary.errors.length) stats.push(['issue' + (summary.errors.length !== 1 ? 's' : ''), summary.errors.length, 'warn']);
   const statsEl = $('finStats');
   statsEl.innerHTML = stats.map(([label, n, cls]) => `<span class="fin-stat ${cls}"><b>${n}</b> ${label}</span>`).join('');

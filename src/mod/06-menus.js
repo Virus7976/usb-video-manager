@@ -102,6 +102,9 @@ $('batchDate').addEventListener('click', (e) => {
   if (openPopover) { closePopover(); return; }
   openCalendar($('batchDate'), $('batchDate').dataset.value || '', (ds) => {
     setDateField($('batchDate'), ds);
+    // The user CHOSE this date — drop the auto flag so updateBatchBar stops managing the field and
+    // never clears or overwrites their choice.
+    delete $('batchDate').dataset.auto;
     updateBatchBar();
   });
 });

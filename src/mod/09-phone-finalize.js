@@ -131,7 +131,11 @@ async function showWirelessPairModal() {
   document.body.appendChild(ov);
   const body = ov.querySelector('.wl-body');
   let unsub = null; let closed = false;
-  const cleanup = () => { closed = true; try { if (unsub) unsub(); } catch { /* */ } try { window.api.wirelessCancel(); } catch { /* */ } ov.remove(); };
+  // ONE place that drops the wireless:status subscription. It used to be open-coded in each
+  // exit path, and the success path (finishOk) forgot it — so every successful pairing
+  // orphaned a live listener holding a detached statusEl for the life of the app.
+  const dropSub = () => { if (unsub) { try { unsub(); } catch { /* */ } unsub = null; } };
+  const cleanup = () => { closed = true; dropSub(); try { window.api.wirelessCancel(); } catch { /* */ } ov.remove(); };
   ov.querySelector('.wl-close').addEventListener('click', cleanup);
   ov.addEventListener('click', (e) => { if (e.target === ov) cleanup(); });
 
@@ -140,11 +144,11 @@ async function showWirelessPairModal() {
     showToast('📶 Phone paired over Wi-Fi — it’s now under Devices.', 5000);
     renderPhFast();
     try { refreshDriveList(); } catch { /* not on the home screen */ }
-    setTimeout(() => { if (!closed) { closed = true; ov.remove(); } }, 2800);
+    setTimeout(() => { if (!closed) { closed = true; dropSub(); ov.remove(); } }, 2800);
   };
   const showManual = () => {
     try { window.api.wirelessCancel(); } catch { /* */ }
-    if (unsub) { try { unsub(); } catch { /* */ } unsub = null; }
+    dropSub();
     body.innerHTML = `
       <p class="small" style="text-align:left">On the phone open <b>Wireless debugging → Pair device with pairing code</b>. It shows an <b>IP address &amp; port</b> and a <b>6-digit code</b> — type those two here:</p>
       <label class="pref-label">Pairing IP address &amp; port</label>
@@ -431,8 +435,15 @@ async function phoneCopy() {
 // Load the staged local files into the rename flow as clips — so phone photos AND
 // videos get the FULL treatment (AI naming, faces, tags) in the normal rename screen.
 async function enterRenameWithPhoneFiles(staged) {
-  state.phoneBackup = true;
+  // scannedDrive below IS the phone marker — isPhoneFlow() derives from it.
   state.scannedDrive = '__phone__';
+  resetClipFilter();   // same as the card path — a stale filter must not hide this batch's clips
+  // state.copied is "what THIS flow copied, and may therefore offer to delete from its source".
+  // It was only ever cleared in startFlow's fresh-scan branch, so entering the phone flow after
+  // a card import left the PREVIOUS CARD's clips in it — and the shared "3 Delete" step pill
+  // (:520 gates on state.copied.length) would happily list them. You were one pill-click from
+  // deleting a card from inside the phone flow. A new flow starts with nothing to delete.
+  state.copied = [];
   state.scannedFiles = staged.map((f) => {
     const clip = {
       ...f,
@@ -511,9 +522,15 @@ document.querySelectorAll('.steps .step').forEach((stepEl) => {
       if (n === 2) { const cs = await window.api.copyStatus(); if (cs && cs.active) goToCopyProgress(cs); return; }
       if (!(await confirmLeaveTransfer())) return;
     }
-    if (n === 1 && state.scannedFiles.length) buildRenameStep();
-    else if (n === 2 && state.scannedFiles.length) buildUploadStep();
-    else if (n === 3 && state.copied.length) buildDeleteStep();
+    // Say WHY a step won't open. These guards used to fail completely silently: you clicked the
+    // pill, nothing happened, nothing was said, and there was no way to tell whether the app was
+    // broken or you'd missed a prerequisite.
+    if (n === 1 && !state.scannedFiles.length) { showToast('Nothing scanned yet — pick a drive first.'); return; }
+    if (n === 2 && !state.scannedFiles.length) { showToast('Nothing scanned yet — pick a drive first.'); return; }
+    if (n === 3 && !state.copied.length) { showToast('Nothing has been copied off this card yet — copy first, then you can clear it.', 4000); return; }
+    if (n === 1) buildRenameStep();
+    else if (n === 2) buildUploadStep();
+    else if (n === 3) buildDeleteStep();
   });
 });
 
@@ -561,11 +578,16 @@ function buildUploadStep() {
   renderUploadList();
   renderPhoneDest();
   refreshUploadFreeSpace();
-  if (state.phoneBackup) $('copyStartBtn').textContent = 'Copy out';
-  // AUTO MODE: once you've batched your photos and continued, copy out to Uncompressed
-  // on its own — no extra click. (Copying never deletes anything.)
-  if (autoMode() && state.phoneBackup && !copyInProgress) {
-    showToast('⚡ Auto mode — copying to Uncompressed…', 3000);
+  if (isPhoneFlow()) $('copyStartBtn').textContent = 'Copy out';
+  // AUTO MODE: once you've named/batched and continued, copy out on its own — no extra click.
+  //
+  // This was gated on isPhoneFlow(), so on a CARD auto mode did nothing at all — despite the
+  // toggle promising "Pick a device — it pulls, copies & analyzes." A GoPro card is a device.
+  // Safe by construction: we're on the copy step (so naming is done), runCopy still does its
+  // free-space check and still asks before copying into a volume that can't hold it, and copying
+  // never deletes — clearing the card remains a deliberate act on the Delete step.
+  if (autoMode() && !copyInProgress) {
+    showToast(isPhoneFlow() ? '⚡ Auto mode — copying to Uncompressed…' : '⚡ Auto mode — copying to intake…', 3000);
     setTimeout(() => { if (!copyInProgress && !$('step2').classList.contains('hidden')) runCopy(); }, 800);
   }
 }
@@ -589,7 +611,7 @@ async function refreshUploadFreeSpace() {
 function renderPhoneDest() {
   let box = document.getElementById('phoneDestBox');
   const photos = clipPhotos().length;
-  if (!state.phoneBackup && !photos) { if (box) box.remove(); return; }
+  if (!isPhoneFlow() && !photos) { if (box) box.remove(); return; }
   if (!box) {
     box = document.createElement('div'); box.id = 'phoneDestBox'; box.className = 'phone-dest';
     const slot = document.getElementById('phoneDestSlot');
@@ -741,8 +763,28 @@ async function distributeFlowPhotos() {
   const { jobs, routedN } = buildPhotoJobs(photos, true);
   if (!jobs.length) return '';
   $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
-  let copied = 0; let failed = 0;
-  try { const r = await window.api.distributePhotos({ jobs }); copied = (r && r.copied) || 0; failed = (r && r.failed) || 0; } catch { failed = jobs.length; }
+  let copied = 0; let failed = 0; let results = [];
+  try { const r = await window.api.distributePhotos({ jobs }); copied = (r && r.copied) || 0; failed = (r && r.failed) || 0; results = (r && r.results) || []; } catch { failed = jobs.length; }
+
+  // Photos are FOOTAGE too, and they were being treated as a side-effect: they never entered
+  // state.copied (so they could never be cleared off the card — the delete step simply didn't
+  // know they existed) and they never got a finalMeta record (so everything the AI worked out
+  // about them was thrown away the moment they left the card). Both are fixed here, off the
+  // per-job results, so a photo whose copy FAILED is never offered for deletion.
+  const landed = new Map();   // sourcePath -> the first destination that verified
+  for (const r of results) { if (r && r.ok && !landed.has(r.src)) landed.set(r.src, r.dest); }
+  const safePhotos = photos.filter((p) => landed.has(p.sourcePath));
+  if (safePhotos.length) {
+    for (const p of safePhotos) {
+      state.copied.push({ sourcePath: p.sourcePath, destPath: landed.get(p.sourcePath), name: p.name, ext: p.ext, size: p.size });
+    }
+    try {
+      window.api.recordCopied(safePhotos.map((p) => ({
+        key: clipKey(p), source: p.sourcePath, dest: landed.get(p.sourcePath), name: p.name,
+      })));
+    } catch { /* non-fatal */ }
+    saveFlowFinalMeta(safePhotos);   // carry the AI's work forward to Organize, same as videos
+  }
   const names = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ') || 'Photos Temp';
   // Surface partial failures instead of implying every photo copied (the copy is now
   // fingerprint-verified, so "failed" means a real, unverifiable copy — worth showing).
@@ -781,17 +823,26 @@ async function runPhoneCopy() {
     try { window.api.setProgress(p.total ? p.done / p.total : -1); } catch { /* ignore */ }
   });
   let res = { ok: true, copied: 0 };
-  if (renameJobs.length) { try { res = await window.api.copyPhoneVideos({ jobs: renameJobs }); } catch (e) { res = { ok: false, error: e.message }; } }
-
-  // Distribute the renamed PHOTOS (already in Photos Temp) to computer/NAS + Projects.
-  const { jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false);
   let distributed = 0;
-  if (pjobs.length) {
-    $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
-    try { const r2 = await window.api.distributePhotos({ jobs: pjobs }); distributed = (r2 && r2.copied) || 0; } catch { /* non-fatal */ }
+  let pjobs = []; let dests = {}; let routedN = 0;
+  // The two awaits below are individually try/caught, but buildPhotoJobs() between them is
+  // NOT — and a sync throw there would unwind past `copyInProgress = false`, jamming the
+  // worst latch in the app (it nags "Leave the transfer view?" on every navigation, hijacks
+  // the step pills and blocks auto-mode, permanently). The latch release belongs in a
+  // finally so it holds no matter what runs in here.
+  try {
+    if (renameJobs.length) { try { res = await window.api.copyPhoneVideos({ jobs: renameJobs }); } catch (e) { res = { ok: false, error: e.message }; } }
+
+    // Distribute the renamed PHOTOS (already in Photos Temp) to computer/NAS + Projects.
+    ({ jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false));
+    if (pjobs.length) {
+      $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
+      try { const r2 = await window.api.distributePhotos({ jobs: pjobs }); distributed = (r2 && r2.copied) || 0; } catch { /* non-fatal */ }
+    }
+  } finally {
+    off(); clearTask('phone-copy'); copyInProgress = false; hideCopyChip();
+    try { window.api.setProgress(-1); } catch { /* ignore */ }
   }
-  off(); clearTask('phone-copy'); copyInProgress = false; hideCopyChip();
-  try { window.api.setProgress(-1); } catch { /* ignore */ }
   // Remember what we just backed up (by original phone name+size) so next time the
   // smart chooser knows it's no longer "new". Photos were already pulled to Photos Temp
   // (failed ones never reach scannedFiles); videos only count if NONE failed to copy —
@@ -833,27 +884,45 @@ async function sendPendingVideosToUncompressed() {
   const jobs = (phonePendingVideos || []).slice();
   if (!jobs.length) { showToast('No staged videos to send'); return; }
   const btn = document.getElementById('phSendUncompressedBtn');
+  const restoreLabel = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   setTask('phone-send', 'Sending to Uncompressed', 0, jobs.length, 'moving', '');
   const off = window.api.onPhoneCopyProgress((p) => setTask('phone-send', 'Sending to Uncompressed', p.done || 0, p.total || jobs.length, 'moving', p.name || ''));
   let res = { copied: 0 };
-  try { res = await window.api.copyPhoneVideos({ jobs }); } catch { /* ignore */ }
-  off(); clearTask('phone-send');
+  let err = null;
+  try { res = await window.api.copyPhoneVideos({ jobs }); } catch (e) { err = (e && e.message) || String(e); }
+  finally { off(); clearTask('phone-send'); }
+  // This used to `catch { /* ignore */ }` and then claim success with a ✓ regardless — a
+  // failed send reported "0 videos → Uncompressed ✓" and cleared the pending list, so the
+  // videos were silently never sent and the button vanished. Keep them pending on failure.
+  if (err) {
+    if (btn) { btn.disabled = false; btn.textContent = restoreLabel; }
+    showToast(`Couldn’t send to Uncompressed — ${err}. They’re still pending — try again.`, 6000);
+    logIssue('Phone', `Send to Uncompressed failed: ${err}`);
+    return;
+  }
   phonePendingVideos = [];
   if (btn) { btn.classList.add('hidden'); }
   showToast(`${(res && res.copied) || 0} video${((res && res.copied) !== 1) ? 's' : ''} → 01 - Uncompressed — Tdarr can compress them now ✓`, 5000);
 }
 
 async function runCopy() {
-  if (state.phoneBackup) return runPhoneCopy();
+  if (isPhoneFlow()) return runPhoneCopy();   // derived from the clips actually loaded — a flag could drift
   maybeFlushEdits(true);   // learn from any AI-name edits before this batch leaves
   const clips = filesToCopy();
   const files = clips.map((f) => ({
     sourcePath: f.sourcePath, name: f.name, ext: f.ext, size: f.size, newName: finalStem(f)
   }));
   if (!files.length) {
-    // Photos-only card (no video) → just back up the photos.
-    if (clipPhotos().length) { const s = await distributeFlowPhotos(); showDone(s || 'Photos backed up'); }
+    // Photos-only card (no video) → back up the photos, then offer the Delete step exactly as the
+    // video path does. Photos used to dead-end here: backed up, but invisible to the delete step,
+    // so a photos-only card could never be cleared through the app at all.
+    if (clipPhotos().length) {
+      const s = await distributeFlowPhotos();
+      showDone(s || 'Photos backed up');
+      const watching = !$('flow').classList.contains('hidden') && !$('step2').classList.contains('hidden');
+      if (state.copied.length && watching) setTimeout(() => buildDeleteStep(), 500);
+    }
     return;
   }
   // SPACE CHECK — make sure the intake (and NAS) can actually hold this import before
@@ -878,18 +947,54 @@ async function runCopy() {
   copyInProgress = true;
   showCopyingUI();
   subscribeProgress();
-  const res = await window.api.startCopy(files, state.intakeFolder);
-  copyInProgress = false;
-  unsubscribeProgress();
-  hideCopyChip();
+  // startCopy moves multi-GB across removable media — the likeliest call in the app to
+  // REJECT (card yanked, disk full, EPERM). The teardown below therefore has to be in a
+  // `finally`: a stuck `copyInProgress` doesn't just leak the progress subscription, it
+  // nags "Leave the transfer view?" on every navigation (08-people.js:1436), hijacks the
+  // step pills into copyStatus() (:514) and blocks auto-mode from ever copying again
+  // (:571) — for the rest of the session. Nothing short of a restart cleared it.
+  let res = null; let err = null;
+  try {
+    res = await window.api.startCopy(files, state.intakeFolder);
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  } finally {
+    copyInProgress = false;
+    unsubscribeProgress();
+    hideCopyChip();
+  }
+  if (err) {
+    buildUploadStep();
+    $('copyLabel').textContent = `Copy failed: ${err}`;
+    showToast(`Copy failed — ${err}`, 6000);
+    logIssue('Copy', err);
+    return;
+  }
+
+  // A cancelled or failed copy STILL copied some files, and those are complete and verified —
+  // copy:start only pushes a file into `copied` after it has been fingerprint-checked against the
+  // card. Both of these paths used to just `return`, throwing that list away: the clips were on
+  // disk, but the app had forgotten them. So they could never be cleared off the card, and the next
+  // run copied them AGAIN, landing beside the originals as " (1)" duplicates. Record what landed.
+  const keepPartial = (why) => {
+    const done = (res && Array.isArray(res.copied)) ? res.copied : [];
+    if (!done.length) return;
+    state.copied = done;
+    try {
+      window.api.recordCopied(done.map((c) => ({ key: clipKey(c), source: c.sourcePath, dest: c.destPath, name: c.name })));
+    } catch { /* non-fatal */ }
+    showToast(`${done.length} clip${done.length !== 1 ? 's' : ''} copied and verified before the ${why} — they're safe, and you can clear them from the Delete step.`, 7000);
+  };
 
   if (res && res.cancelled) {
+    keepPartial('cancel');
     buildUploadStep();
-    $('copyLabel').textContent = 'Copy cancelled';
+    $('copyLabel').textContent = `Copy cancelled${state.copied.length ? ` — ${state.copied.length} already copied and kept` : ''}`;
     return;
   }
   if (!res || !res.ok) {
-    if (!(res && res.cancelled)) logIssue('Copy', (res && res.error) || 'unknown error');
+    keepPartial('failure');
+    logIssue('Copy', (res && res.error) || 'unknown error');
     $('copyLabel').textContent = `Copy failed: ${res ? res.error : 'unknown error'}`;
     $('copyStartBtn').classList.remove('hidden');
     $('copyStartBtn').disabled = false;
@@ -899,6 +1004,15 @@ async function runCopy() {
   }
   if (res.nas && res.nas.failed) logIssue('NAS backup', `${res.nas.failed} file(s) failed to back up to NAS`);
   state.copied = res.copied;
+  // Remember what we copied, DURABLY. Clearing the card is deliberately a separate, later act —
+  // compress, organize days on, and only then wipe. But this list used to live only in memory, so
+  // a restart made the Delete step a silent no-op and the ONLY way to clear a card was to copy the
+  // whole thing again. Keyed by the stable name__size fingerprint → survives replug and restart.
+  try {
+    window.api.recordCopied(state.copied.map((c) => ({
+      key: clipKey(c), source: c.sourcePath, dest: c.destPath, name: c.name,
+    })));
+  } catch { /* non-fatal — the in-memory list still drives this session */ }
   // Persist a metadata record keyed by the FINAL filename so the Finalize step can
   // match the re-encoded compressed file and write its metadata (incl. observation/
   // people, which is what lets Organize place footage correctly).
@@ -925,7 +1039,11 @@ async function runCopy() {
   $('copyPct').textContent = '100%';
   // Auto-analyze the copied footage in the BACKGROUND (if AI is on) so it's already
   // analyzed by the time you organize — then re-save its metadata. Fire-and-forget.
-  autoBackgroundEnrich(clips);   // silent face-tag (auto mode) + vision analysis
+  // Photos are analysable — getContactSheet feeds the vision model the photo ITSELF rather than an
+  // ffmpeg frame grid (main-mod/06-copy-transfer.js:731). But `clips` here is filesToCopy(), which
+  // strips photos out, so on a card they were silently never enriched: no observation, no people,
+  // no tags, nothing for Organize to place them by. (The phone path already passes everything.)
+  autoBackgroundEnrich([...clips, ...clipPhotos()]);   // silent face-tag (auto mode) + vision analysis
   // Only auto-advance to Delete if the user is still watching the copy; if they
   // navigated away, leave them be (they can reach Delete via the step tabs).
   const watching = !$('flow').classList.contains('hidden') && !$('step2').classList.contains('hidden');
@@ -960,6 +1078,12 @@ function saveFlowFinalMeta(clips) {
     };
     for (const fld of organizeFields) rec[fld.id] = clip[fld.id] || '';
     rec.tags = Array.isArray(clip.tags) ? clip.tags : [];
+    // The same-shoot decision the user ALREADY confirmed ("Part of an existing project?" →
+    // "Will file N clips into 'X' at the organize step"). It was only ever persisted into
+    // renameDrafts — and the drafts for copied clips are deleted immediately after the copy —
+    // so by the time Organize ran, the answer was gone and the promise was quietly broken. It
+    // has to ride in finalMeta, which is what actually survives the trip to the Organize step.
+    rec.ledgerRel = clip._ledgerRel || clip.ledgerRel || '';
     rec.keywords = [clip.subject, clip.location, clip.shotType, ...organizeFields.map((f) => clip[f.id]), ...rec.tags].filter(Boolean);
     map[finalName(clip)] = rec;
   }
@@ -982,30 +1106,41 @@ async function autoAnalyzeAfterCopyRun(clips) {
   showToast(`Analyzing ${sample ? `${reps.length} subject${reps.length !== 1 ? 's' : ''}` : `${reps.length} clip${reps.length !== 1 ? 's' : ''}`} in the background for organizing…`, 4500);
   setAiRunClips(reps);
   let done = 0;
-  for (const c of reps) {
-    if (aiAborted) break;
-    const i = state.scannedFiles.indexOf(c);
-    setTask('ai', aiModelLabel(), done + 1, reps.length, 'analyzing', c.name);
-    aiStageAdvance(c, 'analyzing');
-    try { if (i >= 0) await aiSuggestClip(i, 'empty', { quiet: true }); } catch { /* keep going */ }
-    if (sample) {
-      const obs = obsOf(c);
-      for (const sib of (groups[key(c)] || [])) { if (sib !== c && obs && !obsOf(sib)) { sib.observation = obs; try { clipObsCache[clipKey(sib)] = { obs, ts: Date.now() }; window.api.saveClipObs({ key: clipKey(sib), obs }); } catch { /* ignore */ } } }
+  // The per-clip suggest is already guarded, but setTask/aiStageAdvance/saveFlowFinalMeta
+  // are not — and our ONLY caller (08-people.js:214) wraps this whole call in a
+  // `catch { /* non-fatal */ }`. So a throw in here used to leave autoAnalyzeRunning stuck
+  // true with NO error surfaced anywhere, and the guard at the top of this function then
+  // silently refused every later auto-analyze for the rest of the session.
+  try {
+    for (const c of reps) {
+      if (aiAborted) break;
+      const i = state.scannedFiles.indexOf(c);
+      setTask('ai', aiModelLabel(), done + 1, reps.length, 'analyzing', c.name);
+      aiStageAdvance(c, 'analyzing');
+      try { if (i >= 0) await aiSuggestClip(i, 'empty', { quiet: true }); } catch { /* keep going */ }
+      if (sample) {
+        const obs = obsOf(c);
+        for (const sib of (groups[key(c)] || [])) { if (sib !== c && obs && !obsOf(sib)) { sib.observation = obs; try { clipObsCache[clipKey(sib)] = { obs, ts: Date.now() }; window.api.saveClipObs({ key: clipKey(sib), obs }); } catch { /* ignore */ } } }
+      }
+      done += 1;
     }
-    done += 1;
+    saveFlowFinalMeta(clips);   // re-save so Organize gets the new observations/people
+    if (!aiAborted) showToast('Footage analyzed — it’ll place itself correctly when you organize ✓', 4000);
+  } catch (e) {
+    logIssue('AI', `Background analysis stopped: ${(e && e.message) || e}`);
+  } finally {
+    clearTask('ai'); aiStageClose();
+    autoAnalyzeRunning = false;
   }
-  clearTask('ai'); aiStageClose();
-  saveFlowFinalMeta(clips);   // re-save so Organize gets the new observations/people
-  autoAnalyzeRunning = false;
-  if (!aiAborted) showToast('Footage analyzed — it’ll place itself correctly when you organize ✓', 4000);
 }
 
 $('cancelCopyBtn').addEventListener('click', async () => {
   const ok = await confirmDialog('Cancel the copy?', 'Files already copied stay in the intake folder.', 'Cancel copy', 'Keep copying');
   if (!ok) return;
-  $('cancelCopyBtn').disabled = true;
-  $('cancelCopyBtn').textContent = 'Cancelling…';
-  await window.api.cancelCopy();
+  // If cancelCopy REJECTED, the button stayed disabled on "Cancelling…" forever — meaning a
+  // runaway copy had no working stop button at all. Restore it so the cancel can be retried.
+  await withBusyBtn($('cancelCopyBtn'), 'Cancelling…', () => window.api.cancelCopy(),
+    (msg) => showToast(`Couldn’t cancel — ${msg}. Try again.`, 6000));
 });
 
 // ---------------------------------------------------------------------------
@@ -1183,13 +1318,46 @@ $('deleteConfirmBtn').addEventListener('click', async () => {
   if (failedIdx.length) body += ` ⚠ ${failedIdx.length} file${failedIdx.length > 1 ? 's' : ''} could NOT be verified and will be KEPT on the card.`;
   const ok = await confirmDialog(`Delete ${verifiedIdx.length} verified file${verifiedIdx.length > 1 ? 's' : ''} from the card?`, body, 'Delete verified', 'Cancel');
   if (!ok) return;
-  const paths = verifiedIdx.map((i) => state.copied[i].sourcePath);
+  // Send {source, dest} pairs, not bare paths: delete:source re-verifies every file against
+  // its copy in the main process and REFUSES anything it can't prove was copied. This gate is
+  // deliberately duplicated there — it must not depend on this renderer being correct.
+  const items = verifiedIdx.map((i) => ({ source: state.copied[i].sourcePath, dest: state.copied[i].destPath }));
   btn.disabled = true; btn.textContent = 'Deleting…';
-  const results = await window.api.deleteSource(paths);
+  // Card yanked / permission denied is precisely when a delete rejects — and that used to
+  // strand the button disabled at "Deleting…" with step 3 never completing.
+  let results = null;
+  try {
+    results = await window.api.deleteSource(items);
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    showToast(`Couldn’t delete from the card — ${msg}`, 6000);
+    logIssue('Delete', msg);
+    return;
+  } finally {
+    btn.disabled = false; btn.textContent = restore;
+  }
+  results = Array.isArray(results) ? results : [];
+  // The card no longer holds these — drop them from the durable copied log so a later scan of this
+  // card doesn't keep offering to delete files that are already gone. (A REFUSED file was NOT
+  // deleted and must stay in the log, so it can still be dealt with.)
+  try {
+    const deleted = new Set(results.filter((r) => r.ok).map((r) => r.path));
+    const gone = state.copied.filter((c) => deleted.has(c.sourcePath)).map((c) => clipKey(c));
+    if (gone.length) window.api.forgetCopied(gone);
+  } catch { /* non-fatal */ }
   const okCount = results.filter((r) => r.ok).length;
-  const delFail = results.length - okCount;
+  // A REFUSED file is not a failed delete — it means the main-process gate caught a file this
+  // screen believed was verified when it wasn't. That's the safety net firing, and it points at
+  // a real bug, so say so plainly instead of burying it in "couldn't be deleted".
+  const refused = results.filter((r) => r.refused);
+  const delFail = results.filter((r) => !r.ok && !r.refused).length;
+  if (refused.length) {
+    refused.forEach((r) => logIssue('Delete', `REFUSED (kept on card): ${r.path} — ${r.error}`));
+    showToast(`⚠ ${refused.length} file${refused.length > 1 ? 's were' : ' was'} NOT deleted — the safety check couldn’t confirm the copy. They’re still on the card.`, 8000);
+  }
   let msg = `Copied ${state.copied.length} clip${state.copied.length > 1 ? 's' : ''} to intake · ${okCount} verified & removed from card`;
   if (delFail) msg += ` · ${delFail} couldn’t be deleted`;
+  if (refused.length) msg += ` · ${refused.length} kept (safety check)`;
   if (failedIdx.length) msg += ` · ${failedIdx.length} kept (couldn’t verify)`;
   finishFlow(msg);
 });
@@ -1266,7 +1434,11 @@ function renderFinMap() {
   const host = $('finMapHost'); if (!host) return;
   const sel = (finSelected().length ? finSelected() : finMatched());
   if (!sel.length) { host.innerHTML = '<p class="muted small">No matched clips — go back to the Match step and tick some.</p>'; return; }
-  showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ref: f })), {
+  // _ledgerRel closes the loop on the same-shoot offer: the destination map reads it (07-organize-
+  // map.js:86,166,277) to file these clips straight into the project the user already confirmed.
+  // It was never carried out of finalMeta into here, so the map always saw '' and the clips fell
+  // through to _Unsorted — the app asked, the user answered, and then it ignored the answer.
+  showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ledgerRel: (f.meta && f.meta.ledgerRel) || '', _ref: f })), {
     editable: true,
     host,
     embedMeta: () => $('finEmbed').checked,
@@ -1348,8 +1520,16 @@ async function finRunScan() {
   $('finScanState').classList.remove('hidden');
   $('finScanState').innerHTML = `<div class="scan-busy"><span class="illo scan-illo">${ILLO_SCAN}</span><p class="scan-busy-tx">Scanning your compressed clips…</p></div>`;
   $('finList').innerHTML = '';
-  const res = await window.api.finalizeScan(finScan.dir, { includePhotos: !!uiPrefs.finalizePhotos });
-  $('finScanState').classList.add('hidden');
+  // A throw here used to leave the "Scanning your compressed clips…" spinner turning forever
+  // with finNext1Btn never enabled — Organize step 1 was simply dead, and silent about it.
+  let res = null;
+  try {
+    res = await window.api.finalizeScan(finScan.dir, { includePhotos: !!uiPrefs.finalizePhotos });
+  } catch (e) {
+    res = { ok: false, error: (e && e.message) || String(e) };
+  } finally {
+    $('finScanState').classList.add('hidden');
+  }
   if (!res || !res.ok) {
     $('finSummaryLine').textContent = `Scan failed: ${res ? res.error : 'unknown error'}`;
     $('finNext1Btn').disabled = true;

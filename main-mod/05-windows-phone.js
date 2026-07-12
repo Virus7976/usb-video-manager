@@ -41,16 +41,20 @@ foreach ($it in $pc.Items()) {
 $out | ConvertTo-Json -Compress
 `;
 // Extract the JSON array/object from PowerShell stdout even if a stray line slipped in.
+// ConvertTo-Json emits a bare OBJECT (not a 1-element array) when the result has exactly
+// one element, so always normalize to an array — that is what makes "exactly one phone
+// attached" and "exactly one album" work. A `null` result normalizes to [] rather than
+// [null], so no caller has to filter a hole out of the list.
+// Brace-hunting is delegated to scanBalancedJson (01-core.js): the old indexOf('{') scan
+// started mid-banner whenever a stray stdout line contained a brace, JSON.parse threw, and
+// the real trailing JSON was dropped — reporting ZERO phones with no error surfaced.
 function parsePsJson(stdout) {
   const s = String(stdout || '').trim();
   if (!s) return [];
-  const tryParse = (txt) => { try { const j = JSON.parse(txt); return Array.isArray(j) ? j : [j]; } catch { return null; } };
-  let r = tryParse(s);
-  if (r) return r;
-  const a = s.indexOf('['); const o = s.indexOf('{');
-  const start = (a === -1) ? o : (o === -1 ? a : Math.min(a, o));
-  if (start >= 0) { r = tryParse(s.slice(start)); if (r) return r; }
-  return [];
+  const norm = (j) => (j === null || j === undefined ? [] : (Array.isArray(j) ? j : [j]));
+  try { return norm(JSON.parse(s)); } catch { /* stray line in stdout — go find the JSON */ }
+  const found = scanBalancedJson(s);
+  return found === undefined ? [] : norm(found);
 }
 // A fake phone backed by a real local folder — lets the whole flow be exercised
 // without a physical device. Same shape as a real MTP device, just `sim:true`.
@@ -861,9 +865,24 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
   for (const j of jobs) {
     if (phoneAbort) break;
     try {
-      let already = null; try { already = await fsp.stat(j.dest); } catch { /* not there */ }
-      if (already && Number(j.size) && already.size === Number(j.size)) { done += 1; okDests.push(j.dest); prog(path.basename(j.dest)); continue; }   // resume
       const src = j.src || (j.phoneRef && j.phoneRef.abs) || '';
+      let already = null; try { already = await fsp.stat(j.dest); } catch { /* not there */ }
+      if (already) {
+        // RESUME vs COLLISION — and the old code got both wrong.
+        //
+        // The check was SIZE-ONLY: a same-size but DIFFERENT clip was treated as "already done" and
+        // silently dropped. And anything else fell through to moveFileCrossDevice, which renames
+        // straight OVER its destination (organizeMove guards that with uniqueDest; this path never
+        // did) — silently destroying a clip already staged in _Phone Video Temp / 01 - Uncompressed.
+        //
+        // It really collides: recomputeVersions() only de-duplicates _v# within the CURRENT scan, so
+        // a second phone batch producing the same subject/description restarts at _v1 and lands on
+        // the first batch's filename.
+        let identical = false;
+        try { identical = !!src && await fingerprintsMatch(src, j.dest, { full: true }); } catch { identical = false; }
+        if (identical) { done += 1; okDests.push(j.dest); prog(path.basename(j.dest)); continue; }   // genuinely already there
+        j.dest = await uniqueDest(path.dirname(j.dest), path.basename(j.dest));   // a DIFFERENT clip — never overwrite it
+      }
       let hasSrc = false; try { hasSrc = !!(src && (await fsp.stat(src)).size > 0); } catch { /* not local */ }
       if (hasSrc) {
         await ensureDir(path.dirname(j.dest));
@@ -892,7 +911,9 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       catch { failed += 1; }   // verify-before-destroy (never deletes an unverified source)
     }
   }
-  return { ok: true, copied: done, failed, total, okDests, cancelled: phoneAbort };
+  // `ok` was hardcoded true, so a run that failed to move a single video still reported success and
+  // the renderer showed a green tick. Report reality.
+  return { ok: failed === 0, copied: done, failed, total, okDests, cancelled: phoneAbort, error: failed ? `${failed} video(s) failed to move` : '' };
 });
 
 // Flat-copy files (renamed photos from Photos Temp) to the chosen back-up
@@ -901,18 +922,25 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   const { jobs } = payload || {};
   if (!Array.isArray(jobs) || !jobs.length) return { ok: true, copied: 0 };
   const sender = evt.sender; let done = 0; const total = jobs.length; const errors = [];
+  // PER-JOB results, not just a tally. The caller needs to know WHICH photo landed WHERE:
+  // without that, a photo has no recorded destination, which is why photos could never enter
+  // state.copied and therefore could never be cleared off the card — and why their AI metadata
+  // was never carried forward to Organize.
+  const results = [];
   for (const j of jobs) {
+    let ok = false; let error = '';
     try {
       // Verified copy: fingerprint-checks the result before trusting it (a truncated
       // network copy of the right byte-count is no longer silently accepted as done).
       await copyFileVerified(j.src, j.dest);
-      done += 1;
-    } catch (e) { errors.push((e && e.message) || String(e)); }
+      done += 1; ok = true;
+    } catch (e) { error = (e && e.message) || String(e); errors.push(error); }
+    results.push({ src: j.src, dest: j.dest, ok, error });
     try { sender.send('phone:copy-progress', { done, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
   }
   // ok reflects reality — false when any file failed (was unconditionally true, so a
   // partial backup with dropped photos reported success).
-  return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, error: errors[0] || '' };
+  return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, results, error: errors[0] || '' };
 });
 
 // ---------------------------------------------------------------------------
@@ -965,15 +993,40 @@ async function walkForVideos(root) {
 async function ensureDir(dir) {
   await fsp.mkdir(dir, { recursive: true });
 }
+// The synchronous sibling. Needed by the handful of genuinely sync paths (saveFaceCrop runs inside
+// migratePerson, which is called from the store accessor and cannot be async). Same primitive, same
+// concern — so a fix to how we create directories still lands in ONE place.
+function ensureDirSync(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+}
 
 // Compute the destination filename for a file being copied: the user's chosen
 // name (sanitized) + original extension, falling back to the original name.
+// The single place a destination FILENAME is built. slugFolder() already defends the folder path
+// against Windows' reserved device names and length; the file path had neither guard:
+//
+//  • RESERVED NAMES — a subject that slugs to `con`/`aux`/`nul`/`com1`… produced `CON.mp4`, which
+//    Windows cannot create. createWriteStream throws, and (before the copy fixes) that abandoned the
+//    whole remaining batch.
+//  • LENGTH — nothing capped it. The AI path caps its description at 12 words, but the USER/batch path
+//    capped nothing: paste a long description into the batch bar, apply it to 200 clips, and every one
+//    of them fails with ENAMETOOLONG — or blows Windows' 260-char MAX_PATH once
+//    <Category>/<Project>/<Subject>/ folders are prepended at organize time.
+//  • TRAILING DOTS/SPACES — Windows silently strips them, so `clip .mp4` and `clip.mp4` collide.
+//
+// 120 chars of stem leaves comfortable room for a deep Projects tree under MAX_PATH while still being
+// far longer than any sane name.
+const MAX_STEM = 120;
 function destNameFor(f) {
   const ext = f.ext || path.extname(f.name);
   const origBase = f.name.slice(0, f.name.length - ext.length);
   let base = String(f.newName != null ? f.newName : origBase).trim()
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
   if (!base) base = origBase;
+  if (base.length > MAX_STEM) base = base.slice(0, MAX_STEM).replace(/[-_ ]+$/, '');   // don't end mid-separator
+  base = base.replace(/[. ]+$/, '');                                                    // Windows strips these anyway
+  if (!base) base = origBase;
+  if (WIN_RESERVED_NAMES.has(base.toLowerCase())) base = `${base}_`;                    // CON.mp4 is not creatable
   return base + ext;
 }
 
@@ -995,16 +1048,59 @@ async function uniqueDest(dir, filename) {
   }
 }
 
-function copyFileWithProgress(src, dest, onBytes, token) {
-  return new Promise((resolve, reject) => {
-    const rs = fs.createReadStream(src);
-    const ws = fs.createWriteStream(dest);
-    if (token) token.destroy = () => { rs.destroy(); ws.destroy(); };
-    rs.on('data', (chunk) => { onBytes(chunk.length); if (token && token.aborted) rs.destroy(); });
-    rs.on('error', (e) => { try { ws.destroy(); } catch { /* ignore */ } reject(token && token.aborted ? new Error('aborted') : e); });
-    ws.on('error', (e) => { try { rs.destroy(); } catch { /* ignore */ } reject(token && token.aborted ? new Error('aborted') : e); });
-    ws.on('finish', resolve);
-    rs.pipe(ws);
-  });
+// Pull the ONE irreplaceable copy of the footage off the card — with progress, STAGED, fsynced and
+// VERIFIED. This is the most important copy in the app, and it was the only one not going through a
+// verify-before-trust primitive (copyFileVerified / moveFileCrossDevice both do).
+//
+// Three defects, and they compounded into corruption of the archive:
+//
+//  1. It wrote straight to the FINAL path, so a partial copy wore the real filename.
+//
+//  2. Cancelling called `rs.destroy()`, which emits neither 'end' nor 'error'. So `pipe()` never
+//     called `ws.end()`, 'finish' never fired, and THE PROMISE NEVER SETTLED. copy:start's `await`
+//     hung forever — which meant its own `if (aborted) unlink(destPath)` cleanup was unreachable
+//     dead code, the truncated file stayed in intake under its final name, `copyTask.active` stayed
+//     true (so every later copy was refused with "A copy is already running"), and the renderer's
+//     copyInProgress latch stuck true for the rest of the session. `token.aborted` — checked in two
+//     places here — was never assigned anywhere, so both guards were dead too.
+//
+//  3. It verified nothing. A flaky-card read or a mid-copy ENOSPC left a short file that looked
+//     complete; Tdarr then compressed the truncated clip and it was filed into the archive as the
+//     good copy — while the delete gate, comparing card↔intake, happily cleared the card.
+//
+// Now: stage to <dest>.part → datasync → FULL-file fingerprint against the card → and only then
+// rename into place. So a file at `dest` is ALWAYS a complete, verified copy; an abandoned copy
+// leaves a .part that is cleaned up and can never be mistaken for footage.
+async function copyFileWithProgress(src, dest, onBytes, token) {
+  await ensureDir(path.dirname(dest));
+  const part = `${dest}.part`;
+  try { await fsp.unlink(part); } catch { /* no leftover from a previous run */ }
+
+  const rs = fs.createReadStream(src);
+  const ws = fs.createWriteStream(part);
+  let aborted = false;
+  if (token) {
+    token.destroy = () => {
+      aborted = true;
+      // Destroy WITH an error: that propagates through the pipeline as a rejection, so the await
+      // actually settles. A bare destroy() is what left the promise hanging forever.
+      rs.destroy(new Error('aborted'));
+      ws.destroy(new Error('aborted'));
+    };
+  }
+  rs.on('data', (chunk) => onBytes(chunk.length));
+
+  try {
+    await streamPipeline(rs, ws);
+    await flushToDisk(part);   // 'finish' is an OS handoff, not durability — especially on a network intake
+    if (!(await fingerprintsMatch(src, part, { full: true }))) {
+      throw new Error('the copy did not match the card — refusing to trust it');
+    }
+    await fsp.rename(part, dest);
+  } catch (err) {
+    // Never leave a partial behind wearing a name that looks like real footage.
+    try { await fsp.unlink(part); } catch { /* already gone */ }
+    throw aborted ? new Error('aborted') : err;
+  }
 }
 

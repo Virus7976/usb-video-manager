@@ -182,6 +182,39 @@ function listRemovableDrives() {
   });
 }
 
+// Is `p` on a removable volume (SD card / USB stick) that currently has media in it?
+//
+// Guards the one operation that can take footage OFF a card without going through the Delete
+// step: organizing MOVES files (unlink-after-copy), so pointing the Compressed folder at the
+// card would strip it silently. Compares drive letters, which is what Win32_LogicalDisk gives
+// us — that is exactly the granularity we need, since removability is a property of the volume.
+//
+// FAILS CLOSED on Windows: if the volume query errors or returns nothing while we're being
+// asked about a path that isn't obviously local, we do NOT get to claim it's safe to move off.
+// On non-Windows (dev/test) detection is disabled entirely, so nothing is treated as removable.
+async function isOnRemovableVolume(p) {
+  if (!p || !DETECTION_ENABLED) return false;
+  const letterOf = (s) => {
+    const m = /^([A-Za-z]):/.exec(String(s).replace(/^\\\\\?\\/, ''));
+    return m ? m[1].toUpperCase() : '';
+  };
+  const target = letterOf(p);
+  if (!target) return false;               // UNC / non-lettered path — not a local removable volume
+  let drives = [];
+  try { drives = await listRemovableDrives(); } catch { return true; }   // can't tell → don't move off it
+  return drives.some((d) => letterOf(d.mountpoint || d.raw) === target);
+}
+
+// Is this source still actually there? Asked on demand, because auto-poll is OFF by default in
+// this app — so the drive:removed event above cannot be the only way we find out. The analyze /
+// copy loops ask this the moment a file fails, so a yanked card is reported ONCE, honestly, instead
+// of being mis-reported sixty times as sixty separate model timeouts.
+ipcMain.handle('drive:present', async (_evt, mountpoint) => {
+  const mp = String(mountpoint || '');
+  if (!mp || mp === '__phone__') return true;   // not a removable source — never claim it's gone
+  try { await fsp.stat(mp); return true; } catch { return false; }
+});
+
 // Invoked by the global hotkey: bring up the window and present drive options.
 async function triggerHotkey() {
   showWindow();
@@ -208,6 +241,18 @@ async function pollDrives() {
         showWindow();
         mainWindow.webContents.send('drive:detected', d);
       }
+    }
+  }
+
+  // A card that GOES AWAY is an event too. Nothing told the renderer, so yanking a card mid-flow
+  // left the grid full of clips whose files no longer existed — previews, AI and copy then failed
+  // one file at a time, and aiCallGuard reported each as "Took too long — skipped this clip",
+  // which is a confidently wrong diagnosis of a completely different problem.
+  if (primed) {
+    for (const mp of knownMountpoints) {
+      if (currentMounts.has(mp)) continue;
+      console.log(`[detect] removable drive REMOVED: ${mp}`);
+      if (mainWindow) { try { mainWindow.webContents.send('drive:removed', { mountpoint: mp }); } catch { /* window gone */ } }
     }
   }
 

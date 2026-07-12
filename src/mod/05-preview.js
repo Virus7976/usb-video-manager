@@ -207,10 +207,31 @@ function updateBatchBar() {
   $('applyBatch').textContent = `Apply to ${count}`;
   $('selectAllClips').checked = count > 0 && count === state.scannedFiles.length;
 
-  // Default the batch date to the first selected clip so a batch shares one
-  // identical name (versions then differentiate). User can still override it.
-  if (count > 0 && !$('batchDate').dataset.value && sel[0].date) {
-    setDateField($('batchDate'), sel[0].date);
+  // Default the batch date so a same-day batch shares one identical name (versions then
+  // differentiate) — but ONLY when every selected clip already has that same date.
+  //
+  // This used to auto-fill from the FIRST selected clip, and applyBatch applies whatever is in the
+  // field (copyDateMode defaults to 'always', so it doesn't even ask). So the ordinary flow —
+  // Select all → type a subject → "Apply to N" — silently overwrote EVERY clip's real capture date
+  // with the first clip's, and set dateLocked, which permanently blocks ffprobe from correcting it
+  // afterwards. On a card holding two shoots, the older day's clips were stamped with the newer
+  // day's date and the day dividers collapsed into one. The date was the only field applied without
+  // the user ever typing it.
+  //
+  // `_auto` marks a value WE filled in. A date the user picked is never touched.
+  const dateEl = $('batchDate');
+  if (dateEl.dataset.auto === '1' || !dateEl.dataset.value) {
+    const dates = new Set(sel.map((c) => c.date).filter(Boolean));
+    if (count > 0 && dates.size === 1) {
+      setDateField(dateEl, [...dates][0]);
+      dateEl.dataset.auto = '1';
+    } else {
+      // A mixed-date selection (or none) gets NO shared date — each clip keeps its own. This also
+      // clears a stale auto-date left over from a previous selection, which used to survive an
+      // untick-everything and then be stamped onto a completely different day's clips.
+      setDateField(dateEl, '');
+      delete dateEl.dataset.auto;
+    }
   }
   renderCheckedStrip();
   refreshPreviewGrid();   // keep the pop-out grid wall in sync with the selection
@@ -479,9 +500,24 @@ if ($('batchLocation')) {
 // The command-bar organizing-field inputs are built dynamically (buildCommandBarFields).
 $('selectAllClips').addEventListener('change', (e) => {
   const on = e.target.checked;
-  state.scannedFiles.forEach((c) => { c.selected = on; });
-  document.querySelectorAll('[data-check]').forEach((cb) => { cb.checked = on; });
-  document.querySelectorAll('.rename-card').forEach((card) => card.classList.toggle('selected', on));
+  // "Select all" means all the clips you can SEE. It used to tick every clip in state.scannedFiles
+  // regardless of the active filter — so filtering to "Unnamed", hitting select-all and applying a
+  // subject silently overwrote every NAMED clip too: the ones deliberately hidden, that were
+  // already finished. A bulk edit must never reach a clip the user cannot see.
+  const scoped = clipFilterActive();
+  state.scannedFiles.forEach((c) => {
+    if (scoped && !clipMatchesFilter(c)) return;   // hidden → untouched, ticked or not
+    c.selected = on;
+  });
+  // Reflect it only on the rows that are actually on screen.
+  document.querySelectorAll('.rename-card').forEach((card) => {
+    const c = state.scannedFiles[Number(card.dataset.i)];
+    if (scoped && !clipMatchesFilter(c)) return;
+    card.classList.toggle('selected', on);
+    const cb = card.querySelector('[data-check]');
+    if (cb) cb.checked = on;
+  });
+  if (scoped && on) showToast(`Selected the ${state.scannedFiles.filter(clipMatchesFilter).length} clip(s) matching the current filter — the rest are untouched.`, 3500);
   updateBatchBar();
 });
 
@@ -786,6 +822,11 @@ async function togglePreviewWindow() {
 }
 // Focus + scroll to a clip when its grid tile is clicked in the preview window.
 function focusClipFromPreview(i) {
+  // The pop-out grid wall pushes EVERY in-scope clip, but the rename list only renders 100 cards at
+  // a time. Clicking a tile for clip #250 on the second monitor therefore found no card and silently
+  // gave up — no jump, no feedback, nothing. focusClip() has always called this for exactly this
+  // reason; this path just never did.
+  try { if (typeof renameEnsureRendered === 'function') renameEnsureRendered(i); } catch { /* ignore */ }
   const card = document.querySelector(`.rename-card[data-i="${i}"]`);
   if (!card) return;
   card.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -843,6 +884,32 @@ function showToast(msg, ms = 1800) {
   appToastEl.classList.add('show');
   clearTimeout(appToastTimer);
   appToastTimer = setTimeout(() => appToastEl.classList.remove('show'), ms);
+}
+
+// A toast that can be ACTED on. An "undo" the user has to go hunting for in a menu is not an
+// offer — it has to be here, at the moment they'd want it, on the thing that just happened.
+function showToastAction(msg, actionLabel, onAction, ms = 8000) {
+  if (!appToastEl) {
+    appToastEl = document.createElement('div');
+    appToastEl.className = 'zoom-toast app-toast';
+    document.body.appendChild(appToastEl);
+  }
+  appToastEl.textContent = '';
+  const tx = document.createElement('span');
+  tx.textContent = msg;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'toast-action';
+  btn.textContent = actionLabel;
+  btn.addEventListener('click', () => {
+    clearTimeout(appToastTimer);
+    appToastEl.classList.remove('show');
+    try { onAction(); } catch { /* the action owns its own errors */ }
+  });
+  appToastEl.append(tx, btn);
+  appToastEl.classList.add('show');
+  clearTimeout(appToastTimer);
+  appToastTimer = setTimeout(() => { appToastEl.classList.remove('show'); appToastEl.textContent = ''; }, ms);
 }
 
 // What (if anything) already uses this key — for rejecting clashing bindings.

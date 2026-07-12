@@ -7,6 +7,130 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — your footage (the important ones)
+- **Cancelling a copy could leave a broken clip in your intake folder, under its real name.**
+  Stopping a copy part-way left the half-copied file sitting in `01 - Uncompressed` looking like a
+  finished clip — Tdarr would compress it, and it would be filed into your Projects tree as the good
+  copy, while the card was cleared anyway. The same cancel also left the app convinced a copy was
+  still running, so every later copy was refused with *"A copy is already running"* until you
+  restarted. Copies are now written to a staging file, flushed, **checked against the card**, and
+  only then given their real name — so a file in your intake folder is always a complete, verified
+  copy, and a cancelled one leaves nothing behind.
+- **A copy is now verified as it lands, not just before a delete.** A flaky card read or running out
+  of disk space could produce a short file that looked complete. It's checked immediately.
+- **An interrupted compression could pass as finished.** If the app was closed (or crashed) mid-encode,
+  the partial video was left where a completed one would be — and the next run skipped it as "already
+  done" and filed it into your archive. Encodes are now staged and only promoted once ffmpeg finishes.
+- **A cancelled or failed copy no longer forgets the clips that DID copy.** They were dropped from the
+  app's memory even though they were safely on disk, so you couldn't clear them off the card, and the
+  next run copied them again alongside the originals as duplicates.
+- **Backing up a phone could silently overwrite a clip you'd already staged.** A second batch that
+  produced the same name renamed straight over the first. It now files the new one alongside instead.
+- **Very long names, and names like `CON` or `AUX`, no longer break the copy.** They're clamped and
+  escaped, so a long AI description can't fail every clip in a batch.
+
+### Fixed — batch renaming
+- **Batch apply no longer stamps one date over every clip.** Simply ticking clips filled the batch
+  date in from the first one, and applying it then overwrote every other clip's real capture date —
+  and locked it, so it could never correct itself afterwards. On a card with two days of footage, the
+  older day was silently re-dated. A shared date is now only filled in when the clips *already* share
+  one; otherwise every clip keeps its own.
+- **The row "apply to all ticked" button no longer wipes descriptions.** It copied every field
+  including the empty ones, so pushing a subject out from a row with no description blanked the
+  description and the category/project on all the ticked clips — including ones the AI had written.
+- **"Select all" now means the clips you can actually see.** With a filter on (e.g. *Unnamed*), it was
+  ticking the hidden clips too — so a batch edit silently overwrote clips you'd already finished.
+- **A filter left on from a previous card no longer hides the next card's clips** (which could make
+  the list come up empty and look like the scan had failed).
+- **Restoring a save point now restores everything it saved** — people, tags, the "faces scanned" flag
+  and the project match. They were in the snapshot but never read back, so restoring from *"Before AI
+  analyze"* couldn't actually undo what the AI added.
+- **Enter works its way through the fields again.** In the batch dialog it applied the batch
+  immediately instead of moving to the next field, and in the clip list it dead-ended part-way down
+  (or jumped back to the top) whenever clips were grouped by day.
+
+### Fixed — AI analysis
+- **Analysis picks up where it left off.** "Only name blank clips" still re-analysed *every* clip and
+  threw the answer away, so cancelling at clip 40 of 100 and starting again re-watched all 100.
+- **"Reuse earlier analysis of N clips (faster)" now actually does something.** It had no effect at all
+  unless multi-pass mode was switched on, which it isn't by default.
+- **The review questions survive a restart.** Finishing an analysis with "ask me to confirm" on and
+  quitting before reviewing lost every question.
+- **"Start over — ignore what's there" can now change a subject.** It never could, so re-analysing
+  after a batch rename only ever rewrote descriptions.
+- **You can see which clips the AI failed on, and retry just those** — instead of a count in a toast
+  and no way to act on it.
+- **Pulling the card out mid-analysis says so**, instead of reporting every remaining clip as its own
+  separate "took too long" error.
+- **Confirming a face is saved immediately** (it could be lost by a crash), and confirming faces on a
+  card that came back on a different drive letter now actually tags the clips.
+- **Photos get analysed and carried forward too** — they were backed up but their metadata was dropped,
+  and they could never be cleared off the card.
+
+### Fixed — organizing
+- **"Run" now files clips where the map says.** It ignored the plan entirely and filed by category and
+  project — fields that are normally empty — so it moved nothing and reported "0 moved" while looking
+  like it had worked.
+- **The Organize step has a Continue button.** There was no visible way forward.
+- **The options that control Run are visible.** Whether to move files, write a Resolve CSV, or back up
+  to a NAS were all decided by controls hidden from view.
+- **"Part of an existing project?" is honoured.** The app asked, you answered, and then dropped the
+  answer before organizing — so those clips landed in `_Unsorted`.
+- **"Apply — file clips" asks first, and offers an Undo** on the spot.
+- **Your AI metadata no longer expires.** It was deleted after 180 days (or once 5,000 newer clips came
+  along) — while you were still waiting to organize it.
+
+### Changed — startup speed
+- **The app no longer loads the 1.3 MB face-recognition engine on every launch.** It was being
+  read, parsed and executed before the window even appeared, whether or not you ever opened
+  face recognition. It now loads the first time you actually use a face feature.
+- **Startup no longer gets slower the more people you tag.** The face database, the AI clip
+  observations and the pending-face crops were all parsed from disk before the window existed
+  — and the face database grows every time you confirm a face (thumbnails are ~70% of it, and
+  a mature library reaches several MB). Those three now load the first time something needs
+  them, so launch cost stays flat no matter how large your library gets.
+
+### Fixed — data safety
+- **A corrupt `people.json` or `drafts.json` no longer wipes your data.** If one of those
+  files was truncated by a crash, a disk glitch, or antivirus holding a lock, the app read it
+  as "this user is new", started with an empty face database / no saved renames, and then
+  **overwrote the file with that empty default** — permanently. It now detects that the file
+  exists but won't parse, runs the session on defaults so the app still works, and *refuses
+  to save over it*. Restore the file (or fix it) and the app picks it back up on the spot.
+  `config.json` always had this protection; the sidecar stores never inherited it.
+- **"Verify copies" now actually verifies the whole file.** It only sampled about 6 MB out of
+  each clip (start, middle, end), so a corrupted copy that happened to keep the same file size
+  could be reported as verified — and you'd then be told it was safe to clear the card. It now
+  hashes every byte of both files, matching the checks already used before a NAS backup or a
+  cross-drive move. Expect this step to take longer; it is the step that decides whether your
+  originals can be deleted.
+
+### Fixed — phone + AI reliability
+- **Phones no longer go silently undetected.** A single unexpected line of PowerShell output
+  containing a `{` or `[` (a path like `C:\Users\{guid}\…`, a `[notice]` banner) could make the
+  app read the device list as empty — no phone, no error, nothing to click.
+- **AI suggestions no longer come back blank because of stray punctuation.** If the model
+  ended its reply with an aside containing a `}`, or returned two JSON blocks, the whole
+  response was discarded. A reply of literally `null` produced an opaque "AI failed" error.
+- **Keyword preview now matches what actually gets written to the file.** The preview listed
+  both `Sunset` and `sunset` while only one was embedded, and it hid keywords the file did
+  receive.
+- **A GoPro clip with unreadable gyro data is no longer labelled "fast action".** An
+  undecodable reading fell through to the maximum-motion bucket and fed that to the AI namer;
+  it now reports no motion reading at all.
+- **Folders named `CON`, `AUX`, `NUL`, `COM1`…** (legacy Windows device names) can now be
+  created — previously organizing into one failed with an opaque error.
+- An AI-suggested destination folder can no longer contain `..`, so it cannot point outside
+  your projects root.
+- A non-numeric compression "scale" override can no longer add an unintended ffmpeg filter.
+
+### Added — testing
+- **The app now has a test suite** (`npm test`, also wired into `npm run check`): 211 tests
+  covering the copy/verify/fingerprint path, naming + metadata embedding, the phone parsers,
+  the AI response parsers, and store durability. It loads the real shipping `main.js` in a
+  sandbox with a stubbed Electron, so tests exercise the code that actually ships. Test
+  footage is generated with `ffmpeg` at run time rather than committed to the repo.
+
 ### Added
 - **The app reopens exactly where you left off.** Close it mid-job and the next launch
   drops you straight back into the rename/compress flow on that same card, or into

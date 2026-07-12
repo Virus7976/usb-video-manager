@@ -137,14 +137,33 @@ async function openCompress() {
       }
       setTask('compress', 'Compressing', (p.index || 0) + 1, files.length, p.phase || 'compressing', p.name || '');
     });
-    const res = await window.api.compressRun({ files, outDir: cmpState.out, settings: { preset: cmpState.preset, skipExisting: $$('#cmpSkip').checked } });
-    if (cmpOff) { cmpOff(); cmpOff = null; }
-    clearTask('compress');
-    cmpState.running = false;
+    // compress:run can REJECT (ffmpeg missing, EPERM on the out dir) — not just resolve
+    // {ok:false}. The cleanup below therefore has to live in a `finally`: without it one
+    // failed run wedged the dialog forever (Run+Close hidden, inputs disabled, task chip
+    // stuck) AND orphaned the progress listener, which then double-wrote the rows on the
+    // next run. Never `await` an IPC call between a subscribe and its unsubscribe without one.
+    let res = null; let err = null;
+    try {
+      res = await window.api.compressRun({ files, outDir: cmpState.out, settings: { preset: cmpState.preset, skipExisting: $$('#cmpSkip').checked } });
+    } catch (e) {
+      err = (e && e.message) || String(e);
+    } finally {
+      if (cmpOff) { cmpOff(); cmpOff = null; }
+      clearTask('compress');
+      cmpState.running = false;
+      $$('#cmpCancel').classList.add('hidden'); $$('#cmpClose').classList.remove('hidden');
+    }
+    if (err) {
+      // Put the dialog back the way it was so the run can actually be retried.
+      ov.querySelectorAll('.cmp-pick, .cmp-preset, #cmpSkip, #cmpSelAll, .cmp-cb').forEach((el) => { el.disabled = false; });
+      $$('#cmpRun').classList.remove('hidden');
+      showToast(`Compress failed — ${err}`, 6000);
+      logIssue('Compress', err);
+      return;
+    }
     const ok = (res && res.results || []).filter((r) => r.ok && !r.skipped);
     const failed = (res && res.results || []).filter((r) => !r.ok);
     const saved = ok.reduce((s, r) => s + Math.max(0, (r.inBytes || 0) - (r.outBytes || 0)), 0);
-    $$('#cmpCancel').classList.add('hidden'); $$('#cmpClose').classList.remove('hidden');
     if (ok.length) $$('#cmpOrganize').classList.remove('hidden');
     showToast(res && res.cancelled ? `Stopped — ${ok.length} compressed` : `Compressed ${ok.length} clip${ok.length !== 1 ? 's' : ''}${saved ? ` · saved ${fmtBytes(saved)}` : ''}${failed.length ? ` · ${failed.length} failed` : ''} ✓`, 6000);
     if (failed.length) failed.forEach((r) => logIssue('Compress', `${r.name}: ${r.error || 'failed'}`));
@@ -196,7 +215,11 @@ $('finPickBtn').addEventListener('click', async () => {
 $('finNext1Btn').addEventListener('click', () => { if (finSelected().length) setFinStep(2); });
 $('finBack2Btn').addEventListener('click', () => setFinStep(1));
 $('finNext2Btn').addEventListener('click', () => {
-  if ($('finOrganize').checked && finDestMode === 'custom' && !finCustomDest) {
+  // When the map has a plan, IT decides the destination — the legacy finDestMode radios are in
+  // the hidden #finLegacyOrg block and the user cannot even see them, so gating Continue on them
+  // would block the step for a reason nobody could act on.
+  const plan = currentDestPlan();
+  if (!(plan && plan.root) && $('finOrganize').checked && finDestMode === 'custom' && !finCustomDest) {
     showToast('Pick a destination folder, or switch to “organize in place”'); return;
   }
   setFinStep(3);
@@ -240,14 +263,26 @@ $('finRunBtn').addEventListener('click', async () => {
   if (!matched.length) { showToast('Tick at least one clip to run on'); return; }
   const options = { embed: $('finEmbed').checked, csv: $('finCsv').checked, organize: $('finOrganize').checked, nas: $('finNas').checked };
   if (!options.embed && !options.csv && !options.organize && !options.nas) { showToast('Pick at least one action on the Organize step'); return; }
-  const dest = finEffectiveDest();
+
+  // THE PLAN the user made on the destination map (Organize step 2) is what Run executes. Run
+  // used to ignore it entirely and file by [category, project] into the Compressed folder — and
+  // those fields are normally empty, so it moved nothing and cheerfully reported "0 moved".
+  const plan = currentDestPlan();
+  const planned = (c) => (plan && plan.byPath[c.sourcePath]) || '';
+  const usePlan = !!(plan && plan.root && matched.some(planned));
+
+  const dest = usePlan ? plan.root : finEffectiveDest();
   if (options.organize && !dest) { showToast('Pick a destination folder first'); return; }
   if (options.nas && !finNasPathVal) { showToast('Pick a NAS folder, or untick the NAS backup'); return; }
 
   if (options.organize) {
+    const unplanned = usePlan ? matched.filter((c) => !planned(c)).length : 0;
+    const where = usePlan
+      ? `Files move into your Projects tree at ${dest}, exactly where the map on the Organize step shows them.${unplanned ? ` ${unplanned} clip${unplanned !== 1 ? 's have' : ' has'} no place on the map yet and will be skipped — go back and file ${unplanned !== 1 ? 'them' : 'it'} first.` : ''}`
+      : `Files move into ${dest}\\${finLevels.map(finLevelLabel).map((s) => s.toLowerCase()).join('\\')}\\…`;
     const ok = await confirmDialog(
       `Organize ${matched.length} clip${matched.length !== 1 ? 's' : ''}?`,
-      `Files move into ${dest}\\${finLevels.map(finLevelLabel).map((s) => s.toLowerCase()).join('\\')}\\… Re-running is safe — existing folders are reused and duplicates are skipped.`,
+      `${where} Re-running is safe — existing folders are reused and duplicates are skipped.`,
       'Run', 'Cancel'
     );
     if (!ok) return;
@@ -276,14 +311,28 @@ $('finRunBtn').addEventListener('click', async () => {
     $('finLabel').textContent = `${phase} ${p.index + 1}/${p.total}: ${p.name}`;
   });
 
-  const summary = await window.api.finalizeRun({
-    dir: finScan.dir, items: matched, options,
-    organizeDest: dest, folderLevels: finLevels, nasPath: finNasPathVal
-  });
-  if (finUnsub) { finUnsub(); finUnsub = null; }
+  // finalize:run does exiftool spawns and cross-device moves, so it can REJECT outright
+  // (a locked file on Windows throws EBUSY) rather than resolve {ok:false}. A throw used to
+  // skip the unsubscribe AND leave finRunBtn disabled — the Finalize screen was dead until
+  // the app restarted. Unsubscribe in a `finally`, and treat a throw exactly like {ok:false}.
+  let summary = null; let err = null;
+  try {
+    summary = await window.api.finalizeRun({
+      // Each item carries the folder the map put it in. A clip with no place on the map sends no
+      // `rel`, so finalize:run leaves it where it is rather than inventing a destination for it.
+      dir: finScan.dir,
+      items: usePlan ? matched.map((c) => ({ ...c, rel: planned(c) })) : matched,
+      options,
+      organizeDest: dest, folderLevels: finLevels, nasPath: finNasPathVal
+    });
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  } finally {
+    if (finUnsub) { finUnsub(); finUnsub = null; }
+  }
 
-  if (!summary || !summary.ok) {
-    $('finLabel').textContent = `Failed: ${summary ? summary.error : 'unknown error'}`;
+  if (err || !summary || !summary.ok) {
+    $('finLabel').textContent = `Failed: ${err || (summary ? summary.error : 'unknown error')}`;
     $('finRunBtn').disabled = false;
     return;
   }
@@ -297,6 +346,9 @@ $('finRunBtn').addEventListener('click', async () => {
   if (options.organize) stats.push(['moved', summary.moved, '']);
   if (options.nas) stats.push(['backed up', summary.backedUp, '']);
   if (summary.skipped) stats.push(['skipped', summary.skipped, '']);
+  // Clips with no place on the map were deliberately left alone. Say so — a silently-omitted
+  // clip is exactly how "Run did nothing and didn't tell me" happens.
+  if (summary.unplanned) stats.push([`not filed (no place on the map)`, summary.unplanned, 'warn']);
   if (summary.errors && summary.errors.length) stats.push(['issue' + (summary.errors.length !== 1 ? 's' : ''), summary.errors.length, 'warn']);
   const statsEl = $('finStats');
   statsEl.innerHTML = stats.map(([label, n, cls]) => `<span class="fin-stat ${cls}"><b>${n}</b> ${label}</span>`).join('');

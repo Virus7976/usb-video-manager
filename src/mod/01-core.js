@@ -7,8 +7,19 @@ const state = {
   drive: null,        // { mountpoint, description, ... }
   scannedFiles: [],   // [{ sourcePath, name, ext, size }]
   copied: [],         // [{ sourcePath, destPath, name, ext, size }]
+  scannedDrive: null, // the mountpoint these clips came from, or '__phone__'
   intakeFolder: null
 };
+
+// Are the loaded clips a PHONE backup? Derived from what is actually loaded, never a flag.
+//
+// This used to be a mutable `state.phoneBackup` that goHome() set to false while leaving the phone
+// clips in state.scannedFiles — so re-entering via "Name & copy clips" ran the CARD copy path on
+// phone files. That copied them straight from the staging temp dir into "01 - Uncompressed",
+// bypassing the deliberate "Send to Uncompressed" gate that exists so Tdarr can't grab them before
+// they're ready — and then offered the staging temp files to the Delete step. A flag can drift from
+// the truth; scannedDrive IS the truth.
+const isPhoneFlow = () => state.scannedDrive === '__phone__';
 
 const $ = (id) => document.getElementById(id);
 
@@ -173,6 +184,36 @@ let cfg = null;
   }, true);
 })();
 
+// Run an async action with a button parked in a busy state, ALWAYS putting it back.
+//
+// Every "disable the button → await the main process → re-enable it" site in this app used
+// to re-enable on the happy path only. An IPC call that REJECTED (ffmpeg missing, EPERM,
+// Ollama stopped mid-request, card yanked) therefore left the button disabled and stranded
+// on its busy label — "Filing…", "Deleting…", "Grouping…" — with no error and no way back
+// short of restarting. This is the one primitive that owns that concern; the `finally` is
+// the whole point, so route every busy-button through it rather than hand-rolling it again.
+//
+// Returns whatever `fn` returns; rethrows nothing — a rejection is handed to `onError`
+// (default: surface it) so callers never have to remember a catch either.
+async function withBusyBtn(btn, busyLabel, fn, onError) {
+  if (!btn) return fn();
+  const prevLabel = btn.textContent;
+  const prevDisabled = !!btn.disabled;
+  btn.disabled = true;
+  if (busyLabel) btn.textContent = busyLabel;
+  try {
+    return await fn();
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    if (typeof onError === 'function') onError(msg);
+    else { try { showToast(`That didn’t work — ${msg}`, 6000); logIssue('UI', msg); } catch { /* ignore */ } }
+    return undefined;
+  } finally {
+    btn.disabled = prevDisabled;
+    btn.textContent = prevLabel;
+  }
+}
+
 (async function init() {
   applyTheme(await window.api.getTheme());
   window.api.onThemeChange(applyTheme);
@@ -239,6 +280,13 @@ let cfg = null;
   // A drive being detected refreshes the home Devices list (you pick from it) rather
   // than auto-jumping, so you always see every available drive.
   window.api.onDriveDetected(() => refreshDriveList());
+  // A card going AWAY is an event too. If it's the one we're working on, stop and say so — rather
+  // than letting previews, AI and copy fail file-by-file with misleading per-clip errors. (Only
+  // fires when auto-poll is on; cardIsGone() covers the rest by asking on demand.)
+  window.api.onDriveRemoved((p) => {
+    refreshDriveList();
+    if (p && p.mountpoint && state.scannedDrive === p.mountpoint) reportCardGone();
+  });
   window.api.onDriveOptions((drives) => onDriveOptions(drives));
   refreshDriveList();   // populate the device list at startup
   renderPendingWork();  // "you've got footage to deal with" — surfaced on every launch
@@ -853,14 +901,23 @@ async function startFlow() {
   $('scanState').innerHTML = `<div class="scan-busy"><span class="illo scan-illo">${ILLO_SCAN}</span><p class="scan-busy-tx">Scanning the card for photos &amp; video…</p></div>`;
   $('scanState').classList.remove('hidden');
 
-  const res = await window.api.scanVideos(state.drive.mountpoint);
-  if (!res.ok) {
-    $('scanState').textContent = `Scan failed: ${res.error}`;
+  // A throw here (card yanked mid-scan) used to leave the "Scanning the card…" spinner
+  // turning forever with no message and Done stuck disabled. `res.ok` was also read with no
+  // null-guard, so a resolved-undefined crashed on the very same line.
+  let res = null;
+  try {
+    res = await window.api.scanVideos(state.drive.mountpoint);
+  } catch (e) {
+    res = { ok: false, error: (e && e.message) || String(e) };
+  }
+  if (!res || !res.ok) {
+    $('scanState').textContent = `Scan failed: ${res ? res.error : 'unknown error'}`;
     return;
   }
   // Seed each clip with the structured-naming fields. Date defaults to the file's
   // modified time (instant); refined from video metadata when its preview loads.
   state.scannedDrive = state.drive.mountpoint;
+  resetClipFilter();   // a filter left on from the PREVIOUS card must not silently hide this one's clips
   state.scannedFiles = res.files.map((f) => {
     const clip = {
       ...f,
@@ -902,13 +959,49 @@ async function startFlow() {
   // footage, not naming you might want to discard) — so it remembers run-to-run and
   // never re-prompts to scan faces you already scanned.
   await applyPeopleFromDrafts();
+  await restoreCopiedFromLog();
 
   buildRenameStep();
+  // AFTER the list exists — restoring questions marks their cards, so the cards have to be there.
+  await restoreAiQuestions();
+  updateBatchBar();   // ticks restored from drafts must be reflected in the batch bar
   if (resumeJumpPending) { resumeJumpPending = false; setTimeout(() => jumpNextUnnamed(), 80); }
   if (!hadPrior) maybeOfferBatchStart();   // only offer "fresh batch" when there's no prior work
 }
 // Restore ONLY people + facesScanned from saved drafts, regardless of whether the
 // user restored the naming draft. Keeps face tagging persistent across runs.
+// Rebuild "what I already copied off THIS card" after a scan, so the Delete step is reachable in
+// a LATER session — which is how the card actually gets cleared: copy → let Tdarr compress →
+// organize days later → only then wipe. `state.copied` was memory-only, so a restart turned the
+// Delete step into a silent no-op and the sole way to clear a card was to copy the whole thing
+// again.
+//
+// It is rebuilt from the INTERSECTION of what is physically on the card right now and what we
+// logged, matched on the stable name__size fingerprint. That is what scopes it: another card's
+// clips are not on this card, so they can never appear here — which is the bug that let the phone
+// flow list a previous card's files. And copied:get has already dropped any record whose copy no
+// longer exists on disk, so we never offer to delete a file whose only other copy is gone.
+//
+// None of this is an authority to delete. delete:source re-hashes source against dest itself and
+// refuses whatever it cannot prove — a stale record here gets refused, never wrongly actioned.
+async function restoreCopiedFromLog() {
+  state.copied = [];
+  if (!state.scannedFiles.length) return;
+  let log = {};
+  try { log = await window.api.getCopied(state.scannedFiles.map((c) => clipKey(c))) || {}; } catch { return; }
+  const found = [];
+  for (const c of state.scannedFiles) {
+    const rec = log[clipKey(c)];
+    if (!rec || !rec.dest) continue;
+    c._alreadyImported = true;
+    found.push({ sourcePath: c.sourcePath, destPath: rec.dest, name: c.name, ext: c.ext, size: c.size });
+  }
+  state.copied = found;
+  if (found.length) {
+    showToast(`${found.length} clip${found.length !== 1 ? 's' : ''} on this card ${found.length !== 1 ? 'were' : 'was'} already copied — you can clear them from the Delete step.`, 5000);
+  }
+}
+
 async function applyPeopleFromDrafts() {
   let drafts = {};
   try { drafts = await window.api.getDrafts(); } catch { return; }
@@ -948,6 +1041,11 @@ function maybeOfferBatchStart() {
 $('cancelFlowBtn').addEventListener('click', () => {
   $('flow').classList.add('hidden');
   $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
+  // Cancelling is a decision to LEAVE this card. It never cleared the saved session, so the next
+  // launch resumed straight back into the card you had just deliberately backed out of. goHome()
+  // has always done this correctly — Cancel just never did.
+  saveSession({ view: 'home' });
+  state.copied = [];   // the copy→verify→delete session ends here, same as goHome
 });
 
 // ---------------------------------------------------------------------------
@@ -1030,7 +1128,12 @@ function buildDraftMap() {
       peopleAuto: Array.isArray(clip.peopleAuto) ? clip.peopleAuto : [],   // unconfirmed face guesses
       tags: Array.isArray(clip.tags) ? clip.tags : [],
       facesScanned: !!clip._facesScanned,
-      ledgerRel: clip._ledgerRel || ''
+      ledgerRel: clip._ledgerRel || '',
+      // Which clips you had TICKED. Not persisted before, so every restart dropped the selection
+      // and you had to re-tick before you could resume an analyze run — and the fastest way to
+      // re-tick is "select all", which is exactly what walks you back into re-analysing clips that
+      // were already done.
+      selected: !!clip.selected
     };
     for (const fld of organizeFields) d[fld.id] = clip[fld.id] || '';
     map[clipKey(clip)] = d;
@@ -1122,6 +1225,7 @@ function applyDraftsToClips(drafts) {
     if (Array.isArray(d.tags) && d.tags.length) clip.tags = addUnique(clip.tags, d.tags);
     if (d.facesScanned) clip._facesScanned = true;
     if (d.ledgerRel) clip._ledgerRel = d.ledgerRel;
+    if (d.selected) clip.selected = true;   // put the ticks back — see buildDraftMap
     for (const fld of organizeFields) if (d[fld.id]) clip[fld.id] = d[fld.id];
     n += 1;
   }
@@ -1187,7 +1291,26 @@ function applyVersionToClips(map) {
     clip.context = d.context || '';
     clip.shotType = d.shotType || '';
     clip.observation = d.observation || '';
-    if (d.date) { clip.date = d.date; clip.dateLocked = true; } else { clip.dateLocked = false; }
+    // The snapshot HAS these — buildDraftMap has always captured them — but the restore simply never
+    // read them back. So "Restore" from the automatic "Before AI analyze" save point could not undo
+    // what the AI had actually done: the tags it merged in and the people that face-scanning wrote
+    // survived the rollback permanently, and were then re-persisted by the draft save that follows.
+    // The undo was quietly partial, which is worse than no undo.
+    clip.people = Array.isArray(d.people) ? d.people.slice() : [];
+    clip.peopleAuto = Array.isArray(d.peopleAuto) ? d.peopleAuto.slice() : [];
+    clip.tags = Array.isArray(d.tags) ? d.tags.slice() : [];
+    clip._facesScanned = !!d.facesScanned;
+    clip._ledgerRel = d.ledgerRel || '';
+    // A version restore is meant to set each field EXACTLY. The date branch only cleared the LOCK and
+    // left the wrong date in place, still driving finalName() — so a date wrongly stamped across a
+    // batch survived the very rollback meant to undo it.
+    //
+    // But it must NOT be blanked either: buildDraftMap only records a date the user CHOSE
+    // (dateLocked), so "no date in the snapshot" means "this clip was on its natural date", not "this
+    // clip had no date". Blanking would throw away the file's real capture date. Restore the natural
+    // default — the same expression the scan uses.
+    if (d.date) { clip.date = d.date; clip.dateLocked = true; }
+    else { clip.date = phoneDateOf(clip.name) || toDateStr(clip.mtimeMs) || ''; clip.dateLocked = false; }
     for (const fld of organizeFields) clip[fld.id] = d[fld.id] || '';
     n += 1;
   }

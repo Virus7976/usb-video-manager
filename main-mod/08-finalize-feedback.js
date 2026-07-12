@@ -8,6 +8,75 @@
 // Each person keeps a list of FACES = { d:[128 descriptor], t:'thumb dataURL' } so
 // the People dashboard can show every face per person (digiKam-style). Older configs
 // stored parallel `descriptors`+`thumb`/`thumbs`; migratePerson() folds them into faces.
+// --- face crops live on DISK, not inside people.json --------------------------------------
+//
+// The crops used to be base64 data: URLs stored inline in the JSON — about 70% of the file's bytes,
+// growing every single time you confirm a face, with no ceiling. A realistic mature library
+// (40 people × 15 faces) was ~5 MB of JSON that had to be parsed and then held in memory in full
+// the moment the People view opened. Deferring the load (LAZY_STORES) took it off the boot path but
+// did nothing about the size.
+//
+// Crops are now ordinary .jpg files and the store keeps a file:// URL. The renderer's CSP already
+// allows `img-src 'self' file: data:`, and posters are served the same way, so nothing downstream
+// has to change.
+//
+// SAFETY: reading tolerates BOTH forms, forever. A record still carrying an inline data: URL renders
+// exactly as before and is migrated opportunistically. If a crop cannot be written to disk, the
+// inline copy is KEPT — a migration is never allowed to lose a face.
+const FACES_DIR = path.join(STORE_DIR, 'faces');
+let faceCropSeq = 0;
+function saveFaceCrop(dataUrl) {
+  const s = String(dataUrl || '');
+  const m = /^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/i.exec(s);
+  if (!m) return s;                       // already a file:// URL (or empty) — pass straight through
+  try {
+    ensureDirSync(FACES_DIR);
+    const kind = m[1].toLowerCase();
+    const ext = kind === 'png' ? 'png' : (kind === 'webp' ? 'webp' : 'jpg');
+    faceCropSeq += 1;
+    const file = path.join(FACES_DIR, `f${Date.now().toString(36)}${faceCropSeq.toString(36)}.${ext}`);
+    fs.writeFileSync(file, Buffer.from(m[2], 'base64'));
+    return pathToFileURL(file).href;
+  } catch {
+    return s;                             // couldn't write → keep it inline rather than lose the face
+  }
+}
+
+// Delete crop files nothing points at any more.
+//
+// Several operations silently drop faces — deleting a person, merging two (`.slice(-60)`), removing
+// a wrong crop, or simply hitting the 80-face-per-person cap. Sprinkling an unlink into each of them
+// is how you eventually miss one and leak. This is reference-counted instead: it scans what the
+// store ACTUALLY references and removes only files nothing points at, so it cannot delete a live
+// crop no matter which call site forgot to think about it.
+//
+// Best-effort by construction: a GC failure must never break a save.
+function gcFaceCrops() {
+  try {
+    if (!fs.existsSync(FACES_DIR)) return;
+    ensureStore('ai.facesPending');   // pending clusters can reference crops too — never GC blind
+    const keep = new Set();
+    const note = (u) => {
+      const s = String(u || '');
+      if (!s.startsWith('file:')) return;
+      try { keep.add(path.resolve(fileURLToPath(s))); } catch { /* not a path we own */ }
+    };
+    for (const p of ((config.ai && config.ai.people) || [])) {
+      note(p.thumb);
+      for (const f of (p.faces || [])) note(f.t);
+    }
+    for (const c of ((config.ai && config.ai.facesPending) || [])) note(c && c.thumb);
+
+    let removed = 0;
+    for (const name of fs.readdirSync(FACES_DIR)) {
+      const full = path.resolve(path.join(FACES_DIR, name));
+      if (keep.has(full)) continue;
+      try { fs.unlinkSync(full); removed += 1; } catch { /* in use / gone already */ }
+    }
+    if (removed) console.log(`[people] gc: removed ${removed} orphaned face crop(s)`);
+  } catch { /* never let housekeeping break a save */ }
+}
+
 function migratePerson(p) {
   if (!Array.isArray(p.faces)) {
     const ds = Array.isArray(p.descriptors) ? p.descriptors : [];
@@ -17,10 +86,37 @@ function migratePerson(p) {
   // Existing faces were user-named → treat as confirmed. New unconfirmed ones come
   // in with confirmed:false.
   p.faces.forEach((f) => { if (f.confirmed === undefined) f.confirmed = true; });
+  // Opportunistically move any inline crop out to a file. saveFaceCrop returns the value unchanged
+  // if it can't write, so a person is never left holding a broken reference.
+  let moved = 0;
+  p.faces.forEach((f) => {
+    if (f.t && f.t.startsWith('data:')) { const next = saveFaceCrop(f.t); if (next !== f.t) { f.t = next; moved += 1; } }
+  });
+  if (p.thumb && p.thumb.startsWith('data:')) { const next = saveFaceCrop(p.thumb); if (next !== p.thumb) { p.thumb = next; moved += 1; } }
+  if (moved) p._cropsMoved = moved;   // tells aiPeople() the store is worth re-saving
   if (!p.thumb && p.faces.length) p.thumb = ((p.faces.find((f) => f.confirmed && f.t) || p.faces.find((f) => f.t)) || {}).t || '';
   return p;
 }
-function aiPeople() { config.ai = config.ai || {}; if (!Array.isArray(config.ai.people)) config.ai.people = []; config.ai.people.forEach(migratePerson); return config.ai.people; }
+// people.json is a LAZY store (see LAZY_STORES in 01-core.js) — it is not read at boot.
+// ensureStore() pulls it in the first time anyone reaches for it. Every read AND write path
+// for the face DB goes through this accessor, which is what makes deferring it safe: the
+// sidecar can never be read after a caller has already mutated the in-memory value.
+function aiPeople() {
+  ensureStore('ai.people');
+  config.ai = config.ai || {};
+  if (!Array.isArray(config.ai.people)) config.ai.people = [];
+  config.ai.people.forEach(migratePerson);
+  // If migratePerson moved any inline crop out to a file, WRITE THE STORE BACK — otherwise the
+  // crops are on disk but people.json still carries the fat base64 copies, and we'd re-do the whole
+  // migration on every single load while the file never actually shrinks.
+  const moved = config.ai.people.reduce((n, p) => n + (p._cropsMoved || 0), 0);
+  if (moved) {
+    config.ai.people.forEach((p) => { delete p._cropsMoved; });
+    saveStore('ai.people');
+    console.log(`[people] moved ${moved} inline face crop(s) out to ${FACES_DIR}`);
+  }
+  return config.ai.people;
+}
 function aiIgnoredFaces() { config.ai = config.ai || {}; if (!Array.isArray(config.ai.ignored)) config.ai.ignored = []; return config.ai.ignored; }
 function personCover(p) { return p.thumb || ((p.faces || []).find((f) => f.confirmed && f.t) || (p.faces || []).find((f) => f.t) || {}).t || ''; }
 function faceDist(a, b) { if (!a || !b) return Infinity; let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i += 1) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
@@ -29,9 +125,13 @@ ipcMain.handle('people:get', () => aiPeople().map((p) => ({ id: p.id, name: p.na
 ipcMain.handle('faces:ignoredCount', () => aiIgnoredFaces().length);
 // Persist the unconfirmed face-review clusters so the grid (crops + all) survives
 // restarts — no re-scanning to see your faces again.
-ipcMain.handle('faces:getPending', () => (config.ai && Array.isArray(config.ai.facesPending)) ? config.ai.facesPending : []);
+// Lazy store (LAZY_STORES): the pending-face crops are only needed once the face-review grid
+// is opened, so nothing reads faces-pending.json at boot. Both handlers go through this
+// accessor so the sidecar is always pulled in BEFORE the value is read or replaced.
+function aiFacesPending() { ensureStore('ai.facesPending'); config.ai = config.ai || {}; if (!Array.isArray(config.ai.facesPending)) config.ai.facesPending = []; return config.ai.facesPending; }
+ipcMain.handle('faces:getPending', () => aiFacesPending());
 ipcMain.handle('faces:savePending', (_e, list) => {
-  if (!config.ai) config.ai = {};
+  aiFacesPending();                                    // load first, then replace
   config.ai.facesPending = Array.isArray(list) ? list : [];
   saveStore('ai.facesPending');
   return { ok: true };
@@ -49,7 +149,9 @@ ipcMain.handle('people:save', (_e, payload) => {
   const name = String((payload && payload.name) || '').trim();
   if (!name) return { ok: false, error: 'No name' };
   const descriptors = Array.isArray(payload && payload.descriptors) ? payload.descriptors.filter((d) => Array.isArray(d) && d.length) : [];
-  const thumb = String((payload && payload.thumb) || '');
+  // The renderer hands us a base64 crop straight off a canvas. Write it out to a file HERE, so no
+  // new base64 ever enters people.json — otherwise the store just starts growing again.
+  const thumb = saveFaceCrop(String((payload && payload.thumb) || ''));
   const confirmed = !(payload && payload.confirmed === false);
   const people = aiPeople();
   let p = people.find((x) => x.name.toLowerCase() === name.toLowerCase());
@@ -111,16 +213,17 @@ ipcMain.handle('people:reassignFace', (_e, payload) => {
 ipcMain.handle('faces:listIgnored', () => aiIgnoredFaces().map((f, i) => ({ i, t: f.t || '' })));
 ipcMain.handle('faces:unignore', (_e, idx) => { const ig = aiIgnoredFaces(); const i = Number(idx); if (i >= 0 && i < ig.length) { ig.splice(i, 1); saveConfig(); } return { ok: true }; });
 ipcMain.handle('people:rename', (_e, payload) => { const p = aiPeople().find((x) => x.id === (payload && payload.id)); if (p) { p.name = String(payload.name || p.name).trim() || p.name; saveStore('ai.people'); } return { ok: true }; });
-ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveStore('ai.people'); return { ok: true }; });
+ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveStore('ai.people'); gcFaceCrops(); return { ok: true }; });
 // Merge `fromId` into `intoId` (combines faces, deletes the source) — for fixing
 // the same person split across two names.
 ipcMain.handle('people:merge', (_e, payload) => {
   const into = aiPeople().find((x) => x.id === (payload && payload.intoId));
   const from = aiPeople().find((x) => x.id === (payload && payload.fromId));
   if (!into || !from || into === from) return { ok: false };
-  into.faces = [...(into.faces || []), ...(from.faces || [])].slice(-60);
+  into.faces = [...(into.faces || []), ...(from.faces || [])].slice(-60);   // the slice can drop faces
   config.ai.people = aiPeople().filter((x) => x.id !== from.id);
   saveStore('ai.people');
+  gcFaceCrops();
   return { ok: true };
 });
 // Remove one face (a wrong crop) from a person.
@@ -131,6 +234,7 @@ ipcMain.handle('people:removeFace', (_e, payload) => {
   p.faces.splice(idx, 1);
   if (p.thumb && !(p.faces || []).some((f) => f.t === p.thumb)) p.thumb = personCover(p);
   saveStore('ai.people');
+  gcFaceCrops();
   return { ok: true, faces: (p.faces || []).map((f, i) => ({ i, t: f.t || '' })) };
 });
 ipcMain.handle('people:setCover', (_e, payload) => {
@@ -571,18 +675,33 @@ ipcMain.handle('drafts:get', () => currentDrafts());
 // face-scan flush, or a save that fired before restore re-applied the drafts) — it
 // must not erase a name you already saved. This is the guard that makes a repeat of
 // the "reopened and all my renames were gone" data loss impossible.
-const DRAFT_CONTENT_FIELDS = ['subject', 'description', 'location', 'context', 'shotType', 'observation', 'date', 'category', 'project'];
-const DRAFT_ARRAY_FIELDS = ['people', 'peopleAuto', 'tags'];
+// The guard is a DENYLIST, not an allowlist.
+//
+// It used to name the protected fields explicitly (subject, description, location, …), which meant
+// anything NOT on that list fell straight through `{...prev, ...incoming}` and could be blanked by
+// a stale write. Three things were quietly unprotected:
+//   • `facesScanned` — a stale save could flip it back to false, and the whole card would then be
+//     re-face-scanned from scratch;
+//   • `ledgerRel` — the same-shoot project the user explicitly confirmed;
+//   • the user's CUSTOM organize fields, whose names we cannot know ahead of time (organizeFields
+//     is user-configurable), so an allowlist can never cover them by construction.
+//
+// So: every field that has ever been saved is protected, and only the fields we explicitly WANT to
+// be clearable may be cleared. That is the safe default — a new field added to the draft record is
+// protected automatically instead of silently unguarded.
 const draftNonEmpty = (val) => (Array.isArray(val) ? val.length > 0 : !!val);
 function draftIsNamed(v) { return !!(v && (v.subject || v.description || v.location)); }
+// `selected` is a UI tick, not work: unticking a clip MUST be able to persist. `ts` is bookkeeping.
+const DRAFT_CLEARABLE = new Set(['selected', 'ts']);
 // Merge an incoming draft onto the stored one WITHOUT ever blanking saved content.
 function mergeDraft(prev, incoming) {
   const merged = { ...(prev || {}), ...incoming };
-  for (const f of DRAFT_CONTENT_FIELDS) { if (!draftNonEmpty(incoming[f]) && draftNonEmpty(prev && prev[f])) merged[f] = prev[f]; }
-  for (const f of DRAFT_ARRAY_FIELDS) {
-    const iv = Array.isArray(incoming[f]) ? incoming[f] : [];
-    const pv = Array.isArray(prev && prev[f]) ? prev[f] : [];
-    if (!iv.length && pv.length) merged[f] = pv;   // an empty array never wipes a saved one
+  if (!prev) return merged;
+  for (const [f, pv] of Object.entries(prev)) {
+    if (DRAFT_CLEARABLE.has(f)) continue;
+    // An empty incoming value for a field we already hold content for can only be a stale or
+    // flag-only write (a face-scan flush, or a save that fired before restore re-applied drafts).
+    if (!draftNonEmpty(incoming[f]) && draftNonEmpty(pv)) merged[f] = pv;
   }
   return merged;
 }
@@ -671,6 +790,75 @@ ipcMain.handle('versions:clear', () => { config.renameVersions = []; saveStore('
 // ---------------------------------------------------------------------------
 function currentFinalMeta() { return freshStore('finalMeta'); }
 
+// --- copiedLog: "what have I copied off a card, and where did it land?" ------------------
+//
+// Keyed by the stable name__size fingerprint of the SOURCE file, so it still matches after a
+// replug under a different drive letter, and after a restart. This is what lets the Delete step
+// work in a LATER session — the user's actual workflow is copy → compress → organize → and only
+// then clear the card, which could be days apart.
+//
+// It is a convenience for REBUILDING the delete list, never an authority to delete: delete:source
+// re-hashes source against dest itself and refuses anything it cannot prove. A stale or wrong
+// record here can therefore cause a file to be offered and then refused — never wrongly deleted.
+function currentCopiedLog() { return freshStore('copiedLog'); }
+
+ipcMain.handle('copied:record', (_evt, entries) => {
+  const list = (Array.isArray(entries) ? entries : []).filter((e) => e && e.key && e.source && e.dest);
+  if (!list.length) return true;
+  const store = currentCopiedLog();
+  const now = Date.now();
+  for (const e of list) store[String(e.key)] = { source: String(e.source), dest: String(e.dest), name: String(e.name || ''), ts: now };
+  config.copiedLog = store;
+  saveStore('copiedLog');
+  return true;
+});
+
+// Return only the records whose COPY still exists on disk. A record whose destination has been
+// moved, renamed by the compressor, or deleted proves nothing any more — offering it for deletion
+// would be offering to delete footage whose only other copy is gone.
+ipcMain.handle('copied:get', async (_evt, keys) => {
+  const store = currentCopiedLog();
+  const want = Array.isArray(keys) && keys.length ? new Set(keys.map(String)) : null;
+  const out = {};
+  const dead = [];
+  for (const [k, v] of Object.entries(store)) {
+    if (want && !want.has(k)) continue;
+    if (!v || !v.dest) { dead.push(k); continue; }
+    try { await fsp.stat(v.dest); out[k] = v; } catch { dead.push(k); }   // the copy is gone → forget it
+  }
+  if (dead.length) {
+    for (const k of dead) delete store[k];
+    config.copiedLog = store; saveStore('copiedLog');
+  }
+  return out;
+});
+
+// The AI's outstanding questions. Keyed by clipKey (name__size), never by array index — see the
+// STORE_FILES note. Whole-list replace: the renderer owns the queue and re-saves it on every
+// change, so there is no merge to get wrong.
+ipcMain.handle('aiq:save', (_evt, list) => {
+  const clean = (Array.isArray(list) ? list : []).filter((q) => q && q.type).map((q) => ({
+    type: String(q.type),
+    clipKey: q.clipKey ? String(q.clipKey) : '',
+    field: q.field ? String(q.field) : '',
+    suggested: q.suggested ? String(q.suggested) : '',
+    rule: q.rule ? String(q.rule) : '',
+  }));
+  config.aiQueue = clean;
+  saveStore('aiQueue');
+  return true;
+});
+
+ipcMain.handle('aiq:get', () => freshStore('aiQueue') || []);
+
+ipcMain.handle('copied:forget', (_evt, keys) => {
+  const store = currentCopiedLog();
+  let changed = false;
+  for (const k of (Array.isArray(keys) ? keys : [])) { if (store[String(k)]) { delete store[String(k)]; changed = true; } }
+  if (changed) { config.copiedLog = store; saveStore('copiedLog'); }
+  return true;
+});
+
 ipcMain.handle('finalMeta:save', (_evt, map) => {
   if (!map || typeof map !== 'object') return false;
   const incoming = Object.entries(map).filter(([k, v]) => k && v && typeof v === 'object');
@@ -689,17 +877,47 @@ ipcMain.handle('finalMeta:save', (_evt, map) => {
     if (!Array.isArray(rec.keywords)) rec.keywords = [];
     store[String(name).toLowerCase()] = rec;
   }
-  // Prune: drop entries older than 180 days, then cap to the 5000 most recent.
+  // Prune — but NEVER evict metadata for a clip that hasn't been organized yet.
+  //
+  // This store is the ONLY carrier of the AI's work across the gap between "copy to intake" and
+  // "organize the output folder", and that gap is deliberately LONG: the whole workflow is to let
+  // Tdarr compress, then come back to it later. Dropping entries at 180 days and capping to the
+  // 5000 most recent therefore silently deleted work the user had not consumed yet — come back to
+  // a shoot seven months later, or after 5000 newer clips, and everything the AI concluded was
+  // gone, with no warning. That is precisely the "it forgets to remember things" complaint.
+  //
+  // An entry is only evictable once finalize:run has actually FILED that clip (`done: true`).
+  // Anything still pending is unconsumed user work and is kept regardless of age. The hard cap is
+  // a runaway backstop, and it sheds FILED entries first — it will not throw away pending work to
+  // stay under a limit.
   const MAX_AGE = 180 * 24 * 3600 * 1000;
-  let entries = Object.entries(store).filter(([, v]) => v && (now - (v.ts || 0)) < MAX_AGE);
-  if (entries.length > 5000) {
-    entries.sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
-    entries = entries.slice(0, 5000);
+  const HARD_CAP = 50000;
+  const isDone = (v) => !!(v && v.done);
+  let entries = Object.entries(store).filter(([, v]) => v && (!isDone(v) || (now - (v.ts || 0)) < MAX_AGE));
+  if (entries.length > HARD_CAP) {
+    // Oldest FILED entries go first; pending work is only touched if it alone blows the cap.
+    entries.sort((a, b) => (isDone(a[1]) === isDone(b[1]))
+      ? (b[1].ts || 0) - (a[1].ts || 0)
+      : (isDone(a[1]) ? 1 : -1));
+    entries = entries.slice(0, HARD_CAP);
   }
   config.finalMeta = Object.fromEntries(entries);
   saveStore('finalMeta');
   return true;
 });
+
+// Mark clips as FILED, so their metadata becomes evictable by the prune above. Called by
+// finalize:run once a clip has actually been organized — until then its metadata is pending
+// work and the store must hold on to it however long that takes.
+function markFinalMetaDone(names) {
+  const store = currentFinalMeta();
+  let changed = false;
+  for (const n of (Array.isArray(names) ? names : [])) {
+    const k = String(n || '').toLowerCase();
+    if (store[k] && !store[k].done) { store[k].done = true; changed = true; }
+  }
+  if (changed) { config.finalMeta = store; saveStore('finalMeta'); }
+}
 
 // Find every stored clip (organized finalMeta + in-progress drafts) tagged with a person
 // name — powers the "you changed X, re-tag N clips?" offer after a rename/merge/reassign.

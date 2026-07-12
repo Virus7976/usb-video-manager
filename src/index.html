@@ -339,14 +339,25 @@
       <!-- STEP 2 — ORGANIZE: choose outputs, destination, folder structure, NAS -->
       <div id="finStep2" class="step-panel hidden">
         <div class="fin-scroll">
-          <label class="org-toggle fin-embed-top" title="Writes XMP — Title, Description, Keywords, hierarchical tags, people &amp; tags — read by Resolve, digiKam &amp; Windows search."><input type="checkbox" id="finEmbed" checked /> <span>Embed metadata into the files <span class="org-hint-ic">ⓘ</span></span></label>
           <div id="finMapHost" class="fin-map-host"></div>
-          <!-- Legacy tick-field folder builder — superseded by the map above, kept hidden so existing wiring stays valid. -->
-          <div id="finLegacyOrg" class="hidden">
-            <div class="fin-options">
-              <label class="org-toggle"><input type="checkbox" id="finCsv" /> <span>Also write a DaVinci Resolve metadata CSV</span></label>
-              <label class="org-toggle"><input type="checkbox" id="finOrganize" checked /> <span>Move the files into folders</span></label>
+          <!-- WHAT RUN WILL DO. These four drive finalize:run — and three of them used to sit inside
+               the hidden #finLegacyOrg block below, so Run's behaviour was decided by controls the
+               user could not see or change: "Move the files into folders" was silently ON, and the
+               Resolve CSV and the NAS backup could never be switched on at all. -->
+          <div class="fin-options fin-run-opts">
+            <label class="org-toggle" title="Writes XMP — Title, Description, Keywords, hierarchical tags, people &amp; tags — read by Resolve, digiKam &amp; Windows search."><input type="checkbox" id="finEmbed" checked /> <span>Embed metadata into the files <span class="org-hint-ic">ⓘ</span></span></label>
+            <label class="org-toggle"><input type="checkbox" id="finOrganize" checked /> <span>Move the files into the folders shown above</span></label>
+            <label class="org-toggle"><input type="checkbox" id="finCsv" /> <span>Also write a DaVinci Resolve metadata CSV</span></label>
+            <label class="org-toggle"><input type="checkbox" id="finNas" /> <span>Also back up a copy to a NAS / second location</span></label>
+            <div class="pref-row fin-nas-row hidden">
+              <input type="text" class="pref-path" id="finNasPath" readonly placeholder="NAS folder" />
+              <button type="button" class="btn" id="finNasBrowse">Browse…</button>
             </div>
+          </div>
+          <!-- Legacy tick-field folder builder — superseded by the map above (which IS the plan Run
+               executes). Kept so the existing finDestMode / finLevels wiring stays valid, but it no
+               longer silently decides anything on the user's behalf. -->
+          <div id="finLegacyOrg" class="hidden">
             <div id="finOrganizeOpts">
               <div class="fin-dest-modes">
                 <label class="fin-radio"><input type="radio" name="finDestMode" value="inplace" checked /> <span>Organize in place — subfolders inside the Compressed folder</span></label>
@@ -359,18 +370,17 @@
               <div class="org-levels" id="finLevels"></div>
               <div class="org-preview" id="finPreview"></div>
             </div>
-            <label class="org-toggle"><input type="checkbox" id="finNas" /> <span>Also back up a copy to a NAS / second location</span></label>
-            <div class="pref-row fin-nas-row hidden">
-              <input type="text" class="pref-path" id="finNasPath" readonly placeholder="NAS folder" />
-              <button type="button" class="btn" id="finNasBrowse">Browse…</button>
-            </div>
+            <!-- finNas / finNasPath / finNasBrowse moved UP into the visible options block. They must
+                 not also exist here: duplicate ids would make every $('finNas') lookup ambiguous. -->
             <div class="fin-example" id="finExample2"></div>
           </div>
         </div>
         <div class="row-actions">
           <button id="finBack2Btn" class="btn ghost">Back</button>
-          <button id="finNext2Btn" class="btn hidden">Continue</button>
-          <button id="finMap2Btn" class="btn hidden">Visualize destinations…</button>
+          <!-- Continue was class="hidden" and nothing ever un-hid it, so Back was the ONLY visible
+               control on this step: to reach Run you had to guess the step-3 pill was clickable. -->
+          <button id="finNext2Btn" class="btn">Continue →</button>
+          <button id="finMap2Btn" class="btn ghost hidden">Visualize destinations…</button>
         </div>
       </div>
 
@@ -521,9 +531,13 @@
     <span id="aiHazardCount" class="ai-hazard-count">0</span>
   </button>
 
-  <!-- Face recognition library (optional). Vendored into src/ at build time; until
-       then window.faceapi is undefined and the app degrades gracefully. -->
-  <script src="face-api.min.js" onerror="window.__noFaceApi=true"></script>
+  <!-- face-api.min.js (1.3 MB, bundles TensorFlow.js) is NOT loaded here on purpose.
+       It used to be a blocking <script> ahead of renderer.js, so every launch paid to
+       fetch, parse and execute it even for the many sessions that never touch face
+       recognition. It is now injected on FIRST USE by loadFaceApiLib() in
+       src/mod/08-people.js — ensureFaceModels() is the single chokepoint every face
+       path goes through, so nothing else has to know. Still degrades gracefully when
+       the library isn't vendored in yet. -->
   <script src="renderer.js"></script>
 </body>
 </html>

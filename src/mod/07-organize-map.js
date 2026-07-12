@@ -8,6 +8,21 @@ const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
 // metadata; "Suggest with AI" reads the real tree + clip content to refine it;
 // you can move clips and create folders, then Apply files them (editable mode).
 // ---------------------------------------------------------------------------
+
+// THE PLAN — published so the Organize "Run" step files exactly where the map says.
+//
+// There used to be two filing systems that disagreed. The map (which the user actually
+// interacts with, inline in Organize step 2) filed via projects:move into the Projects tree.
+// The step-3 "Run" button called finalize:run, which ignored the map entirely and filed by
+// [category, project] into the Compressed folder — and those two fields are normally EMPTY
+// (the rename grid hides them by default, and the AI only sets a category that already
+// exists). So subdirParts() returned [], organizeMove() found the file already in place, and
+// Run reported "N skipped, 0 moved". The user planned a whole tree and Run did nothing.
+//
+// Now there is one plan. The map is the source of truth; Run just executes it (and adds the
+// embed / NAS mirror / Resolve CSV on top).
+let lastDestPlan = null;   // { root, byPath: { [sourcePath]: 'Client/Alps-2026/2026-07-12' } }
+function currentDestPlan() { return lastDestPlan; }
 // Record successfully-filed clips into the persistent project ledger, then (if AI
 // is on) refresh the AI summary for each touched project in the background.
 async function recordToLedger(clips, placement, results) {
@@ -413,7 +428,12 @@ async function showDestinationMap(rawClips, opts = {}) {
   }
   // Dispatcher: every re-render goes through here so all existing callers honour the
   // current view. renderTree() is kept as the alias the rest of the code calls.
-  function render() { if (viewMode === 'tree') renderTreeView(); else renderPlan(); }
+  // Every recompute and every manual move funnels through render(), so this is the one place
+  // that keeps the published plan in step with what the user is actually looking at.
+  function publishPlan() {
+    lastDestPlan = { root: String(root || '').replace(/[\\/]+$/, ''), byPath: { ...placement } };
+  }
+  function render() { publishPlan(); if (viewMode === 'tree') renderTreeView(); else renderPlan(); }
   function renderTree() { render(); }
   function renderTreeView() {
     const el = q('.dmap-tree'); el.innerHTML = '';
@@ -1084,11 +1104,9 @@ async function showDestinationMap(rawClips, opts = {}) {
       mk.type = 'button'; mk.className = 'btn subtle sw-mkrules'; mk.textContent = '✨ Save these answers as filing rules…';
       mk.addEventListener('click', async () => {
         const text = ctxLabel(); if (!text.trim()) { showToast('Answer a question first'); return; }
-        mk.disabled = true; mk.textContent = 'Thinking…';
-        const res = await window.api.aiParseRules({ text, folders: folderPaths });
-        mk.disabled = false; mk.textContent = '✨ Save these answers as filing rules…';
+        const res = await withBusyBtn(mk, 'Thinking…', () => window.api.aiParseRules({ text, folders: folderPaths }));
         if (res && res.ok && res.rules.length) { closeW(); showRoutingRules(folderPaths, () => { recomputeAuto(); renderTree(); }, clips.map((c) => ({ name: c.name, subject: c.subject, location: c.location, description: c.description, date: c.date })), res.rules); }
-        else showToast(res && res.error ? res.error : 'No rules to propose from those answers');
+        else if (res) showToast(res.error ? res.error : 'No rules to propose from those answers');
       });
       body.appendChild(mk);
     }
@@ -1314,17 +1332,49 @@ async function showDestinationMap(rawClips, opts = {}) {
         const rel = placement[c.key] || 'misc';
         return { from: c.sourcePath, toDir: `${rootClean}/${rel}`, rel, name: c.name, meta: (embed && c._ref && c._ref.meta) ? c._ref.meta : null };
       });
+      // CONFIRM FIRST. Apply MOVES every clip on the map — including anything still sitting in
+      // "Needs you"/_Unsorted, which lands in `misc`. It went straight through with no confirmation
+      // at all, which is a lot of file movement to trigger with one click. Say what will happen,
+      // and call out the clips that have no real home yet, since those are the ones you'd regret.
+      const miscN = clips.filter((c) => !placement[c.key]).length;
+      const folders = new Set(moves.map((m) => m.rel)); folders.delete('misc');
+      const ok = await confirmDialog(
+        `File ${moves.length} clip${moves.length !== 1 ? 's' : ''} into your Projects tree?`,
+        `They move into ${escapeHtml(rootClean)} across ${folders.size} folder${folders.size !== 1 ? 's' : ''}${embed ? ', with their metadata embedded' : ''}.`
+        + (miscN ? `<br><br>⚠ ${miscN} clip${miscN !== 1 ? 's have' : ' has'} no folder on the map and will go into <b>misc</b> — go back and place ${miscN !== 1 ? 'them' : 'it'} if that's not what you want.` : '')
+        + `<br><br>You can undo this straight afterwards.`,
+        'File them', 'Cancel'
+      );
+      if (!ok) return;
       const btn = q('.dmap-apply'); btn.disabled = true; btn.textContent = embed ? 'Embedding & filing…' : 'Filing…';
       aiActivity(embed ? 'Embedding metadata and filing clips…' : 'Filing clips…', '');
-      const r = await window.api.projectsMove({ moves, embed });
-      const okN = (r.results || []).filter((x) => x.ok).length;
-      const failN = (r.results || []).length - okN;
+      // Bulk moves + exiftool embedding: this REJECTS in the real world (locked file, EPERM).
+      // Without the finally, Apply stayed disabled reading "Filing…" and the aiActivity
+      // spinner span forever — the dialog was dead with no way back.
+      let r = null;
+      try {
+        r = await window.api.projectsMove({ moves, embed });
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        aiActivityDone(`Filing failed — ${msg}`);
+        showToast(`Filing failed — ${msg}`, 6000);
+        logIssue('Organize', msg);
+        return;
+      } finally {
+        btn.disabled = false; btn.textContent = 'Apply — file clips';
+      }
+      const okN = (r && r.results || []).filter((x) => x.ok).length;
+      const failN = (r && r.results || []).length - okN;
       // Remember every filed clip in the project ledger (powers same-shoot detection
       // + the per-project AI summary), then refresh summaries for touched projects.
       try { recordToLedger(clips, placement, r.results || []); } catch (e) { /* non-fatal */ }
       aiActivityDone(`Filed ${okN}${failN ? `, ${failN} failed` : ''} into your Projects tree ✓`);
-      showToast(`Filed ${okN}${failN ? `, ${failN} failed` : ''} ✓`, failN ? 6000 : 3500);
-      btn.disabled = false; btn.textContent = 'Apply — file clips';
+      // Offer the undo RIGHT HERE. projects:move already records everything needed to reverse the
+      // run (config.lastOrganize, main-mod/02-media.js:427) and undoLastOrganize() has always
+      // worked — it was just buried in a menu, so at the one moment you'd want it (having watched
+      // 200 clips move somewhere you didn't intend) you had no idea it existed.
+      if (okN) showToastAction(`Filed ${okN}${failN ? `, ${failN} failed` : ''} ✓`, 'Undo', () => undoLastOrganize(), failN ? 10000 : 8000);
+      else showToast(`Nothing was filed${failN ? ` — ${failN} failed` : ''}`, 6000);
       if (typeof opts.onApplied === 'function') opts.onApplied(r);
       else close();
     });
@@ -1397,7 +1447,10 @@ function showDestinationMapAuto() {
   if (onOrganize) {
     const sel = (finSelected().length ? finSelected() : finMatched());
     if (!sel.length) { showToast('No matched clips to map'); return; }
-    showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ref: f })), {
+    // _ledgerRel — the same-shoot project the user already confirmed. The inline map (renderFinMap)
+    // carries it; this second entry point did not, so opening the map from HERE quietly lost the
+    // decision and dropped those clips into _Unsorted. Two call sites, one had the bug.
+    showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ledgerRel: (f.meta && f.meta.ledgerRel) || '', _ref: f })), {
       editable: true,
       // Edits made in the map stick to the compressed file's stored metadata so
       // the next Organize/Finalize embeds the corrected subject/location.
@@ -1587,11 +1640,10 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
     pq('.re-interpret').addEventListener('click', async () => {
       const text = pq('.re-nl').value.trim(); if (!text) { showToast('Type a description first'); return; }
       if (!requireAi()) return;
-      const btn = pq('.re-interpret'); btn.disabled = true; btn.textContent = '…';
-      const res = await window.api.aiParseRules({ text, folders: folderPaths });
-      btn.disabled = false; btn.textContent = 'Interpret';
+      const btn = pq('.re-interpret');
+      const res = await withBusyBtn(btn, '…', () => window.api.aiParseRules({ text, folders: folderPaths }));
       if (res && res.ok && res.rules.length) { closeP(false); verifyRules(res.rules); }
-      else showToast(res && res.error ? res.error : 'Could not interpret that');
+      else if (res) showToast(res.error ? res.error : 'Could not interpret that');
     });
     pq('.re-save').addEventListener('click', async () => {
       const match = pq('.re-match').value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);

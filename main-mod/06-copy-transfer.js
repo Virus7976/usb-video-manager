@@ -593,10 +593,19 @@ async function ollamaVisionGenerate(model, prompt, opts) {
   }
 }
 // Parse a JSON object out of a model response, tolerating prose/code fences.
+// ALWAYS returns an object (or array) — never null/number/string. Every caller immediately
+// property-accesses the result (`o.placements`, `o.name`), and a model that answers a bare
+// `null` used to return null and throw a TypeError into a generic "AI failed" error.
+// Extraction is delegated to scanBalancedJson (01-core.js): the old greedy
+// /\{[\s\S]*\}/ ran from the first `{` to the LAST `}` in the reply, so a trailing aside
+// ending in a brace ("...that's it :}") or a second JSON object swallowed the real value
+// and the whole suggestion silently came back empty.
 function parseJsonLoose(raw) {
-  try { return JSON.parse(raw); } catch { /* try to extract */ }
-  const m = String(raw || '').match(/\{[\s\S]*\}/);
-  if (m) { try { return JSON.parse(m[0]); } catch { /* ignore */ } }
+  let direct;
+  try { direct = JSON.parse(raw); } catch { /* prose/fenced — go find the JSON */ }
+  if (direct && typeof direct === 'object') return direct;    // object OR array, as before
+  const found = scanBalancedJson(String(raw == null ? '' : raw));
+  if (found && typeof found === 'object') return found;
   return {};
 }
 // Coerce a model-returned field to a clean string — it may hand back an array

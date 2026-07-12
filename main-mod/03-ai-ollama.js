@@ -179,7 +179,18 @@ function pbNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g,
 // Meaningful tokens (≥3 chars) from a string.
 function pbToks(s) { return pbNorm(s).split(' ').filter((w) => w.length > 2); }
 // Strip leading/trailing slashes + backslashes → a comparable relative path.
-function pbCleanPath(p) { return String(p || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim(); }
+// The value comes straight from an LLM reply and is later joined to the library root
+// (the renderer hands it back as `mv.toDir` to projects:move, which path.joins it), so
+// `.` and `..` segments are DROPPED, not preserved: a reply of `../../etc` must never be
+// able to walk out of the projects root. No legitimate folder suggestion contains them.
+function pbCleanPath(p) {
+  return String(p || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((seg) => seg.trim())
+    .filter((seg) => seg && seg !== '.' && seg !== '..')
+    .join('/');
+}
 
 // CANDIDATE SELECTION — rank the existing folder tree toward THIS batch so the
 // genuinely-relevant project is always visible to the model (and distractors that
@@ -531,7 +542,10 @@ function normalizeParsedRule(r) {
 
 // --- Per-clip analysis memory: cache each clip's vision observation keyed by its
 // file fingerprint, so re-analyzing reuses prior work instead of looking again.
-function clipObsStore() { config.ai = config.ai || {}; if (!config.ai.clipObs || typeof config.ai.clipObs !== 'object') config.ai.clipObs = {}; return config.ai.clipObs; }
+// Lazy store (LAZY_STORES in 01-core.js): clip-observations.json is not read at boot.
+// Every read/write of the observation cache goes through here, so ensureStore() can pull the
+// sidecar in on first touch without ever landing on top of an in-memory mutation.
+function clipObsStore() { ensureStore('ai.clipObs'); config.ai = config.ai || {}; if (!config.ai.clipObs || typeof config.ai.clipObs !== 'object') config.ai.clipObs = {}; return config.ai.clipObs; }
 ipcMain.handle('clipObs:get', () => clipObsStore());
 ipcMain.handle('clipObs:save', (_e, payload) => {
   const key = String((payload && payload.key) || '').trim();

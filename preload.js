@@ -297,7 +297,25 @@ contextBridge.exposeInMainWorld('api', {
 
   // Rename + delete
   applyRename: (destPath, newName) => ipcRenderer.invoke('rename:apply', { destPath, newName }),
-  deleteSource: (sourcePaths) => ipcRenderer.invoke('delete:source', sourcePaths),
+  // delete:source takes {source, dest} PAIRS — it re-verifies every file itself and refuses a
+  // bare path, which carries no proof a copy exists. See main-mod/09-ipc-boot.js.
+  deleteSource: (items) => ipcRenderer.invoke('delete:source', items),
+  // Durable "what did I copy off this card, and where did it land" — so the Delete step still
+  // works days later, in a different session, without re-copying the whole card.
+  recordCopied: (entries) => ipcRenderer.invoke('copied:record', entries),
+  getCopied: (keys) => ipcRenderer.invoke('copied:get', keys),
+  forgetCopied: (keys) => ipcRenderer.invoke('copied:forget', keys),
+  // The AI's outstanding review questions — so quitting before the review doesn't lose it.
+  saveAiQueue: (list) => ipcRenderer.invoke('aiq:save', list),
+  getAiQueue: () => ipcRenderer.invoke('aiq:get'),
+  // Is the card still physically there? Asked when a file fails, so a yanked card is diagnosed
+  // once and correctly instead of sixty times as sixty imaginary model timeouts.
+  drivePresent: (mountpoint) => ipcRenderer.invoke('drive:present', mountpoint),
+  onDriveRemoved: (fn) => {
+    const listener = (_e, p) => fn(p);
+    ipcRenderer.on('drive:removed', listener);
+    return () => ipcRenderer.removeListener('drive:removed', listener);
+  },
   verifyCopies: (pairs) => ipcRenderer.invoke('verify:copies', pairs),
   freeSpace: (folder) => ipcRenderer.invoke('disk:freeSpace', folder),
   importsGet: () => ipcRenderer.invoke('imports:get'),

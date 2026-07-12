@@ -8,6 +8,9 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const crypto = require('node:crypto');
+// Promise-based pipeline: unlike rs.pipe(ws), it propagates a destroy() as a rejection instead of
+// leaving the promise hanging forever. See copyFileWithProgress.
+const { pipeline: streamPipeline } = require('node:stream/promises');
 
 // Removable-drive enumeration uses a built-in Windows WMI query via PowerShell
 // (no native modules — packages cleanly, nothing to compile).
@@ -90,12 +93,45 @@ const STORE_FILES = {
   // Unconfirmed face-review clusters (crops + descriptors + state) so the "Review
   // faces" grid — thumbnails and all — survives restarts and never needs re-scanning.
   'ai.facesPending': path.join(STORE_DIR, 'faces-pending.json'),
+  // What we have copied off a card, and where it landed. Keyed by the STABLE name__size
+  // fingerprint, so it survives a replug, a new drive letter and a restart.
+  //
+  // Deleting from the card is deliberately a SEPARATE, LATER act — you copy, let Tdarr compress,
+  // organize days later, and only then clear the card. But "what did I copy" lived in an in-memory
+  // `state.copied` that died with the window: after a restart the Delete step was a silent no-op,
+  // and the only way to clear a card was to COPY THE WHOLE THING AGAIN. This is what makes the
+  // delete step reachable in the session where you actually want it.
+  copiedLog:      path.join(STORE_DIR, 'copied-log.json'),
+  // The AI's outstanding questions ("is this a new category?", "confirm this name"). Held ONLY in
+  // memory before: the AI would finish 100 clips with "Ask me to confirm" on, and quitting before
+  // the review lost every one of them — the names stayed, but the review pass you were about to do
+  // was gone. Stored keyed by the stable name__size fingerprint, NOT by array index, because array
+  // positions do not survive a rescan and would silently re-attach a question to the wrong clip.
+  aiQueue:        path.join(STORE_DIR, 'ai-questions.json'),
 };
 const STORE_DEFAULT = {
   renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [],
-  'ai.people': () => [], 'ai.clipObs': () => ({}), 'ai.facesPending': () => [],
+  'ai.people': () => [], 'ai.clipObs': () => ({}), 'ai.facesPending': () => [], copiedLog: () => ({}),
+  aiQueue: () => [],
 };
 const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
+
+// Stores NOT read at boot. people.json holds the face descriptors AND their base64 thumbnail
+// crops (~70% of the file) and grows without bound as people are tagged; parsing it — plus
+// clip-observations and the pending-face crops — synchronously at module load made startup
+// permanently slower the more the app was used. Nothing on the launch path needs them, so
+// they load on first access via ensureStore(). Every read/write funnels through an accessor
+// (aiPeople / clipObsStore / aiFacesPending), which is what makes deferral safe.
+const LAZY_STORES = new Set(['ai.people', 'ai.clipObs', 'ai.facesPending']);
+const storeLoaded = {};        // key -> its sidecar has been read (or proven absent)
+
+// Per-store equivalent of config_readFailed: the sidecar EXISTS on disk but couldn't be
+// parsed this launch (truncated by a crash, AV lock, disk glitch). readJsonRetry() returns
+// null for BOTH "absent" and "corrupt", and absent is legitimate (first run), so without
+// this flag a corrupt people.json/drafts.json is indistinguishable from a fresh install —
+// we'd default it to []/{} and the next saveStore() would overwrite the user's face DB or
+// saved names with that empty default. Run the session on defaults, never write over it.
+const storeReadFailed = {};
 
 // Read/write a store's value by key, where key may be dotted ('ai.people').
 function storeGet(key) {
@@ -148,6 +184,43 @@ function treeKill(proc) {
     catch { /* fall through to a plain kill */ }
   }
   try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+}
+
+// THE single way to pull a JSON value out of noisy text (PowerShell stdout with a stray
+// banner line, an LLM reply wrapped in prose or ``` fences). Both callers used to hunt for
+// a brace with indexOf/regex, and both were wrong in the same two ways:
+//   - "first `[` or `{` to end-of-string" breaks when a banner line contains a brace
+//     (`DEBUG {mod} ready`, a path like `C:\{guid}`, a `[notice]` tag) — the slice starts
+//     mid-banner, JSON.parse throws, and the REAL trailing JSON is silently discarded.
+//   - "first `{` to LAST `}`" (greedy regex) breaks when prose after the JSON contains a
+//     `}` (`{...}` then `use it wisely :}`), or when two objects are present.
+// So: walk the text, and from each candidate opener scan forward tracking depth while
+// skipping over string literals and their escapes. The first balanced span that actually
+// JSON.parses wins; a candidate that doesn't balance or doesn't parse is skipped, and we
+// move on to the next opener. Returns `undefined` when the text holds no JSON value.
+function scanBalancedJson(text) {
+  const s = String(text || '');
+  for (let i = 0; i < s.length; i += 1) {
+    const open = s[i];
+    if (open !== '{' && open !== '[') continue;
+    const close = open === '{' ? '}' : ']';
+    let depth = 0; let inStr = false; let esc = false;
+    for (let j = i; j < s.length; j += 1) {
+      const c = s[j];
+      if (esc) { esc = false; continue; }          // this char is escaped — never structural
+      if (inStr) { if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') { inStr = true; continue; }
+      if (c === open) depth += 1;
+      else if (c === close) {
+        depth -= 1;
+        if (depth === 0) {                          // balanced span [i..j]
+          try { return JSON.parse(s.slice(i, j + 1)); } catch { /* not real JSON — next opener */ }
+          break;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 let atomicWriteCounter = 0;
@@ -366,20 +439,50 @@ try {
 // ---------------------------------------------------------------------------
 if (!config.renameDrafts || typeof config.renameDrafts !== 'object') config.renameDrafts = {};
 
-// Load each sidecar store into config[key]. When a sidecar file is ABSENT but
-// config.json already carried the key (the old single-file format), we KEEP that
-// in-memory value so migrateStores() can write it to its new home — a non-destructive
-// migration (nothing is deleted until it's safely re-homed).
+// Read ONE sidecar into config[key]. When the file is ABSENT but config.json already
+// carried the key (the old single-file format), we KEEP that in-memory value so
+// migrateStores() can write it to its new home — a non-destructive migration (nothing is
+// deleted until it's safely re-homed).
+function loadStoreFile(key) {
+  const file = STORE_FILES[key];
+  const j = readJsonRetry(file);
+  if (j !== null && j !== undefined) {
+    storeSet(key, j);                                             // sidecar wins
+    try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+  } else {
+    // null = absent (fine, first run / pre-migration) OR present-but-unparseable
+    // (dangerous). Only the second must block writes, or we'd replace real data with
+    // an empty default. Same contract as config_readFailed for config.json.
+    let present = false;
+    try { present = fs.existsSync(file); } catch { /* treat as absent */ }
+    if (present) {
+      storeReadFailed[key] = true;
+      console.error(`Could not read store "${key}" (${file}) after retries; not overwriting it.`);
+    }
+    if (storeGet(key) === undefined) storeSet(key, STORE_DEFAULT[key]());
+    // else keep the config.json-sourced value as the migration source
+  }
+  storeLoaded[key] = true;
+}
+
+// Pull a lazy store in the first time anything actually reaches for it. Every read AND
+// write path for these keys goes through an accessor (aiPeople / clipObsStore /
+// aiFacesPending) that calls this first — so we can never load a sidecar AFTER a caller
+// has mutated the in-memory value and clobber their edit.
+function ensureStore(key) {
+  if (!storeLoaded[key]) loadStoreFile(key);
+  return storeGet(key);
+}
+
+// Load the sidecar stores into config[key] at boot — EXCEPT the heavy ones.
+// people.json alone reaches multiple MB (face thumbnails are ~70% of it) and grows without
+// bound as people get tagged, and this runs synchronously at module load, before the window
+// exists: startup got permanently slower the more the app was used. The AI/face stores are
+// only touched once a face or AI feature is opened, so they now load on first access.
 function loadStores() {
   for (const key of Object.keys(STORE_FILES)) {
-    const file = STORE_FILES[key];
-    const j = readJsonRetry(file);
-    if (j !== null && j !== undefined) {
-      storeSet(key, j);                                           // sidecar wins
-      try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
-    } else if (storeGet(key) === undefined) {
-      storeSet(key, STORE_DEFAULT[key]());
-    } // else keep the config.json-sourced value as the migration source
+    if (LAZY_STORES.has(key)) continue;    // deferred to ensureStore()
+    loadStoreFile(key);
   }
 }
 
@@ -390,7 +493,13 @@ function loadStores() {
 // strips those keys from config.json.
 function migrateStores() {
   for (const key of Object.keys(STORE_FILES)) {
-    try { if (!fs.existsSync(STORE_FILES[key])) saveStore(key); } catch { /* ignore */ }
+    try {
+      if (fs.existsSync(STORE_FILES[key])) continue;    // already re-homed
+      // A lazy store still holds its legacy config.json value in memory and has never been
+      // "loaded". Mark it loaded (there is no sidecar to read) so saveStore will write it.
+      ensureStore(key);
+      saveStore(key);
+    } catch { /* ignore */ }
   }
 }
 
@@ -400,6 +509,16 @@ function saveStore(key) {
   const file = STORE_FILES[key];
   if (!file) { saveConfig(); return; }
   if (config_readFailed) return;   // same guard as saveConfig — don't clobber unread data
+  // The sidecar itself was present but unparseable this launch: our in-memory value is the
+  // empty default, NOT the user's data. Writing it would destroy the face DB / saved names.
+  if (storeReadFailed[key]) { console.error(`Skipping save of store "${key}" (its file failed to read this launch).`); return; }
+  // A deferred store that was never loaded cannot have been mutated (every path to its data
+  // goes through an accessor that calls ensureStore first), so there is nothing to persist —
+  // and writing the un-loaded in-memory value would overwrite the real sidecar with a default.
+  if (LAZY_STORES.has(key) && !storeLoaded[key]) {
+    console.error(`Refusing to save store "${key}": it was never loaded this launch (no accessor ran).`);
+    return;
+  }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const cur = storeGet(key);
@@ -415,12 +534,16 @@ function saveStore(key) {
 // could clobber unsaved edits.
 function freshStore(key) {
   const file = STORE_FILES[key];
+  ensureStore(key);              // a deferred store must exist in memory before we diff mtimes
   if (file) {
     let mtime = 0; let exists = true;
     try { mtime = fs.statSync(file).mtimeMs; } catch { exists = false; }   // no file yet → in-memory
     if (exists && !(storeSelfMtimeMs[key] && mtime <= storeSelfMtimeMs[key])) {
       const j = readJsonRetry(file);
-      if (j !== null && j !== undefined) { storeSet(key, j); storeSelfMtimeMs[key] = mtime; }
+      // A successful re-read clears the read-failed latch: if the user restored a good
+      // file (or the transient lock cleared), saving is safe again from here on.
+      if (j !== null && j !== undefined) { storeSet(key, j); storeSelfMtimeMs[key] = mtime; storeReadFailed[key] = false; }
+      else storeReadFailed[key] = true;   // still present, still unreadable — keep writes blocked
     }
   }
   if (storeGet(key) === undefined || storeGet(key) === null) storeSet(key, (STORE_DEFAULT[key] || (() => ({})))());

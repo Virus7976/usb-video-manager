@@ -12,6 +12,7 @@
   "05-windows-phone.js|spawn|const ps = spawn(_adbPath, args, { windowsHide: true, env: { ...process.env, ADB_MDNS_OPENSCREEN: '1' } });": 1,
   "05-windows-phone.js|mkdir|fs.mkdirSync(dest, { recursive: true });": 1,
   "05-windows-phone.js|mkdir|await fsp.mkdir(dir, { recursive: true });": 1,
+  "05-windows-phone.js|mkdir|fs.mkdirSync(dir, { recursive: true });": 1,
   "06-copy-transfer.js|spawn|const proc = killAfter(spawn(config.ffmpegPath, [": 1,
   "06-copy-transfer.js|spawn|const proc = killAfter(spawn(config.ffmpegPath, ['-y', '-i', pattern, '-frames:v', '1', '-vf', `tile=${cols}x${rows}:padding=6:margin=6:color=black`, outPath], { windowsHide: true }), 60000);": 1,
   "07-naming-organize.js|spawn|let proc; try { proc = spawn(cmd, args, { windowsHide: true }); } catch { resolve(''); return; }": 1,

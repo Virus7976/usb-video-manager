@@ -1812,6 +1812,15 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 }
 .zoom-toast.show { opacity: 1; }
 .app-toast { bottom: 52px; max-width: 72vw; white-space: normal; text-align: center; line-height: 1.4; }
+/* An actionable toast (e.g. "Filed 200 ✓  [Undo]"). The action sits with the thing it undoes. */
+.toast-action {
+  margin-left: 10px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit; font: inherit; font-weight: 600;
+  transition: background var(--motion) ease;
+}
+.toast-action:hover { background: color-mix(in srgb, currentColor 22%, transparent); }
 
 /* ---- Keyboard-shortcut rows (Preferences) — DaVinci-style keycaps ---- */
 .hk-list {
@@ -2080,6 +2089,14 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .pp-opt .people-thumb { width: 30px; height: 30px; }
 /* ---- Live "AI is analyzing THIS clip" overlay ---- */
 .rename-card.analyzing { position: relative; z-index: 4; box-shadow: 0 0 0 2px var(--accent), 0 6px 22px color-mix(in srgb, var(--accent) 30%, transparent); transition: box-shadow var(--motion-slow); }
+/* A clip the AI could not analyse. Static — it reports state, it doesn't perform. The reason is
+   on the card's data-aiError / the preview's title, and "Retry failed" re-runs exactly these. */
+.rename-card.ai-failed { box-shadow: 0 0 0 2px var(--danger); }
+.rename-card.ai-failed .rename-preview::before {
+  content: '⚠'; position: absolute; top: 6px; right: 6px; z-index: 5;
+  width: 20px; height: 20px; line-height: 20px; text-align: center; border-radius: 50%;
+  background: var(--danger); color: #fff; font-size: 12px;
+}
 .rename-card.analyzing .rename-preview { position: relative; overflow: hidden; }
 /* Brief green confirm the moment the AI fills a clip's name — a quick flash, not a flourish. */
 .rename-card.just-named { animation: just-named-pulse .5s ease-out; }
@@ -2416,6 +2433,12 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .fin-source .sc-sub { white-space: normal; word-break: break-all; }
 .fin-source .btn { flex: 0 0 auto; }
 .fin-options { display: flex; flex-direction: column; gap: 8px; margin: 4px 2px 4px; }
+/* "What Run will do" — these decide finalize:run's behaviour, so they have to be visible.
+   Three of the four used to be inside the hidden legacy block. */
+.fin-run-opts {
+  margin-top: 14px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--stroke); background: var(--card);
+}
 .fin-search { position: relative; display: flex; align-items: center; margin: 8px 0 2px; }
 .fin-search-icon { position: absolute; left: 11px; width: 15px; height: 15px; color: var(--text-3); pointer-events: none; }
 .fin-search input {

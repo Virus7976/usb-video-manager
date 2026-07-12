@@ -10,6 +10,9 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const crypto = require('node:crypto');
+// Promise-based pipeline: unlike rs.pipe(ws), it propagates a destroy() as a rejection instead of
+// leaving the promise hanging forever. See copyFileWithProgress.
+const { pipeline: streamPipeline } = require('node:stream/promises');
 
 // Removable-drive enumeration uses a built-in Windows WMI query via PowerShell
 // (no native modules — packages cleanly, nothing to compile).
@@ -92,12 +95,45 @@ const STORE_FILES = {
   // Unconfirmed face-review clusters (crops + descriptors + state) so the "Review
   // faces" grid — thumbnails and all — survives restarts and never needs re-scanning.
   'ai.facesPending': path.join(STORE_DIR, 'faces-pending.json'),
+  // What we have copied off a card, and where it landed. Keyed by the STABLE name__size
+  // fingerprint, so it survives a replug, a new drive letter and a restart.
+  //
+  // Deleting from the card is deliberately a SEPARATE, LATER act — you copy, let Tdarr compress,
+  // organize days later, and only then clear the card. But "what did I copy" lived in an in-memory
+  // `state.copied` that died with the window: after a restart the Delete step was a silent no-op,
+  // and the only way to clear a card was to COPY THE WHOLE THING AGAIN. This is what makes the
+  // delete step reachable in the session where you actually want it.
+  copiedLog:      path.join(STORE_DIR, 'copied-log.json'),
+  // The AI's outstanding questions ("is this a new category?", "confirm this name"). Held ONLY in
+  // memory before: the AI would finish 100 clips with "Ask me to confirm" on, and quitting before
+  // the review lost every one of them — the names stayed, but the review pass you were about to do
+  // was gone. Stored keyed by the stable name__size fingerprint, NOT by array index, because array
+  // positions do not survive a rescan and would silently re-attach a question to the wrong clip.
+  aiQueue:        path.join(STORE_DIR, 'ai-questions.json'),
 };
 const STORE_DEFAULT = {
   renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [],
-  'ai.people': () => [], 'ai.clipObs': () => ({}), 'ai.facesPending': () => [],
+  'ai.people': () => [], 'ai.clipObs': () => ({}), 'ai.facesPending': () => [], copiedLog: () => ({}),
+  aiQueue: () => [],
 };
 const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
+
+// Stores NOT read at boot. people.json holds the face descriptors AND their base64 thumbnail
+// crops (~70% of the file) and grows without bound as people are tagged; parsing it — plus
+// clip-observations and the pending-face crops — synchronously at module load made startup
+// permanently slower the more the app was used. Nothing on the launch path needs them, so
+// they load on first access via ensureStore(). Every read/write funnels through an accessor
+// (aiPeople / clipObsStore / aiFacesPending), which is what makes deferral safe.
+const LAZY_STORES = new Set(['ai.people', 'ai.clipObs', 'ai.facesPending']);
+const storeLoaded = {};        // key -> its sidecar has been read (or proven absent)
+
+// Per-store equivalent of config_readFailed: the sidecar EXISTS on disk but couldn't be
+// parsed this launch (truncated by a crash, AV lock, disk glitch). readJsonRetry() returns
+// null for BOTH "absent" and "corrupt", and absent is legitimate (first run), so without
+// this flag a corrupt people.json/drafts.json is indistinguishable from a fresh install —
+// we'd default it to []/{} and the next saveStore() would overwrite the user's face DB or
+// saved names with that empty default. Run the session on defaults, never write over it.
+const storeReadFailed = {};
 
 // Read/write a store's value by key, where key may be dotted ('ai.people').
 function storeGet(key) {
@@ -150,6 +186,43 @@ function treeKill(proc) {
     catch { /* fall through to a plain kill */ }
   }
   try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+}
+
+// THE single way to pull a JSON value out of noisy text (PowerShell stdout with a stray
+// banner line, an LLM reply wrapped in prose or ``` fences). Both callers used to hunt for
+// a brace with indexOf/regex, and both were wrong in the same two ways:
+//   - "first `[` or `{` to end-of-string" breaks when a banner line contains a brace
+//     (`DEBUG {mod} ready`, a path like `C:\{guid}`, a `[notice]` tag) — the slice starts
+//     mid-banner, JSON.parse throws, and the REAL trailing JSON is silently discarded.
+//   - "first `{` to LAST `}`" (greedy regex) breaks when prose after the JSON contains a
+//     `}` (`{...}` then `use it wisely :}`), or when two objects are present.
+// So: walk the text, and from each candidate opener scan forward tracking depth while
+// skipping over string literals and their escapes. The first balanced span that actually
+// JSON.parses wins; a candidate that doesn't balance or doesn't parse is skipped, and we
+// move on to the next opener. Returns `undefined` when the text holds no JSON value.
+function scanBalancedJson(text) {
+  const s = String(text || '');
+  for (let i = 0; i < s.length; i += 1) {
+    const open = s[i];
+    if (open !== '{' && open !== '[') continue;
+    const close = open === '{' ? '}' : ']';
+    let depth = 0; let inStr = false; let esc = false;
+    for (let j = i; j < s.length; j += 1) {
+      const c = s[j];
+      if (esc) { esc = false; continue; }          // this char is escaped — never structural
+      if (inStr) { if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') { inStr = true; continue; }
+      if (c === open) depth += 1;
+      else if (c === close) {
+        depth -= 1;
+        if (depth === 0) {                          // balanced span [i..j]
+          try { return JSON.parse(s.slice(i, j + 1)); } catch { /* not real JSON — next opener */ }
+          break;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 let atomicWriteCounter = 0;
@@ -368,20 +441,50 @@ try {
 // ---------------------------------------------------------------------------
 if (!config.renameDrafts || typeof config.renameDrafts !== 'object') config.renameDrafts = {};
 
-// Load each sidecar store into config[key]. When a sidecar file is ABSENT but
-// config.json already carried the key (the old single-file format), we KEEP that
-// in-memory value so migrateStores() can write it to its new home — a non-destructive
-// migration (nothing is deleted until it's safely re-homed).
+// Read ONE sidecar into config[key]. When the file is ABSENT but config.json already
+// carried the key (the old single-file format), we KEEP that in-memory value so
+// migrateStores() can write it to its new home — a non-destructive migration (nothing is
+// deleted until it's safely re-homed).
+function loadStoreFile(key) {
+  const file = STORE_FILES[key];
+  const j = readJsonRetry(file);
+  if (j !== null && j !== undefined) {
+    storeSet(key, j);                                             // sidecar wins
+    try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+  } else {
+    // null = absent (fine, first run / pre-migration) OR present-but-unparseable
+    // (dangerous). Only the second must block writes, or we'd replace real data with
+    // an empty default. Same contract as config_readFailed for config.json.
+    let present = false;
+    try { present = fs.existsSync(file); } catch { /* treat as absent */ }
+    if (present) {
+      storeReadFailed[key] = true;
+      console.error(`Could not read store "${key}" (${file}) after retries; not overwriting it.`);
+    }
+    if (storeGet(key) === undefined) storeSet(key, STORE_DEFAULT[key]());
+    // else keep the config.json-sourced value as the migration source
+  }
+  storeLoaded[key] = true;
+}
+
+// Pull a lazy store in the first time anything actually reaches for it. Every read AND
+// write path for these keys goes through an accessor (aiPeople / clipObsStore /
+// aiFacesPending) that calls this first — so we can never load a sidecar AFTER a caller
+// has mutated the in-memory value and clobber their edit.
+function ensureStore(key) {
+  if (!storeLoaded[key]) loadStoreFile(key);
+  return storeGet(key);
+}
+
+// Load the sidecar stores into config[key] at boot — EXCEPT the heavy ones.
+// people.json alone reaches multiple MB (face thumbnails are ~70% of it) and grows without
+// bound as people get tagged, and this runs synchronously at module load, before the window
+// exists: startup got permanently slower the more the app was used. The AI/face stores are
+// only touched once a face or AI feature is opened, so they now load on first access.
 function loadStores() {
   for (const key of Object.keys(STORE_FILES)) {
-    const file = STORE_FILES[key];
-    const j = readJsonRetry(file);
-    if (j !== null && j !== undefined) {
-      storeSet(key, j);                                           // sidecar wins
-      try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
-    } else if (storeGet(key) === undefined) {
-      storeSet(key, STORE_DEFAULT[key]());
-    } // else keep the config.json-sourced value as the migration source
+    if (LAZY_STORES.has(key)) continue;    // deferred to ensureStore()
+    loadStoreFile(key);
   }
 }
 
@@ -392,7 +495,13 @@ function loadStores() {
 // strips those keys from config.json.
 function migrateStores() {
   for (const key of Object.keys(STORE_FILES)) {
-    try { if (!fs.existsSync(STORE_FILES[key])) saveStore(key); } catch { /* ignore */ }
+    try {
+      if (fs.existsSync(STORE_FILES[key])) continue;    // already re-homed
+      // A lazy store still holds its legacy config.json value in memory and has never been
+      // "loaded". Mark it loaded (there is no sidecar to read) so saveStore will write it.
+      ensureStore(key);
+      saveStore(key);
+    } catch { /* ignore */ }
   }
 }
 
@@ -402,6 +511,16 @@ function saveStore(key) {
   const file = STORE_FILES[key];
   if (!file) { saveConfig(); return; }
   if (config_readFailed) return;   // same guard as saveConfig — don't clobber unread data
+  // The sidecar itself was present but unparseable this launch: our in-memory value is the
+  // empty default, NOT the user's data. Writing it would destroy the face DB / saved names.
+  if (storeReadFailed[key]) { console.error(`Skipping save of store "${key}" (its file failed to read this launch).`); return; }
+  // A deferred store that was never loaded cannot have been mutated (every path to its data
+  // goes through an accessor that calls ensureStore first), so there is nothing to persist —
+  // and writing the un-loaded in-memory value would overwrite the real sidecar with a default.
+  if (LAZY_STORES.has(key) && !storeLoaded[key]) {
+    console.error(`Refusing to save store "${key}": it was never loaded this launch (no accessor ran).`);
+    return;
+  }
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const cur = storeGet(key);
@@ -417,12 +536,16 @@ function saveStore(key) {
 // could clobber unsaved edits.
 function freshStore(key) {
   const file = STORE_FILES[key];
+  ensureStore(key);              // a deferred store must exist in memory before we diff mtimes
   if (file) {
     let mtime = 0; let exists = true;
     try { mtime = fs.statSync(file).mtimeMs; } catch { exists = false; }   // no file yet → in-memory
     if (exists && !(storeSelfMtimeMs[key] && mtime <= storeSelfMtimeMs[key])) {
       const j = readJsonRetry(file);
-      if (j !== null && j !== undefined) { storeSet(key, j); storeSelfMtimeMs[key] = mtime; }
+      // A successful re-read clears the read-failed latch: if the user restored a good
+      // file (or the transient lock cleared), saving is safe again from here on.
+      if (j !== null && j !== undefined) { storeSet(key, j); storeSelfMtimeMs[key] = mtime; storeReadFailed[key] = false; }
+      else storeReadFailed[key] = true;   // still present, still unreadable — keep writes blocked
     }
   }
   if (storeGet(key) === undefined || storeGet(key) === null) storeSet(key, (STORE_DEFAULT[key] || (() => ({})))());
@@ -836,11 +959,22 @@ async function endExifTool() {
   try { await et.end(); } catch { /* ignore */ }
 }
 
+// Windows refuses to create a file OR folder with one of these legacy DOS device names,
+// with or without an extension. A category/project genuinely named "Con" or "Aux" would
+// slug to a name that mkdir can never create, and the organize step would fail with an
+// opaque EINVAL. Suffix them so they stay readable and legal.
+const WIN_RESERVED_NAMES = new Set([
+  'con', 'prn', 'aux', 'nul',
+  'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+  'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+]);
 // Slug a metadata value into a filesystem-safe folder name (matches the
 // renderer's slug(): lowercase, runs of non-alphanumerics → single hyphen).
+// Note `..` needs no special handling: the dots become a hyphen, which is then stripped.
 function slugFolder(s) {
-  return String(s || '').trim().toLowerCase()
+  const out = String(s || '').trim().toLowerCase()
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return WIN_RESERVED_NAMES.has(out) ? `${out}-folder` : out;
 }
 function metaLevelValue(level, meta) {
   if (level === 'category') return meta.category;
@@ -1299,7 +1433,18 @@ function pbNorm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g,
 // Meaningful tokens (≥3 chars) from a string.
 function pbToks(s) { return pbNorm(s).split(' ').filter((w) => w.length > 2); }
 // Strip leading/trailing slashes + backslashes → a comparable relative path.
-function pbCleanPath(p) { return String(p || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim(); }
+// The value comes straight from an LLM reply and is later joined to the library root
+// (the renderer hands it back as `mv.toDir` to projects:move, which path.joins it), so
+// `.` and `..` segments are DROPPED, not preserved: a reply of `../../etc` must never be
+// able to walk out of the projects root. No legitimate folder suggestion contains them.
+function pbCleanPath(p) {
+  return String(p || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((seg) => seg.trim())
+    .filter((seg) => seg && seg !== '.' && seg !== '..')
+    .join('/');
+}
 
 // CANDIDATE SELECTION — rank the existing folder tree toward THIS batch so the
 // genuinely-relevant project is always visible to the model (and distractors that
@@ -1651,7 +1796,10 @@ function normalizeParsedRule(r) {
 
 // --- Per-clip analysis memory: cache each clip's vision observation keyed by its
 // file fingerprint, so re-analyzing reuses prior work instead of looking again.
-function clipObsStore() { config.ai = config.ai || {}; if (!config.ai.clipObs || typeof config.ai.clipObs !== 'object') config.ai.clipObs = {}; return config.ai.clipObs; }
+// Lazy store (LAZY_STORES in 01-core.js): clip-observations.json is not read at boot.
+// Every read/write of the observation cache goes through here, so ensureStore() can pull the
+// sidecar in on first touch without ever landing on top of an in-memory mutation.
+function clipObsStore() { ensureStore('ai.clipObs'); config.ai = config.ai || {}; if (!config.ai.clipObs || typeof config.ai.clipObs !== 'object') config.ai.clipObs = {}; return config.ai.clipObs; }
 ipcMain.handle('clipObs:get', () => clipObsStore());
 ipcMain.handle('clipObs:save', (_e, payload) => {
   const key = String((payload && payload.key) || '').trim();
@@ -1850,6 +1998,39 @@ function listRemovableDrives() {
   });
 }
 
+// Is `p` on a removable volume (SD card / USB stick) that currently has media in it?
+//
+// Guards the one operation that can take footage OFF a card without going through the Delete
+// step: organizing MOVES files (unlink-after-copy), so pointing the Compressed folder at the
+// card would strip it silently. Compares drive letters, which is what Win32_LogicalDisk gives
+// us — that is exactly the granularity we need, since removability is a property of the volume.
+//
+// FAILS CLOSED on Windows: if the volume query errors or returns nothing while we're being
+// asked about a path that isn't obviously local, we do NOT get to claim it's safe to move off.
+// On non-Windows (dev/test) detection is disabled entirely, so nothing is treated as removable.
+async function isOnRemovableVolume(p) {
+  if (!p || !DETECTION_ENABLED) return false;
+  const letterOf = (s) => {
+    const m = /^([A-Za-z]):/.exec(String(s).replace(/^\\\\\?\\/, ''));
+    return m ? m[1].toUpperCase() : '';
+  };
+  const target = letterOf(p);
+  if (!target) return false;               // UNC / non-lettered path — not a local removable volume
+  let drives = [];
+  try { drives = await listRemovableDrives(); } catch { return true; }   // can't tell → don't move off it
+  return drives.some((d) => letterOf(d.mountpoint || d.raw) === target);
+}
+
+// Is this source still actually there? Asked on demand, because auto-poll is OFF by default in
+// this app — so the drive:removed event above cannot be the only way we find out. The analyze /
+// copy loops ask this the moment a file fails, so a yanked card is reported ONCE, honestly, instead
+// of being mis-reported sixty times as sixty separate model timeouts.
+ipcMain.handle('drive:present', async (_evt, mountpoint) => {
+  const mp = String(mountpoint || '');
+  if (!mp || mp === '__phone__') return true;   // not a removable source — never claim it's gone
+  try { await fsp.stat(mp); return true; } catch { return false; }
+});
+
 // Invoked by the global hotkey: bring up the window and present drive options.
 async function triggerHotkey() {
   showWindow();
@@ -1876,6 +2057,18 @@ async function pollDrives() {
         showWindow();
         mainWindow.webContents.send('drive:detected', d);
       }
+    }
+  }
+
+  // A card that GOES AWAY is an event too. Nothing told the renderer, so yanking a card mid-flow
+  // left the grid full of clips whose files no longer existed — previews, AI and copy then failed
+  // one file at a time, and aiCallGuard reported each as "Took too long — skipped this clip",
+  // which is a confidently wrong diagnosis of a completely different problem.
+  if (primed) {
+    for (const mp of knownMountpoints) {
+      if (currentMounts.has(mp)) continue;
+      console.log(`[detect] removable drive REMOVED: ${mp}`);
+      if (mainWindow) { try { mainWindow.webContents.send('drive:removed', { mountpoint: mp }); } catch { /* window gone */ } }
     }
   }
 
@@ -1939,16 +2132,20 @@ foreach ($it in $pc.Items()) {
 $out | ConvertTo-Json -Compress
 `;
 // Extract the JSON array/object from PowerShell stdout even if a stray line slipped in.
+// ConvertTo-Json emits a bare OBJECT (not a 1-element array) when the result has exactly
+// one element, so always normalize to an array — that is what makes "exactly one phone
+// attached" and "exactly one album" work. A `null` result normalizes to [] rather than
+// [null], so no caller has to filter a hole out of the list.
+// Brace-hunting is delegated to scanBalancedJson (01-core.js): the old indexOf('{') scan
+// started mid-banner whenever a stray stdout line contained a brace, JSON.parse threw, and
+// the real trailing JSON was dropped — reporting ZERO phones with no error surfaced.
 function parsePsJson(stdout) {
   const s = String(stdout || '').trim();
   if (!s) return [];
-  const tryParse = (txt) => { try { const j = JSON.parse(txt); return Array.isArray(j) ? j : [j]; } catch { return null; } };
-  let r = tryParse(s);
-  if (r) return r;
-  const a = s.indexOf('['); const o = s.indexOf('{');
-  const start = (a === -1) ? o : (o === -1 ? a : Math.min(a, o));
-  if (start >= 0) { r = tryParse(s.slice(start)); if (r) return r; }
-  return [];
+  const norm = (j) => (j === null || j === undefined ? [] : (Array.isArray(j) ? j : [j]));
+  try { return norm(JSON.parse(s)); } catch { /* stray line in stdout — go find the JSON */ }
+  const found = scanBalancedJson(s);
+  return found === undefined ? [] : norm(found);
 }
 // A fake phone backed by a real local folder — lets the whole flow be exercised
 // without a physical device. Same shape as a real MTP device, just `sim:true`.
@@ -2759,9 +2956,24 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
   for (const j of jobs) {
     if (phoneAbort) break;
     try {
-      let already = null; try { already = await fsp.stat(j.dest); } catch { /* not there */ }
-      if (already && Number(j.size) && already.size === Number(j.size)) { done += 1; okDests.push(j.dest); prog(path.basename(j.dest)); continue; }   // resume
       const src = j.src || (j.phoneRef && j.phoneRef.abs) || '';
+      let already = null; try { already = await fsp.stat(j.dest); } catch { /* not there */ }
+      if (already) {
+        // RESUME vs COLLISION — and the old code got both wrong.
+        //
+        // The check was SIZE-ONLY: a same-size but DIFFERENT clip was treated as "already done" and
+        // silently dropped. And anything else fell through to moveFileCrossDevice, which renames
+        // straight OVER its destination (organizeMove guards that with uniqueDest; this path never
+        // did) — silently destroying a clip already staged in _Phone Video Temp / 01 - Uncompressed.
+        //
+        // It really collides: recomputeVersions() only de-duplicates _v# within the CURRENT scan, so
+        // a second phone batch producing the same subject/description restarts at _v1 and lands on
+        // the first batch's filename.
+        let identical = false;
+        try { identical = !!src && await fingerprintsMatch(src, j.dest, { full: true }); } catch { identical = false; }
+        if (identical) { done += 1; okDests.push(j.dest); prog(path.basename(j.dest)); continue; }   // genuinely already there
+        j.dest = await uniqueDest(path.dirname(j.dest), path.basename(j.dest));   // a DIFFERENT clip — never overwrite it
+      }
       let hasSrc = false; try { hasSrc = !!(src && (await fsp.stat(src)).size > 0); } catch { /* not local */ }
       if (hasSrc) {
         await ensureDir(path.dirname(j.dest));
@@ -2790,7 +3002,9 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       catch { failed += 1; }   // verify-before-destroy (never deletes an unverified source)
     }
   }
-  return { ok: true, copied: done, failed, total, okDests, cancelled: phoneAbort };
+  // `ok` was hardcoded true, so a run that failed to move a single video still reported success and
+  // the renderer showed a green tick. Report reality.
+  return { ok: failed === 0, copied: done, failed, total, okDests, cancelled: phoneAbort, error: failed ? `${failed} video(s) failed to move` : '' };
 });
 
 // Flat-copy files (renamed photos from Photos Temp) to the chosen back-up
@@ -2799,18 +3013,25 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   const { jobs } = payload || {};
   if (!Array.isArray(jobs) || !jobs.length) return { ok: true, copied: 0 };
   const sender = evt.sender; let done = 0; const total = jobs.length; const errors = [];
+  // PER-JOB results, not just a tally. The caller needs to know WHICH photo landed WHERE:
+  // without that, a photo has no recorded destination, which is why photos could never enter
+  // state.copied and therefore could never be cleared off the card — and why their AI metadata
+  // was never carried forward to Organize.
+  const results = [];
   for (const j of jobs) {
+    let ok = false; let error = '';
     try {
       // Verified copy: fingerprint-checks the result before trusting it (a truncated
       // network copy of the right byte-count is no longer silently accepted as done).
       await copyFileVerified(j.src, j.dest);
-      done += 1;
-    } catch (e) { errors.push((e && e.message) || String(e)); }
+      done += 1; ok = true;
+    } catch (e) { error = (e && e.message) || String(e); errors.push(error); }
+    results.push({ src: j.src, dest: j.dest, ok, error });
     try { sender.send('phone:copy-progress', { done, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
   }
   // ok reflects reality — false when any file failed (was unconditionally true, so a
   // partial backup with dropped photos reported success).
-  return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, error: errors[0] || '' };
+  return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, results, error: errors[0] || '' };
 });
 
 // ---------------------------------------------------------------------------
@@ -2863,15 +3084,40 @@ async function walkForVideos(root) {
 async function ensureDir(dir) {
   await fsp.mkdir(dir, { recursive: true });
 }
+// The synchronous sibling. Needed by the handful of genuinely sync paths (saveFaceCrop runs inside
+// migratePerson, which is called from the store accessor and cannot be async). Same primitive, same
+// concern — so a fix to how we create directories still lands in ONE place.
+function ensureDirSync(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+}
 
 // Compute the destination filename for a file being copied: the user's chosen
 // name (sanitized) + original extension, falling back to the original name.
+// The single place a destination FILENAME is built. slugFolder() already defends the folder path
+// against Windows' reserved device names and length; the file path had neither guard:
+//
+//  • RESERVED NAMES — a subject that slugs to `con`/`aux`/`nul`/`com1`… produced `CON.mp4`, which
+//    Windows cannot create. createWriteStream throws, and (before the copy fixes) that abandoned the
+//    whole remaining batch.
+//  • LENGTH — nothing capped it. The AI path caps its description at 12 words, but the USER/batch path
+//    capped nothing: paste a long description into the batch bar, apply it to 200 clips, and every one
+//    of them fails with ENAMETOOLONG — or blows Windows' 260-char MAX_PATH once
+//    <Category>/<Project>/<Subject>/ folders are prepended at organize time.
+//  • TRAILING DOTS/SPACES — Windows silently strips them, so `clip .mp4` and `clip.mp4` collide.
+//
+// 120 chars of stem leaves comfortable room for a deep Projects tree under MAX_PATH while still being
+// far longer than any sane name.
+const MAX_STEM = 120;
 function destNameFor(f) {
   const ext = f.ext || path.extname(f.name);
   const origBase = f.name.slice(0, f.name.length - ext.length);
   let base = String(f.newName != null ? f.newName : origBase).trim()
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
   if (!base) base = origBase;
+  if (base.length > MAX_STEM) base = base.slice(0, MAX_STEM).replace(/[-_ ]+$/, '');   // don't end mid-separator
+  base = base.replace(/[. ]+$/, '');                                                    // Windows strips these anyway
+  if (!base) base = origBase;
+  if (WIN_RESERVED_NAMES.has(base.toLowerCase())) base = `${base}_`;                    // CON.mp4 is not creatable
   return base + ext;
 }
 
@@ -2893,17 +3139,60 @@ async function uniqueDest(dir, filename) {
   }
 }
 
-function copyFileWithProgress(src, dest, onBytes, token) {
-  return new Promise((resolve, reject) => {
-    const rs = fs.createReadStream(src);
-    const ws = fs.createWriteStream(dest);
-    if (token) token.destroy = () => { rs.destroy(); ws.destroy(); };
-    rs.on('data', (chunk) => { onBytes(chunk.length); if (token && token.aborted) rs.destroy(); });
-    rs.on('error', (e) => { try { ws.destroy(); } catch { /* ignore */ } reject(token && token.aborted ? new Error('aborted') : e); });
-    ws.on('error', (e) => { try { rs.destroy(); } catch { /* ignore */ } reject(token && token.aborted ? new Error('aborted') : e); });
-    ws.on('finish', resolve);
-    rs.pipe(ws);
-  });
+// Pull the ONE irreplaceable copy of the footage off the card — with progress, STAGED, fsynced and
+// VERIFIED. This is the most important copy in the app, and it was the only one not going through a
+// verify-before-trust primitive (copyFileVerified / moveFileCrossDevice both do).
+//
+// Three defects, and they compounded into corruption of the archive:
+//
+//  1. It wrote straight to the FINAL path, so a partial copy wore the real filename.
+//
+//  2. Cancelling called `rs.destroy()`, which emits neither 'end' nor 'error'. So `pipe()` never
+//     called `ws.end()`, 'finish' never fired, and THE PROMISE NEVER SETTLED. copy:start's `await`
+//     hung forever — which meant its own `if (aborted) unlink(destPath)` cleanup was unreachable
+//     dead code, the truncated file stayed in intake under its final name, `copyTask.active` stayed
+//     true (so every later copy was refused with "A copy is already running"), and the renderer's
+//     copyInProgress latch stuck true for the rest of the session. `token.aborted` — checked in two
+//     places here — was never assigned anywhere, so both guards were dead too.
+//
+//  3. It verified nothing. A flaky-card read or a mid-copy ENOSPC left a short file that looked
+//     complete; Tdarr then compressed the truncated clip and it was filed into the archive as the
+//     good copy — while the delete gate, comparing card↔intake, happily cleared the card.
+//
+// Now: stage to <dest>.part → datasync → FULL-file fingerprint against the card → and only then
+// rename into place. So a file at `dest` is ALWAYS a complete, verified copy; an abandoned copy
+// leaves a .part that is cleaned up and can never be mistaken for footage.
+async function copyFileWithProgress(src, dest, onBytes, token) {
+  await ensureDir(path.dirname(dest));
+  const part = `${dest}.part`;
+  try { await fsp.unlink(part); } catch { /* no leftover from a previous run */ }
+
+  const rs = fs.createReadStream(src);
+  const ws = fs.createWriteStream(part);
+  let aborted = false;
+  if (token) {
+    token.destroy = () => {
+      aborted = true;
+      // Destroy WITH an error: that propagates through the pipeline as a rejection, so the await
+      // actually settles. A bare destroy() is what left the promise hanging forever.
+      rs.destroy(new Error('aborted'));
+      ws.destroy(new Error('aborted'));
+    };
+  }
+  rs.on('data', (chunk) => onBytes(chunk.length));
+
+  try {
+    await streamPipeline(rs, ws);
+    await flushToDisk(part);   // 'finish' is an OS handoff, not durability — especially on a network intake
+    if (!(await fingerprintsMatch(src, part, { full: true }))) {
+      throw new Error('the copy did not match the card — refusing to trust it');
+    }
+    await fsp.rename(part, dest);
+  } catch (err) {
+    // Never leave a partial behind wearing a name that looks like real footage.
+    try { await fsp.unlink(part); } catch { /* already gone */ }
+    throw aborted ? new Error('aborted') : err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3501,10 +3790,19 @@ async function ollamaVisionGenerate(model, prompt, opts) {
   }
 }
 // Parse a JSON object out of a model response, tolerating prose/code fences.
+// ALWAYS returns an object (or array) — never null/number/string. Every caller immediately
+// property-accesses the result (`o.placements`, `o.name`), and a model that answers a bare
+// `null` used to return null and throw a TypeError into a generic "AI failed" error.
+// Extraction is delegated to scanBalancedJson (01-core.js): the old greedy
+// /\{[\s\S]*\}/ ran from the first `{` to the LAST `}` in the reply, so a trailing aside
+// ending in a brace ("...that's it :}") or a second JSON object swallowed the real value
+// and the whole suggestion silently came back empty.
 function parseJsonLoose(raw) {
-  try { return JSON.parse(raw); } catch { /* try to extract */ }
-  const m = String(raw || '').match(/\{[\s\S]*\}/);
-  if (m) { try { return JSON.parse(m[0]); } catch { /* ignore */ } }
+  let direct;
+  try { direct = JSON.parse(raw); } catch { /* prose/fenced — go find the JSON */ }
+  if (direct && typeof direct === 'object') return direct;    // object OR array, as before
+  const found = scanBalancedJson(String(raw == null ? '' : raw));
+  if (found && typeof found === 'object') return found;
   return {};
 }
 // Coerce a model-returned field to a clean string — it may hand back an array
@@ -3725,6 +4023,10 @@ function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env
   });
 }
 function classifyGyro(meanMag) {
+  // A NaN mean (undecodable gyro samples) fails EVERY `<` test below and falls through to
+  // the max-motion bucket, mislabelling a locked-off tripod shot as "fast action" and
+  // feeding that lie to the AI namer. No reading beats a confidently wrong one.
+  if (!Number.isFinite(meanMag)) return '';
   if (meanMag < 0.05) return 'locked off / static (tripod or set down)';
   if (meanMag < 0.5) return 'handheld with small movement';
   if (meanMag < 1.5) return 'moving — panning, walking or following the subject';
@@ -4542,6 +4844,75 @@ async function maybeAutoConsolidate() {
 // Each person keeps a list of FACES = { d:[128 descriptor], t:'thumb dataURL' } so
 // the People dashboard can show every face per person (digiKam-style). Older configs
 // stored parallel `descriptors`+`thumb`/`thumbs`; migratePerson() folds them into faces.
+// --- face crops live on DISK, not inside people.json --------------------------------------
+//
+// The crops used to be base64 data: URLs stored inline in the JSON — about 70% of the file's bytes,
+// growing every single time you confirm a face, with no ceiling. A realistic mature library
+// (40 people × 15 faces) was ~5 MB of JSON that had to be parsed and then held in memory in full
+// the moment the People view opened. Deferring the load (LAZY_STORES) took it off the boot path but
+// did nothing about the size.
+//
+// Crops are now ordinary .jpg files and the store keeps a file:// URL. The renderer's CSP already
+// allows `img-src 'self' file: data:`, and posters are served the same way, so nothing downstream
+// has to change.
+//
+// SAFETY: reading tolerates BOTH forms, forever. A record still carrying an inline data: URL renders
+// exactly as before and is migrated opportunistically. If a crop cannot be written to disk, the
+// inline copy is KEPT — a migration is never allowed to lose a face.
+const FACES_DIR = path.join(STORE_DIR, 'faces');
+let faceCropSeq = 0;
+function saveFaceCrop(dataUrl) {
+  const s = String(dataUrl || '');
+  const m = /^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/i.exec(s);
+  if (!m) return s;                       // already a file:// URL (or empty) — pass straight through
+  try {
+    ensureDirSync(FACES_DIR);
+    const kind = m[1].toLowerCase();
+    const ext = kind === 'png' ? 'png' : (kind === 'webp' ? 'webp' : 'jpg');
+    faceCropSeq += 1;
+    const file = path.join(FACES_DIR, `f${Date.now().toString(36)}${faceCropSeq.toString(36)}.${ext}`);
+    fs.writeFileSync(file, Buffer.from(m[2], 'base64'));
+    return pathToFileURL(file).href;
+  } catch {
+    return s;                             // couldn't write → keep it inline rather than lose the face
+  }
+}
+
+// Delete crop files nothing points at any more.
+//
+// Several operations silently drop faces — deleting a person, merging two (`.slice(-60)`), removing
+// a wrong crop, or simply hitting the 80-face-per-person cap. Sprinkling an unlink into each of them
+// is how you eventually miss one and leak. This is reference-counted instead: it scans what the
+// store ACTUALLY references and removes only files nothing points at, so it cannot delete a live
+// crop no matter which call site forgot to think about it.
+//
+// Best-effort by construction: a GC failure must never break a save.
+function gcFaceCrops() {
+  try {
+    if (!fs.existsSync(FACES_DIR)) return;
+    ensureStore('ai.facesPending');   // pending clusters can reference crops too — never GC blind
+    const keep = new Set();
+    const note = (u) => {
+      const s = String(u || '');
+      if (!s.startsWith('file:')) return;
+      try { keep.add(path.resolve(fileURLToPath(s))); } catch { /* not a path we own */ }
+    };
+    for (const p of ((config.ai && config.ai.people) || [])) {
+      note(p.thumb);
+      for (const f of (p.faces || [])) note(f.t);
+    }
+    for (const c of ((config.ai && config.ai.facesPending) || [])) note(c && c.thumb);
+
+    let removed = 0;
+    for (const name of fs.readdirSync(FACES_DIR)) {
+      const full = path.resolve(path.join(FACES_DIR, name));
+      if (keep.has(full)) continue;
+      try { fs.unlinkSync(full); removed += 1; } catch { /* in use / gone already */ }
+    }
+    if (removed) console.log(`[people] gc: removed ${removed} orphaned face crop(s)`);
+  } catch { /* never let housekeeping break a save */ }
+}
+
 function migratePerson(p) {
   if (!Array.isArray(p.faces)) {
     const ds = Array.isArray(p.descriptors) ? p.descriptors : [];
@@ -4551,10 +4922,37 @@ function migratePerson(p) {
   // Existing faces were user-named → treat as confirmed. New unconfirmed ones come
   // in with confirmed:false.
   p.faces.forEach((f) => { if (f.confirmed === undefined) f.confirmed = true; });
+  // Opportunistically move any inline crop out to a file. saveFaceCrop returns the value unchanged
+  // if it can't write, so a person is never left holding a broken reference.
+  let moved = 0;
+  p.faces.forEach((f) => {
+    if (f.t && f.t.startsWith('data:')) { const next = saveFaceCrop(f.t); if (next !== f.t) { f.t = next; moved += 1; } }
+  });
+  if (p.thumb && p.thumb.startsWith('data:')) { const next = saveFaceCrop(p.thumb); if (next !== p.thumb) { p.thumb = next; moved += 1; } }
+  if (moved) p._cropsMoved = moved;   // tells aiPeople() the store is worth re-saving
   if (!p.thumb && p.faces.length) p.thumb = ((p.faces.find((f) => f.confirmed && f.t) || p.faces.find((f) => f.t)) || {}).t || '';
   return p;
 }
-function aiPeople() { config.ai = config.ai || {}; if (!Array.isArray(config.ai.people)) config.ai.people = []; config.ai.people.forEach(migratePerson); return config.ai.people; }
+// people.json is a LAZY store (see LAZY_STORES in 01-core.js) — it is not read at boot.
+// ensureStore() pulls it in the first time anyone reaches for it. Every read AND write path
+// for the face DB goes through this accessor, which is what makes deferring it safe: the
+// sidecar can never be read after a caller has already mutated the in-memory value.
+function aiPeople() {
+  ensureStore('ai.people');
+  config.ai = config.ai || {};
+  if (!Array.isArray(config.ai.people)) config.ai.people = [];
+  config.ai.people.forEach(migratePerson);
+  // If migratePerson moved any inline crop out to a file, WRITE THE STORE BACK — otherwise the
+  // crops are on disk but people.json still carries the fat base64 copies, and we'd re-do the whole
+  // migration on every single load while the file never actually shrinks.
+  const moved = config.ai.people.reduce((n, p) => n + (p._cropsMoved || 0), 0);
+  if (moved) {
+    config.ai.people.forEach((p) => { delete p._cropsMoved; });
+    saveStore('ai.people');
+    console.log(`[people] moved ${moved} inline face crop(s) out to ${FACES_DIR}`);
+  }
+  return config.ai.people;
+}
 function aiIgnoredFaces() { config.ai = config.ai || {}; if (!Array.isArray(config.ai.ignored)) config.ai.ignored = []; return config.ai.ignored; }
 function personCover(p) { return p.thumb || ((p.faces || []).find((f) => f.confirmed && f.t) || (p.faces || []).find((f) => f.t) || {}).t || ''; }
 function faceDist(a, b) { if (!a || !b) return Infinity; let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i += 1) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
@@ -4563,9 +4961,13 @@ ipcMain.handle('people:get', () => aiPeople().map((p) => ({ id: p.id, name: p.na
 ipcMain.handle('faces:ignoredCount', () => aiIgnoredFaces().length);
 // Persist the unconfirmed face-review clusters so the grid (crops + all) survives
 // restarts — no re-scanning to see your faces again.
-ipcMain.handle('faces:getPending', () => (config.ai && Array.isArray(config.ai.facesPending)) ? config.ai.facesPending : []);
+// Lazy store (LAZY_STORES): the pending-face crops are only needed once the face-review grid
+// is opened, so nothing reads faces-pending.json at boot. Both handlers go through this
+// accessor so the sidecar is always pulled in BEFORE the value is read or replaced.
+function aiFacesPending() { ensureStore('ai.facesPending'); config.ai = config.ai || {}; if (!Array.isArray(config.ai.facesPending)) config.ai.facesPending = []; return config.ai.facesPending; }
+ipcMain.handle('faces:getPending', () => aiFacesPending());
 ipcMain.handle('faces:savePending', (_e, list) => {
-  if (!config.ai) config.ai = {};
+  aiFacesPending();                                    // load first, then replace
   config.ai.facesPending = Array.isArray(list) ? list : [];
   saveStore('ai.facesPending');
   return { ok: true };
@@ -4583,7 +4985,9 @@ ipcMain.handle('people:save', (_e, payload) => {
   const name = String((payload && payload.name) || '').trim();
   if (!name) return { ok: false, error: 'No name' };
   const descriptors = Array.isArray(payload && payload.descriptors) ? payload.descriptors.filter((d) => Array.isArray(d) && d.length) : [];
-  const thumb = String((payload && payload.thumb) || '');
+  // The renderer hands us a base64 crop straight off a canvas. Write it out to a file HERE, so no
+  // new base64 ever enters people.json — otherwise the store just starts growing again.
+  const thumb = saveFaceCrop(String((payload && payload.thumb) || ''));
   const confirmed = !(payload && payload.confirmed === false);
   const people = aiPeople();
   let p = people.find((x) => x.name.toLowerCase() === name.toLowerCase());
@@ -4645,16 +5049,17 @@ ipcMain.handle('people:reassignFace', (_e, payload) => {
 ipcMain.handle('faces:listIgnored', () => aiIgnoredFaces().map((f, i) => ({ i, t: f.t || '' })));
 ipcMain.handle('faces:unignore', (_e, idx) => { const ig = aiIgnoredFaces(); const i = Number(idx); if (i >= 0 && i < ig.length) { ig.splice(i, 1); saveConfig(); } return { ok: true }; });
 ipcMain.handle('people:rename', (_e, payload) => { const p = aiPeople().find((x) => x.id === (payload && payload.id)); if (p) { p.name = String(payload.name || p.name).trim() || p.name; saveStore('ai.people'); } return { ok: true }; });
-ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveStore('ai.people'); return { ok: true }; });
+ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveStore('ai.people'); gcFaceCrops(); return { ok: true }; });
 // Merge `fromId` into `intoId` (combines faces, deletes the source) — for fixing
 // the same person split across two names.
 ipcMain.handle('people:merge', (_e, payload) => {
   const into = aiPeople().find((x) => x.id === (payload && payload.intoId));
   const from = aiPeople().find((x) => x.id === (payload && payload.fromId));
   if (!into || !from || into === from) return { ok: false };
-  into.faces = [...(into.faces || []), ...(from.faces || [])].slice(-60);
+  into.faces = [...(into.faces || []), ...(from.faces || [])].slice(-60);   // the slice can drop faces
   config.ai.people = aiPeople().filter((x) => x.id !== from.id);
   saveStore('ai.people');
+  gcFaceCrops();
   return { ok: true };
 });
 // Remove one face (a wrong crop) from a person.
@@ -4665,6 +5070,7 @@ ipcMain.handle('people:removeFace', (_e, payload) => {
   p.faces.splice(idx, 1);
   if (p.thumb && !(p.faces || []).some((f) => f.t === p.thumb)) p.thumb = personCover(p);
   saveStore('ai.people');
+  gcFaceCrops();
   return { ok: true, faces: (p.faces || []).map((f, i) => ({ i, t: f.t || '' })) };
 });
 ipcMain.handle('people:setCover', (_e, payload) => {
@@ -5105,18 +5511,33 @@ ipcMain.handle('drafts:get', () => currentDrafts());
 // face-scan flush, or a save that fired before restore re-applied the drafts) — it
 // must not erase a name you already saved. This is the guard that makes a repeat of
 // the "reopened and all my renames were gone" data loss impossible.
-const DRAFT_CONTENT_FIELDS = ['subject', 'description', 'location', 'context', 'shotType', 'observation', 'date', 'category', 'project'];
-const DRAFT_ARRAY_FIELDS = ['people', 'peopleAuto', 'tags'];
+// The guard is a DENYLIST, not an allowlist.
+//
+// It used to name the protected fields explicitly (subject, description, location, …), which meant
+// anything NOT on that list fell straight through `{...prev, ...incoming}` and could be blanked by
+// a stale write. Three things were quietly unprotected:
+//   • `facesScanned` — a stale save could flip it back to false, and the whole card would then be
+//     re-face-scanned from scratch;
+//   • `ledgerRel` — the same-shoot project the user explicitly confirmed;
+//   • the user's CUSTOM organize fields, whose names we cannot know ahead of time (organizeFields
+//     is user-configurable), so an allowlist can never cover them by construction.
+//
+// So: every field that has ever been saved is protected, and only the fields we explicitly WANT to
+// be clearable may be cleared. That is the safe default — a new field added to the draft record is
+// protected automatically instead of silently unguarded.
 const draftNonEmpty = (val) => (Array.isArray(val) ? val.length > 0 : !!val);
 function draftIsNamed(v) { return !!(v && (v.subject || v.description || v.location)); }
+// `selected` is a UI tick, not work: unticking a clip MUST be able to persist. `ts` is bookkeeping.
+const DRAFT_CLEARABLE = new Set(['selected', 'ts']);
 // Merge an incoming draft onto the stored one WITHOUT ever blanking saved content.
 function mergeDraft(prev, incoming) {
   const merged = { ...(prev || {}), ...incoming };
-  for (const f of DRAFT_CONTENT_FIELDS) { if (!draftNonEmpty(incoming[f]) && draftNonEmpty(prev && prev[f])) merged[f] = prev[f]; }
-  for (const f of DRAFT_ARRAY_FIELDS) {
-    const iv = Array.isArray(incoming[f]) ? incoming[f] : [];
-    const pv = Array.isArray(prev && prev[f]) ? prev[f] : [];
-    if (!iv.length && pv.length) merged[f] = pv;   // an empty array never wipes a saved one
+  if (!prev) return merged;
+  for (const [f, pv] of Object.entries(prev)) {
+    if (DRAFT_CLEARABLE.has(f)) continue;
+    // An empty incoming value for a field we already hold content for can only be a stale or
+    // flag-only write (a face-scan flush, or a save that fired before restore re-applied drafts).
+    if (!draftNonEmpty(incoming[f]) && draftNonEmpty(pv)) merged[f] = pv;
   }
   return merged;
 }
@@ -5205,6 +5626,75 @@ ipcMain.handle('versions:clear', () => { config.renameVersions = []; saveStore('
 // ---------------------------------------------------------------------------
 function currentFinalMeta() { return freshStore('finalMeta'); }
 
+// --- copiedLog: "what have I copied off a card, and where did it land?" ------------------
+//
+// Keyed by the stable name__size fingerprint of the SOURCE file, so it still matches after a
+// replug under a different drive letter, and after a restart. This is what lets the Delete step
+// work in a LATER session — the user's actual workflow is copy → compress → organize → and only
+// then clear the card, which could be days apart.
+//
+// It is a convenience for REBUILDING the delete list, never an authority to delete: delete:source
+// re-hashes source against dest itself and refuses anything it cannot prove. A stale or wrong
+// record here can therefore cause a file to be offered and then refused — never wrongly deleted.
+function currentCopiedLog() { return freshStore('copiedLog'); }
+
+ipcMain.handle('copied:record', (_evt, entries) => {
+  const list = (Array.isArray(entries) ? entries : []).filter((e) => e && e.key && e.source && e.dest);
+  if (!list.length) return true;
+  const store = currentCopiedLog();
+  const now = Date.now();
+  for (const e of list) store[String(e.key)] = { source: String(e.source), dest: String(e.dest), name: String(e.name || ''), ts: now };
+  config.copiedLog = store;
+  saveStore('copiedLog');
+  return true;
+});
+
+// Return only the records whose COPY still exists on disk. A record whose destination has been
+// moved, renamed by the compressor, or deleted proves nothing any more — offering it for deletion
+// would be offering to delete footage whose only other copy is gone.
+ipcMain.handle('copied:get', async (_evt, keys) => {
+  const store = currentCopiedLog();
+  const want = Array.isArray(keys) && keys.length ? new Set(keys.map(String)) : null;
+  const out = {};
+  const dead = [];
+  for (const [k, v] of Object.entries(store)) {
+    if (want && !want.has(k)) continue;
+    if (!v || !v.dest) { dead.push(k); continue; }
+    try { await fsp.stat(v.dest); out[k] = v; } catch { dead.push(k); }   // the copy is gone → forget it
+  }
+  if (dead.length) {
+    for (const k of dead) delete store[k];
+    config.copiedLog = store; saveStore('copiedLog');
+  }
+  return out;
+});
+
+// The AI's outstanding questions. Keyed by clipKey (name__size), never by array index — see the
+// STORE_FILES note. Whole-list replace: the renderer owns the queue and re-saves it on every
+// change, so there is no merge to get wrong.
+ipcMain.handle('aiq:save', (_evt, list) => {
+  const clean = (Array.isArray(list) ? list : []).filter((q) => q && q.type).map((q) => ({
+    type: String(q.type),
+    clipKey: q.clipKey ? String(q.clipKey) : '',
+    field: q.field ? String(q.field) : '',
+    suggested: q.suggested ? String(q.suggested) : '',
+    rule: q.rule ? String(q.rule) : '',
+  }));
+  config.aiQueue = clean;
+  saveStore('aiQueue');
+  return true;
+});
+
+ipcMain.handle('aiq:get', () => freshStore('aiQueue') || []);
+
+ipcMain.handle('copied:forget', (_evt, keys) => {
+  const store = currentCopiedLog();
+  let changed = false;
+  for (const k of (Array.isArray(keys) ? keys : [])) { if (store[String(k)]) { delete store[String(k)]; changed = true; } }
+  if (changed) { config.copiedLog = store; saveStore('copiedLog'); }
+  return true;
+});
+
 ipcMain.handle('finalMeta:save', (_evt, map) => {
   if (!map || typeof map !== 'object') return false;
   const incoming = Object.entries(map).filter(([k, v]) => k && v && typeof v === 'object');
@@ -5223,17 +5713,47 @@ ipcMain.handle('finalMeta:save', (_evt, map) => {
     if (!Array.isArray(rec.keywords)) rec.keywords = [];
     store[String(name).toLowerCase()] = rec;
   }
-  // Prune: drop entries older than 180 days, then cap to the 5000 most recent.
+  // Prune — but NEVER evict metadata for a clip that hasn't been organized yet.
+  //
+  // This store is the ONLY carrier of the AI's work across the gap between "copy to intake" and
+  // "organize the output folder", and that gap is deliberately LONG: the whole workflow is to let
+  // Tdarr compress, then come back to it later. Dropping entries at 180 days and capping to the
+  // 5000 most recent therefore silently deleted work the user had not consumed yet — come back to
+  // a shoot seven months later, or after 5000 newer clips, and everything the AI concluded was
+  // gone, with no warning. That is precisely the "it forgets to remember things" complaint.
+  //
+  // An entry is only evictable once finalize:run has actually FILED that clip (`done: true`).
+  // Anything still pending is unconsumed user work and is kept regardless of age. The hard cap is
+  // a runaway backstop, and it sheds FILED entries first — it will not throw away pending work to
+  // stay under a limit.
   const MAX_AGE = 180 * 24 * 3600 * 1000;
-  let entries = Object.entries(store).filter(([, v]) => v && (now - (v.ts || 0)) < MAX_AGE);
-  if (entries.length > 5000) {
-    entries.sort((a, b) => (b[1].ts || 0) - (a[1].ts || 0));
-    entries = entries.slice(0, 5000);
+  const HARD_CAP = 50000;
+  const isDone = (v) => !!(v && v.done);
+  let entries = Object.entries(store).filter(([, v]) => v && (!isDone(v) || (now - (v.ts || 0)) < MAX_AGE));
+  if (entries.length > HARD_CAP) {
+    // Oldest FILED entries go first; pending work is only touched if it alone blows the cap.
+    entries.sort((a, b) => (isDone(a[1]) === isDone(b[1]))
+      ? (b[1].ts || 0) - (a[1].ts || 0)
+      : (isDone(a[1]) ? 1 : -1));
+    entries = entries.slice(0, HARD_CAP);
   }
   config.finalMeta = Object.fromEntries(entries);
   saveStore('finalMeta');
   return true;
 });
+
+// Mark clips as FILED, so their metadata becomes evictable by the prune above. Called by
+// finalize:run once a clip has actually been organized — until then its metadata is pending
+// work and the store must hold on to it however long that takes.
+function markFinalMetaDone(names) {
+  const store = currentFinalMeta();
+  let changed = false;
+  for (const n of (Array.isArray(names) ? names : [])) {
+    const k = String(n || '').toLowerCase();
+    if (store[k] && !store[k].done) { store[k].done = true; changed = true; }
+  }
+  if (changed) { config.finalMeta = store; saveStore('finalMeta'); }
+}
 
 // Find every stored clip (organized finalMeta + in-progress drafts) tagged with a person
 // name — powers the "you changed X, re-tag N clips?" offer after a rename/merge/reassign.
@@ -5307,7 +5827,12 @@ function compressSettings(s) {
 }
 function buildCompressArgs(src, out, s) {
   const a = ['-y', '-i', src];
-  if (s.scale && s.scale !== 'source') a.push('-vf', `scale=-2:${s.scale}`);
+  // `scale` is interpolated into ONE -vf element, so a value like "720,transpose=1" would
+  // append an extra filter to the graph. Not a shell injection (spawn takes an argv array,
+  // no shell), but the height must still be a plain positive integer — anything else is
+  // ignored rather than passed through to the filtergraph.
+  const scaleH = Number(s.scale);
+  if (s.scale && s.scale !== 'source' && Number.isInteger(scaleH) && scaleH > 0) a.push('-vf', `scale=-2:${scaleH}`);
   if (s.codec === 'h265') a.push('-c:v', 'libx265', '-tag:v', 'hvc1', '-crf', String(s.crf ?? 28));
   else a.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', String(s.crf ?? 23));
   a.push('-preset', s.preset || 'medium');
@@ -5360,9 +5885,25 @@ ipcMain.handle('compress:run', async (evt, payload) => {
     produced.add(pathKey(outPath));
     let inBytes = 0; try { inBytes = (await fsp.stat(src)).size; } catch { /* ignore */ }
     let durationSec = 0; try { durationSec = (await probeMeta(src)).durationSec || 0; } catch { /* ignore */ }
+    // `skipExisting` (default ON) used to accept ANY non-empty file at outPath as "already done".
+    // ffmpeg wrote straight to outPath, and the rm-the-partial cleanup below only runs when ffmpeg
+    // exits cleanly with a non-zero code — so a crash, a power cut, or just quitting the app
+    // mid-encode left a plausible, truncated .mp4 sitting there. The next run skipped it, reported
+    // ok, and it was organized into Projects. The delete gate only compares card↔intake, so the card
+    // was legitimately cleared: the truncated compressed clip could end up the ONLY surviving copy.
+    //
+    // Now the encode is STAGED. A partial can only ever be a file inside .partial/, which
+    // listVideosShallow never sees (it lists files, not directories, at the top level only). So a
+    // .mp4 at outPath can only exist because an encode actually finished, and skipping it is safe.
     if (s.skipExisting) { try { const st = await fsp.stat(outPath); if (st.size > 0) { results.push({ name: f.name, ok: true, skipped: true, outPath, inBytes, outBytes: st.size }); send({ index: i, total: files.length, name: f.name, pct: 100, phase: 'skipped' }); continue; } } catch { /* not there */ } }
     send({ index: i, total: files.length, name: f.name, pct: 0, phase: 'starting', inBytes });
-    const args = buildCompressArgs(src, outPath, s);
+    // Keep the .mp4 extension — ffmpeg picks its muxer from it, so a bare ".part" would break the
+    // container. The DIRECTORY is what hides it.
+    const partDir = path.join(out, '.partial');
+    await ensureDir(partDir);
+    const partPath = path.join(partDir, path.basename(outPath));
+    try { await fsp.rm(partPath, { force: true }); } catch { /* no leftover */ }
+    const args = buildCompressArgs(src, partPath, s);
     // eslint-disable-next-line no-await-in-loop
     const res = await new Promise((resolve) => {
       let errBuf = '';
@@ -5384,16 +5925,32 @@ ipcMain.handle('compress:run', async (evt, payload) => {
       proc.on('close', (code) => { compressProc = null; resolve(code === 0 ? { ok: true } : { ok: false, error: compressAborted ? 'cancelled' : (ffmpegLastError(errBuf) || `ffmpeg exited ${code}`) }); });
     });
     if (res.ok) {
-      let outBytes = 0; try { outBytes = (await fsp.stat(outPath)).size; } catch { /* ignore */ }
+      // ffmpeg exited 0 → the encode is complete. Only NOW does it get the real name, so nothing
+      // that isn't a finished clip can ever appear in the Compressed folder.
+      let outBytes = 0;
+      try {
+        await flushToDisk(partPath);
+        await fsp.rename(partPath, outPath);
+        outBytes = (await fsp.stat(outPath)).size;
+      } catch (err) {
+        try { await fsp.rm(partPath, { force: true }); } catch { /* ignore */ }
+        results.push({ name: f.name, ok: false, error: `Could not finish ${path.basename(outPath)}: ${err.message}` });
+        send({ index: i, total: files.length, name: f.name, pct: 0, phase: 'error', error: err.message });
+        continue;
+      }
       results.push({ name: f.name, ok: true, outPath, inBytes, outBytes });
       send({ index: i, total: files.length, name: f.name, pct: 100, phase: 'done', inBytes, outBytes });
     } else {
-      try { await fsp.rm(outPath, { force: true }); } catch { /* ignore */ }   // never leave a half-written file
+      try { await fsp.rm(partPath, { force: true }); } catch { /* ignore */ }   // never leave a half-written file
       results.push({ name: f.name, ok: false, error: res.error });
       send({ index: i, total: files.length, name: f.name, pct: 0, phase: 'error', error: res.error });
       if (compressAborted) break;
     }
   }
+  // Sweep the staging dir: an encode killed by a crash or a power cut leaves a file here, and it
+  // would otherwise sit around forever. It was never visible to the Organize scan, so this is
+  // housekeeping, not a safety fix — the safety came from it never being at outPath in the first place.
+  try { await fsp.rm(path.join(out, '.partial'), { recursive: true, force: true }); } catch { /* ignore */ }
   // Point Finalize at where we just wrote, so "Organize" continues seamlessly.
   if (out && out !== config.finalizeSource) { config.finalizeSource = out; saveConfig(); }
   const okCount = results.filter((r) => r.ok && !r.skipped).length;
@@ -5465,10 +6022,18 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     .split(/[\s\-_.]+/).filter((t) => t && t.length > 1 && !/^(gx|gopro|hero|dji|img|dsc|mvi|mp4|mov|avi)\w*$/i.test(t)));
   const tokenScore = (a, b) => { let n = 0; for (const t of a) if (b.has(t)) n += /^\d{4}-\d{2}-\d{2}$/.test(t) ? 3 : 1; return n; };   // a shared date counts strong
   const storeEntries = Object.entries(store).map(([k, v]) => ({ v, tokens: fileTokens(k) }));
-  const out = files.map((f) => {
+  const out = await Promise.all(files.map(async (f) => {
     const lc = f.name.toLowerCase();
     let rec = byName[lc] || byStem[stemOf(lc)] || null;
     let matchType = rec ? 'saved' : null;
+    // ASK THE FILE. If the clip still carries the record we embedded at copy time, that is the
+    // real answer — no guessing, no sidecar, and it works on another machine or after the sidecar
+    // has been pruned. Only reached on a store miss, which is exactly the case where the
+    // compressor renamed the file — so we pay the exiftool read precisely when it earns its keep.
+    if (!rec && !f.isPhoto) {
+      const embedded = await readEmbeddedRecord(f.sourcePath);
+      if (embedded) { rec = embedded; matchType = 'embedded'; }
+    }
     if (!rec && storeEntries.length) {
       // Fuzzy: best token-overlap against the saved records; needs a strong match
       // (e.g. shared date + ≥1 subject token) so unrelated files don't false-match.
@@ -5483,7 +6048,7 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     // Photos almost never have a saved record yet (IMG_1234.jpg), but they should still
     // be SELECTABLE so Analyze can name them — so treat a photo as "matched/included".
     return { name: f.name, sourcePath: f.sourcePath, size: f.size, isPhoto: !!f.isPhoto, matched: !!rec || !!f.isPhoto, matchType: rec ? matchType : (f.isPhoto ? 'photo' : matchType), meta: rec };
-  });
+  }));
   return {
     ok: true, dir,
     files: out,
@@ -5578,8 +6143,58 @@ function buildEmbedTags(meta, parts, fallbackName) {
     tags['XMP-lr:HierarchicalSubject'] = uniqStrings([...(tags['XMP-lr:HierarchicalSubject'] || hier), `Places|${place}`]);
     tags['XMP-digiKam:TagsList'] = uniqStrings([...(tags['XMP-digiKam:TagsList'] || []), `Places/${place}`]);
   }
+  // A LOSSLESS copy of the record, carried by the file itself.
+  //
+  // Everything above is written for humans and for digiKam/Lightroom, and it is deliberately
+  // lossy: Title merges subject+description and de-hyphenates them, Description glues the AI's
+  // observation on after an em-dash. You cannot reconstruct the structured record from it.
+  //
+  // That matters because this app's own Organize step runs LATER, in a separate session, against
+  // files that have been through Tdarr — and its only way back to the metadata was a fuzzy
+  // filename token-guess against a sidecar. So we also stash the exact record here. If the tags
+  // survive the compressor, Organize reads them back perfectly and never has to guess. If Tdarr
+  // strips them (it often does), nothing is worse than before — and finalize:run re-embeds
+  // everything anyway, so the final archived file always ends up carrying its own truth.
+  const record = {};
+  for (const k of ['subject', 'description', 'location', 'context', 'shotType', 'category', 'project', 'date', 'observation', 'ledgerRel']) {
+    if (m[k]) record[k] = String(m[k]);
+  }
+  for (const k of ['people', 'peopleAuto', 'tags', 'keywords']) {
+    if (Array.isArray(m[k]) && m[k].length) record[k] = uniqStrings(m[k]).filter(Boolean);
+  }
+  for (const id of fieldIds) if (m[id]) record[id] = String(m[id]);
+  if (Object.keys(record).length) tags['XMP-dc:Identifier'] = `${EMBED_RECORD_PREFIX}${JSON.stringify(record)}`;
   return tags;
 }
+
+// Marker for our machine-readable record, so we never mistake somebody else's dc:Identifier
+// (or a half-written one) for ours.
+const EMBED_RECORD_PREFIX = 'usbvd1:';
+
+// Read our own record back out of a file. Returns null when the file carries no record of ours
+// — including when a compressor stripped the XMP, which is the expected case for Tdarr output.
+async function readEmbeddedRecord(filePath) {
+  try {
+    const et = getExifTool();
+    const t = await et.read(filePath);
+    const raw = t && (t.Identifier || t['XMP-dc:Identifier']);
+    const s = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof s !== 'string' || !s.startsWith(EMBED_RECORD_PREFIX)) return null;
+    const rec = JSON.parse(s.slice(EMBED_RECORD_PREFIX.length));
+    return (rec && typeof rec === 'object' && !Array.isArray(rec)) ? rec : null;
+  } catch { return null; }   // unreadable / no exiftool / not our record — fall through to the old ladder
+}
+
+// NOTE — why there is no embed-at-COPY step.
+//
+// Writing XMP into an MP4/MOV makes exiftool rewrite the WHOLE file (see getExifTool), so
+// embedding during the import would add a full extra read+write per clip — roughly doubling the
+// time to pull a card of multi-GB GoPro footage. And Tdarr strips metadata on re-encode, so that
+// expensive embed would be destroyed before Organize ever saw it. The metadata therefore travels
+// across the Tdarr gap in the finalMeta sidecar (which no longer expires — see finalMeta:save),
+// and finalize:run embeds it into the file ONCE, at organize time, where the cost is paid on the
+// final archived copy that keeps it. The lossless record written by buildEmbedTags means that
+// file can be re-read perfectly by readEmbeddedRecord on any later pass or any other machine.
 
 ipcMain.handle('finalize:run', async (evt, payload) => {
   const sender = evt.sender;
@@ -5598,9 +6213,22 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     return { ok: false, error: 'No destination folder set. Choose one in Edit → “Organizing & folders…”.' };
   }
 
-  const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
+  // Organizing MOVES files (organizeMove → moveFileCrossDevice → unlink of the source). If the
+  // Compressed folder were ever pointed at the SD card, Run would therefore strip footage off
+  // the card — a card delete that never went through the delete confirm or the delete gate.
+  // Deleting from the card is only ever allowed as a deliberate act on the Delete step, so
+  // refuse outright rather than quietly relocating someone's only copy.
+  if (opts.organize && await isOnRemovableVolume(dir)) {
+    return { ok: false, error: 'That folder is on a removable card or USB drive. Organizing MOVES files, so it would take them off the card — which is only ever allowed from the Delete step, after the copies are verified. Point “Compressed” at a folder on your computer first.' };
+  }
+
+  const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, unplanned: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
   const undoable = [];   // {from,to} per relocated clip → enables "Undo last organize"
   const csvRows = [];
+  const filed = [];      // clips whose metadata is now consumed → the finalMeta prune may evict them
+  // Is the caller driving us from the destination map's plan? (Any item carrying a `rel` means
+  // yes.) Under a plan we NEVER invent a folder for a clip the user didn't place.
+  const usingPlan = list.some((it) => typeof it.rel === 'string' && it.rel.trim());
   const et = opts.embed ? getExifTool() : null;
   const emit = (index, name, phase) => sender.send('finalize:progress', { index, total: list.length, name, phase });
 
@@ -5609,7 +6237,20 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     const meta = it.meta || {};
     let curPath = it.sourcePath;
     let finalFileName = it.name;
-    const parts = subdirParts(levels, meta);
+    // `rel` is the folder the DESTINATION MAP decided — the plan the user actually made and can
+    // see. It wins over recomputing a path from [category, project], which are normally empty and
+    // therefore produced NO subfolders at all: the file was already sitting in the destination, so
+    // organizeMove said "in-place" and Run reported "0 moved" while looking like it had worked.
+    // Falling back to subdirParts keeps the old behaviour for any caller that sends no plan.
+    const relRaw = (typeof it.rel === 'string') ? it.rel.trim() : '';
+    const parts = relRaw
+      ? relRaw.split(/[\\/]+/).map((s) => slugFolder(s)).filter(Boolean)
+      : subdirParts(levels, meta);
+    // Under a plan, a clip the user never placed has NO destination. Falling through to
+    // subdirParts here would hand it an empty path — i.e. dump it in the ROOT of the Projects
+    // tree, which is worse than leaving it alone. Skip its move; it still gets embed/CSV/NAS.
+    const skipMove = usingPlan && !relRaw;
+    if (skipMove) summary.unplanned += 1;   // reported, not silently dropped
     const tags = buildEmbedTags(meta, parts, it.name);
     const keywords = Array.isArray(tags['XMP-dc:Subject']) ? tags['XMP-dc:Subject'] : [];
 
@@ -5632,7 +6273,7 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     }
 
     // 2. Organize into <dest>/<folderLevels…>/ (idempotent).
-    if (opts.organize && dest) {
+    if (opts.organize && dest && !skipMove) {
       emit(i, it.name, 'moving');
       try {
         const before = curPath;   // capture origin BEFORE reassigning, for undo
@@ -5640,7 +6281,14 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         if (r.action === 'moved') { summary.moved += 1; undoable.push({ from: before, to: r.path }); } else summary.skipped += 1;
         curPath = r.path;
         finalFileName = path.basename(r.path);
-      } catch (err) { summary.errors.push(`Move ${it.name}: ${err.message}`); }
+      } catch (err) {
+        // A clip whose move FAILED was not filed. It used to fall through to filed.push() below,
+        // which marks its metadata `done` and therefore prune-eligible — so the clip stayed where it
+        // was AND its metadata became disposable. The embed-failure path above `continue`s for
+        // exactly this reason; the move path just didn't.
+        summary.errors.push(`Move ${it.name}: ${err.message}`);
+        continue;   // leave it — and its metadata — intact for a clean retry
+      }
     }
 
     // 3. Mirror to the NAS (organized structure), if enabled.
@@ -5668,7 +6316,12 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         scene
       });
     }
+    // This clip's metadata has now been CONSUMED — embedded into the file and/or filed into the
+    // tree. Only now may the finalMeta prune consider evicting it. (An embed failure `continue`s
+    // above, so a clip that didn't make it never gets marked and its metadata is kept for a retry.)
+    filed.push(it.name);
   }
+  markFinalMetaDone(filed);
 
   // Write the Resolve metadata CSV next to the organized folder (or the scan
   // folder when not organizing). Columns Resolve's Import Metadata maps directly.
@@ -5686,6 +6339,15 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
   // Record this run's relocations so "Undo last organize" can move them back.
   if (undoable.length) { config.lastOrganize = { ts: Date.now(), moves: undoable }; saveConfig(); }
 
+  // `ok` was set true at construction and never reconsidered, so a run in which EVERY clip failed
+  // still reported success and the renderer showed a tidy green summary. Report reality: a run that
+  // achieved nothing at all, but was asked to do something, did not succeed.
+  const didSomething = summary.embedded > 0 || summary.moved > 0 || summary.backedUp > 0
+    || summary.skipped > 0 || summary.unplanned > 0 || !!summary.csvPath;
+  if (summary.errors.length && !didSomething) {
+    summary.ok = false;
+    summary.error = summary.errors[0];
+  }
   return summary;
 });
 
@@ -5796,28 +6458,47 @@ async function fingerprintsMatch(a, b, opts) {
   catch { return false; }
 }
 // Verify each copied file against its source BEFORE the originals are deleted.
-ipcMain.handle('verify:copies', async (_evt, pairs) => {
-  const out = [];
-  for (const p of (Array.isArray(pairs) ? pairs : [])) {
-    const src = p && p.source; const dst = p && p.dest;
-    let ok = false; let reason = '';
-    try {
-      if (!dst) { reason = 'no copy on record'; }
-      else {
-        let ss = null; let ds = null;
-        try { ss = await fsp.stat(src); } catch { reason = 'source missing'; }
-        try { ds = await fsp.stat(dst); } catch { reason = reason || 'copy missing'; }
-        if (ss && ds) {
-          if (ss.size !== ds.size) { reason = `size mismatch (${ss.size} vs ${ds.size})`; }
-          else {
-            const [fa, fb] = await Promise.all([sampledFingerprint(src), sampledFingerprint(dst)]);
-            if (fa.hash === fb.hash) ok = true; else reason = 'content mismatch';
-          }
+//
+// This is a DELETE GATE: whatever it marks ok, the user is then invited to erase from the
+// card. So it hashes the FULL file, exactly like the other two delete gates
+// (copyFileVerified / moveFileCrossDevice in 02-media.js). A sampled head/mid/tail hash
+// reads ~6 MB of a 4 GB clip and cannot see a mid-file bit-flip that preserves length — it
+// would report "verified" on a corrupt copy and the only good original then gets wiped.
+// The intake copy itself (copyFileWithProgress) performs NO verification, so this is the
+// only integrity check in the whole card-import -> verify -> clear-card flow.
+// Cost is a full read of both files; this step is explicitly user-initiated and already
+// renders a "Verifying copies…" progress state, so that is the right place to pay it.
+// THE delete gate. Full-file hash of both sides; fail-closed on every error path. Deleting
+// from the card is the one irreversible act in this app, so this function is the single
+// source of truth for "is this file provably already copied?" — used both by the renderer's
+// Verify step AND, non-negotiably, by delete:source itself (see below).
+async function verifyCopyPair(src, dst) {
+  let ok = false; let reason = '';
+  try {
+    if (!src) { reason = 'no source path'; }
+    else if (!dst) { reason = 'no copy on record'; }
+    else {
+      let ss = null; let ds = null;
+      try { ss = await fsp.stat(src); } catch { reason = 'source missing'; }
+      try { ds = await fsp.stat(dst); } catch { reason = reason || 'copy missing'; }
+      if (ss && ds) {
+        if (ss.size !== ds.size) { reason = `size mismatch (${ss.size} vs ${ds.size})`; }
+        else {
+          const [fa, fb] = await Promise.all([
+            sampledFingerprint(src, { full: true }),
+            sampledFingerprint(dst, { full: true }),
+          ]);
+          if (fa.hash === fb.hash) ok = true; else reason = 'content mismatch';
         }
       }
-    } catch (e) { reason = e.message || String(e); }
-    out.push({ source: src, dest: dst, ok, reason });
-  }
+    }
+  } catch (e) { reason = e.message || String(e); }
+  return { source: src, dest: dst, ok, reason };
+}
+
+ipcMain.handle('verify:copies', async (_evt, pairs) => {
+  const out = [];
+  for (const p of (Array.isArray(pairs) ? pairs : [])) out.push(await verifyCopyPair(p && p.source, p && p.dest));
   return out;
 });
 
@@ -5857,19 +6538,41 @@ ipcMain.handle('imports:add', (_evt, payload) => {
   return { ok: true, total: Object.keys(config.importIndex).length };
 });
 
-ipcMain.handle('delete:source', async (_evt, sourcePaths) => {
+// Delete originals from the card. FAIL-CLOSED, and it re-verifies here rather than trusting
+// the caller.
+//
+// This used to take a bare array of paths and unlink whatever it was given — the entire
+// "only delete what's provably copied" gate lived up in the renderer. That put the one
+// irreversible operation in the app behind a guard that any renderer bug could silently
+// disarm (and this codebase has had plenty). The check now lives next to the delete:
+//   - the payload MUST be {source, dest} pairs — a bare path proves nothing and is refused;
+//   - every file is re-hashed against its copy right here, immediately before the unlink;
+//   - anything that doesn't verify is REFUSED and left on the card, with the reason returned.
+// It is deliberately impossible to talk this handler into deleting an unverified file.
+ipcMain.handle('delete:source', async (_evt, items) => {
   const results = [];
-  for (const p of sourcePaths) {
+  for (const it of (Array.isArray(items) ? items : [])) {
+    const src = (it && typeof it === 'object') ? it.source : null;
+    const dst = (it && typeof it === 'object') ? it.dest : null;
+    if (!src) {
+      results.push({ path: String((it && it.source) || it || ''), ok: false, method: '', refused: true, error: 'refused: delete:source needs {source, dest} — a bare path carries no proof a copy exists' });
+      continue;
+    }
+    const v = await verifyCopyPair(src, dst);
+    if (!v.ok) {
+      results.push({ path: src, ok: false, method: '', refused: true, error: `refused — not deleting: ${v.reason || 'the copy could not be verified'}` });
+      continue;
+    }
     let ok = false; let method = ''; let error = '';
     // Prefer the Recycle Bin (recoverable), but USB/SD cards (exFAT/removable)
     // usually have no Recycle Bin — there, permanently delete (the intent when
     // clearing a card after copying).
-    try { await shell.trashItem(p); ok = true; method = 'recycle'; }
+    try { await shell.trashItem(src); ok = true; method = 'recycle'; }
     catch (e1) {
-      try { await fsp.rm(p, { force: true }); ok = true; method = 'deleted'; }
+      try { await fsp.rm(src, { force: true }); ok = true; method = 'deleted'; }
       catch (e2) { error = e2.message || e1.message; }
     }
-    results.push({ path: p, ok, method, error });
+    results.push({ path: src, ok, method, error });
   }
   return results;
 });

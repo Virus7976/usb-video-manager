@@ -196,16 +196,37 @@ function peopleChipsHTML(clip) {
     return `<span class="clip-person-chip${guess ? ' unconfirmed' : ''}"${guess ? ' title="Auto-detected face — unconfirmed guess. Confirm on the person\'s profile."' : ''}>${escapeHtml(n)}${guess ? '?' : ''}<button type="button" class="cpc-x" data-name="${escapeAttr(n)}" title="Remove ${escapeAttr(n)}">×</button></span>`;
   }).join('');
 }
-// All the keyword tags that get embedded in the file at Finalize (mirrors main's
-// buildEmbedTags) — so the user can SEE exactly what metadata will be written.
+// All the keyword tags that get embedded in the file at Finalize — so the user can SEE
+// exactly what metadata will be written. This MUST agree with main's buildEmbedTags
+// (main-mod/09-ipc-boot.js), or the preview promises keywords the file never gets.
+// It drifted twice: main dedups case-INsensitively via uniqStrings() while this used a
+// plain Set (so "Sunset" + "sunset" both showed here but only one was embedded), and main
+// spreads m.keywords where this only read clip.tags. Keep the element order identical to
+// main's list too — the preview is meant to be a literal readout of the embed.
 function clipEmbedKeywords(clip) {
   const fieldVals = organizeFields.map((f) => clip[f.id]).filter(Boolean);
   const date = clip.date || '';
   const year = /^(\d{4})/.test(date) ? date.slice(0, 4) : '';
-  const words = [...new Set(`${clip.subject || ''} ${clip.description || ''} ${clip.location || ''}`.split(/[\s\-_]+/))].filter((w) => w && w.length > 1);
-  const kws = [clip.subject, clip.location, clip.shotType, clip.category, clip.project, ...fieldVals, ...(clip.people || []), ...(clip.tags || []), date, year, ...words]
-    .filter((k) => k && String(k).length > 1);
-  return [...new Set(kws.map((k) => String(k)))];
+  // Mirrors main's uniqStrings(): trim, drop empties, dedup case-insensitively, first casing wins.
+  const uniq = (arr) => {
+    const seen = new Set(); const out = [];
+    for (const x of (arr || [])) {
+      const v = String(x == null ? '' : x).trim();
+      if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); out.push(v); }
+    }
+    return out;
+  };
+  const words = uniq(`${clip.subject || ''} ${clip.description || ''} ${clip.location || ''}`.split(/[\s\-_]+/));
+  // clip.tags is what becomes meta.keywords when the clip is saved, so it occupies the
+  // same slot main's m.keywords does. A clip loaded from saved metadata already has
+  // .keywords — prefer that, since it is literally what main will be handed.
+  const extra = Array.isArray(clip.keywords) ? clip.keywords : (Array.isArray(clip.tags) ? clip.tags : []);
+  return uniq([
+    clip.subject, clip.location, clip.shotType, clip.category, clip.project, ...fieldVals,
+    ...extra,
+    ...(Array.isArray(clip.people) ? clip.people : []),
+    date, year, ...words,
+  ]).filter((k) => k.length > 1);
 }
 // ---- Tags (digiKam-style) ---------------------------------------------------
 // Custom keyword tags the user adds (on top of the auto keywords the AI derives
@@ -430,22 +451,55 @@ function ensureClipFilterBar() {
     applyClipFilter();
   }));
 }
+// Does this clip pass the ACTIVE filter? One predicate, so what you can SEE and what a bulk action
+// TOUCHES can never disagree.
+//
+// This logic used to live inline in applyClipFilter, which only set card.style.display — while
+// "select all" ticked every clip in state.scannedFiles regardless. So filtering to "Unnamed",
+// hitting select-all and applying a subject silently overwrote every NAMED clip too: the ones
+// deliberately hidden from view, that the user had already finished. A bulk edit must never reach a
+// clip the user cannot see.
+function clipMatchesFilter(c) {
+  if (!c) return false;
+  const q = (clipFilterText || '').trim().toLowerCase();
+  const named = !!(c.subject && c.subject.trim());
+  let ok = true;
+  if (clipFilterMode === 'unnamed') ok = !named;
+  else if (clipFilterMode === 'named') ok = named;
+  else if (clipFilterMode === 'people') ok = Array.isArray(c.people) && c.people.length > 0;
+  else if (clipFilterMode === 'selected') ok = !!c.selected;
+  if (ok && q) {
+    const hay = [c.name, c.subject, c.description, c.location, c.date, ...(Array.isArray(c.people) ? c.people : []), ...(Array.isArray(c.tags) ? c.tags : [])].filter(Boolean).join(' ').toLowerCase();
+    ok = hay.includes(q);
+  }
+  return ok;
+}
+// Is a filter actually narrowing anything right now?
+function clipFilterActive() { return clipFilterMode !== 'all' || !!(clipFilterText || '').trim(); }
+
+// A new card starts with no filter.
+//
+// clipFilterMode/clipFilterText are module-level and were never reset, while ensureClipFilterBar()
+// early-returns if the bar already exists — so a filter left on from the PREVIOUS card silently hid
+// clips on the next one. With mode 'selected' and nothing yet ticked, the rename grid came up
+// completely empty and looked like the scan had failed.
+function resetClipFilter() {
+  clipFilterMode = 'all';
+  clipFilterText = '';
+  const bar = document.getElementById('clipFilterBar');
+  if (!bar) return;
+  const input = bar.querySelector('.cf-input');
+  if (input) input.value = '';
+  bar.querySelectorAll('.cf-chip').forEach((b) => b.classList.toggle('active', b.dataset.f === 'all'));
+}
+
 function applyClipFilter() {
   const list = $('renameList'); if (!list) return;
   const q = (clipFilterText || '').trim().toLowerCase();
   let shown = 0; const total = state.scannedFiles.length;
   list.querySelectorAll('.rename-card').forEach((card) => {
     const i = Number(card.dataset.i); const c = state.scannedFiles[i]; if (!c) return;
-    let ok = true;
-    const named = !!(c.subject && c.subject.trim());
-    if (clipFilterMode === 'unnamed') ok = !named;
-    else if (clipFilterMode === 'named') ok = named;
-    else if (clipFilterMode === 'people') ok = Array.isArray(c.people) && c.people.length > 0;
-    else if (clipFilterMode === 'selected') ok = !!c.selected;
-    if (ok && q) {
-      const hay = [c.name, c.subject, c.description, c.location, c.date, ...(Array.isArray(c.people) ? c.people : []), ...(Array.isArray(c.tags) ? c.tags : [])].filter(Boolean).join(' ').toLowerCase();
-      ok = hay.includes(q);
-    }
+    const ok = clipMatchesFilter(c);
     const disp = ok ? '' : 'none';
     if (card.style.display !== disp) card.style.display = disp;   // only write when it changes (avoids layout thrash)
     if (ok) shown += 1;
@@ -480,14 +534,16 @@ function selectClipRange(a, b) {
 // the same shoot — fastest path to batch-naming a card's worth of footage).
 function selectDay(day) {
   let nSel = 0;
+  const scoped = clipFilterActive();
   state.scannedFiles.forEach((c, j) => {
     if ((c.date || '') !== day) return;
+    if (scoped && !clipMatchesFilter(c)) return;   // same rule as select-all: never tick what's hidden
     c.selected = true; nSel += 1;
     const cb = document.querySelector(`[data-check="${j}"]`); if (cb) cb.checked = true;
     const card = cb && cb.closest('.rename-card'); if (card) card.classList.add('selected');
   });
   updateBatchBar();
-  showToast(`Selected ${nSel} clip${nSel !== 1 ? 's' : ''} from ${day || 'no date'} ✓`, 2000);
+  showToast(`Selected ${nSel} clip${nSel !== 1 ? 's' : ''} from ${day || 'no date'}${scoped ? ' matching the filter' : ''} ✓`, 2000);
 }
 // Hotkey: select everything between the first and last already-selected clips.
 function selectBetweenSelected() {

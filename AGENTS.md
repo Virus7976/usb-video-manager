@@ -84,6 +84,35 @@ All "AI" is local: Ollama vision models over HTTP + bundled face-api.js. No clou
 
 ## 3. Build / release / verify loop
 
+### Tests (`npm test`) — read this before "fixing" anything
+
+```bash
+npm test         # node --test test/   (rebundles first via pretest)
+npm run check    # syntax + primitives guard + the full test suite
+```
+
+The suite runs the **real shipping `main.js`** inside a `vm` context with a stubbed
+`electron` (`test/harness.mjs`), so every top-level helper and all 157 `ipcMain` channels are
+callable without Electron or a window. See §8 for how and why that works.
+
+```js
+const m = loadMain({ userData });   // isolated temp APPDATA
+m.get('VIDEO_EXT_LIST');            // read any top-level const/let/function
+m.call('buildEmbedTags', meta);     // call any top-level function
+await m.invoke('verify:copies', p); // invoke a real IPC handler
+m.plain(v) / m.getJSON(name);       // REQUIRED before assert.deepEqual (vm realm != host realm)
+```
+
+Test footage is **generated, never committed**: `test/fixtures.mjs` shells out to `ffmpeg` for
+real decodable clips/images (`makeVideo`, `makeImage`, `makeCard`), and skips when
+`HAVE_FFMPEG` is false.
+
+**Rules.** A fix without a regression test is not a fix — that is precisely what produced a
+~10% regression rate over the first 78 commits (roughly 1 in 10 fixes introduced a new bug).
+To prove a new test is real, break the fix, watch the test fail, restore it. Note `adb` and a
+real MTP device are unavailable in WSL, so the phone stack is tested through its **parsers**
+(`parsePsJson`, `adbParseDevices`, …) with recorded stdout, not a live device.
+
 **Code on Gitea, releases on GitHub.** Gitea's server can't host the ~130 MB installer (see
 §8), so the installer + auto-update feed live on **GitHub releases**
 (`Virus7976/usb-video-manager`); Gitea stays the home for code/issues/PRs/wiki.
@@ -145,6 +174,25 @@ Setup `.exe` with `/S`).
 - **Crash-safety.** Rename/analyze work autosaves (drafts, `finalMeta`, obs cache). Don't
   introduce a flow that loses work on a mid-run crash.
 - **Verify before destroy.** Never delete originals before copies are checksum-verified.
+- **Deleting from the card is NEVER automated.** It is always a deliberate, explicit user
+  action, gated on verification. No auto-mode, setting, or convenience path may reach a
+  source delete on its own. This is the owner's hardest rule — treat it as inviolable.
+- **`await window.api.X()` CAN REJECT — never let a rejection skip your cleanup.**
+  Every long-running IPC call (ffmpeg, exiftool, fs moves, adb, Ollama) can throw, not just
+  resolve `{ok:false}`. The renderer used to assume otherwise: it set a latch / disabled a
+  button / subscribed to a progress channel, `await`ed, and undid all three *on the happy
+  path only*. One rejection then wedged the screen for the rest of the session — a button
+  stranded on "Filing…", a spinner turning forever, `copyInProgress` stuck true (which nags
+  on every navigation and blocks auto-mode) — plus an orphaned listener that double-wrote
+  the UI on the next run. There was not one `finally` in all of `src/mod` before 2026-07-12.
+  So:
+  - **Busy buttons go through `withBusyBtn(btn, label, fn, onError)`** (`01-core.js`). It owns
+    the `finally`. Don't hand-roll `disabled = true` … `await` … `disabled = false` again.
+  - **A latch or a subscription released across an `await` goes in a `finally`** — never on
+    the happy path alone. Guarding the `await` in a `try/catch` is equally fine; what is
+    forbidden is an *unguarded* await that can unwind past the cleanup.
+  - `test/renderer-async-cleanup.test.mjs` enforces both statically over `src/mod/*.js`, and
+    proves the guard can still fail. If it trips, fix the code — don't loosen the rule.
 
 ## 5. Key subsystems (where to look)
 
@@ -277,6 +325,241 @@ folder names in a public repo.
 A running log of non-obvious things we learned the hard way, so nobody (human or AI) has to
 re-derive them. **Append new entries at the top; never delete.** Format: `### YYYY-MM-DD —
 title`, then what we learned and why it matters.
+
+### 2026-07-12 — The card→intake copy was the ONE copy path with no staging, no fsync, no verify
+
+This codebase has two well-built verify-before-destroy primitives (`copyFileVerified`,
+`moveFileCrossDevice`: temp → flush → full fingerprint → atomic rename). The single path that
+touches **the only copy of the footage** — `copyFileWithProgress`, card → intake — used neither, and
+it could corrupt the archive three ways at once:
+
+1. It wrote **straight to the final path**, so a partial copy wore the real filename.
+2. Cancelling called `rs.destroy()`, which emits neither `'end'` nor `'error'` — so `pipe()` never
+   called `ws.end()`, `'finish'` never fired, and **the promise never settled**. `copy:start`'s
+   `await` hung forever, which made its own `if (aborted) unlink(destPath)` cleanup *unreachable dead
+   code*: the truncated clip stayed in intake under its final name, `copyTask.active` stayed true (so
+   every later copy was refused with "A copy is already running"), and the renderer's
+   `copyInProgress` latch stuck true for the session. `token.aborted`, checked in two guards, was
+   never assigned anywhere either.
+3. It **verified nothing**. Tdarr would then compress the truncated clip and file it into Projects —
+   while the delete gate, which compares card↔intake, happily cleared the card.
+
+Now: stage to `<dest>.part` → `datasync` → full-file fingerprint against the card → rename. A file at
+`dest` is therefore *always* a complete, verified copy. `compress:run` had the same shape (ffmpeg
+wrote directly to the final `.mp4`, and `skipExisting` — default ON — then trusted any leftover
+partial as finished); it now stages into `.partial/`, which `listVideosShallow` cannot see because it
+lists **files** at the top level only.
+
+**The lesson: a destructive/irreplaceable operation must not have its own bespoke copy path.** If
+you're writing bytes that matter, go through the primitive — and if the primitive doesn't fit
+(progress reporting, here), fix the primitive rather than hand-rolling around it. `pipe()` + `destroy()`
+is a hang waiting to happen; use `stream/promises`' `pipeline()`, which turns a destroy into a
+rejection.
+
+### 2026-07-12 — Batch rename quietly destroyed data on the most ordinary path there is
+
+"Select all → type a subject → Apply to N" is *the* flow. Three separate bugs on it:
+
+- **The batch date was applied without the user ever typing it.** Merely *ticking* clips auto-filled
+  it from the FIRST selected clip, and `copyDateMode` defaults to `'always'` so it applied without
+  asking — overwriting every clip's real capture date and setting `dateLocked`, which permanently
+  blocks ffprobe from correcting it. Two shoots on one card → the older day got stamped with the
+  newer day's date. It now only auto-fills when the whole selection *already shares* one date.
+- **The row `⤓` copied unconditionally**, so propagating a subject from a row with an empty
+  description wiped the description and every custom organize field on all the ticked clips —
+  values the user couldn't even see (`cleanGrid` hides the meta row). `applyBatch` was explicitly
+  guarded against this; the row path just wasn't.
+- **Select-all ignored the active filter.** Filter to "Unnamed", select all, Apply → every *named*
+  clip, hidden from view and already finished, was overwritten too. There is now ONE
+  `clipMatchesFilter()` predicate, so what you can SEE and what a bulk action TOUCHES cannot disagree.
+
+Also: **a partial undo is worse than no undo.** `applyVersionToClips` restored only half of what
+`buildDraftMap` snapshots — people, tags, `facesScanned` and `ledgerRel` were all *in* the snapshot
+and simply never read back, so "Restore" from the automatic "Before AI analyze" point could not undo
+what the AI had done.
+
+### 2026-07-12 — The "hundreds of little things": work lost, failures you couldn't see, dead ends
+
+Patterns worth recognising, because each produced several separate bugs:
+
+- **An allowlist guard cannot protect fields it doesn't know about.** `mergeDraft`'s never-blank
+  guard named its protected fields explicitly, so `facesScanned`, `ledgerRel` and — by
+  construction, forever — the user's CUSTOM organize fields fell straight through
+  `{...prev, ...incoming}` and could be blanked by a stale write. It is now a **denylist**: every
+  saved field is protected, and only `selected` (a UI tick, which must be clearable or you could
+  never untick anything) may be cleared. A new draft field is now protected *by default* instead of
+  silently unguarded.
+- **Never persist an array index.** `aiQuestions` carried a `clipIndex` — a position in
+  `state.scannedFiles`. Persisting that would re-attach "is this a new category?" to a different
+  clip after a rescan. Everything durable in this app is keyed by `clipKey()` (`name__size`), which
+  survives a replug, a new drive letter and a restart. Follow that without exception.
+- **A count is not a diagnosis.** A failed AI clip was a counter plus a line in an in-memory log
+  (capped at 400, gone on restart, buried under Help → Activity log). With 100 clips you couldn't
+  see WHICH failed, WHY, or retry just those. The clip now carries `_aiFailed`/`_aiError`, the card
+  shows it, and "Retry failed" re-runs exactly those — restoring the previous selection in a
+  `finally`, because silently changing what's ticked is how a helpful retry loses someone's work.
+- **Silence is a bug.** Step pills that refused to open did nothing and said nothing. A yanked card
+  produced sixty separate "Took too long — skipped this clip" errors — a confidently wrong
+  diagnosis of a different problem. `cardIsGone()` now asks on demand (auto-poll is OFF by default,
+  so the `drive:removed` event alone would never fire for most users) and reports once.
+- **An undo nobody can find is not an undo.** `projects:move` had always recorded everything needed
+  to reverse a run, and `undoLastOrganize()` had always worked — it was just in a menu. It is now
+  offered on the toast, at the moment you'd want it.
+
+### 2026-07-12 — Organize ran TWO filing systems, and the one the user could see lost
+
+Step 2 IS the destination map (rendered inline into `#finMapHost`) — you plan a whole tree and its
+Apply files into the Projects root. But the step-3 **Run** button called `finalize:run`, which
+ignored the map completely and filed by `[category, project]` into the *Compressed* folder. Those
+two fields are normally **empty** (the rename grid hides them by default; the AI only sets a
+category that already exists), so `subdirParts()` returned `[]`, `organizeMove()` found the file
+already sitting in the destination, and Run reported **"N skipped, 0 moved"**. You planned
+everything, pressed Run, and it did nothing while looking like it had worked. Step 2 also had **no
+visible way forward** — `finNext2Btn` was `class="hidden"` and nothing un-hid it, so reaching Run
+meant guessing the step-3 pill was clickable.
+
+There is now ONE plan: the map publishes it (`currentDestPlan()`), Run executes it, and a clip with
+no place on the map is **left alone and reported** rather than dumped in the root of the Projects
+tree (which is what a naive `rel: ''` fallback would have done — see `organize-plan.test.mjs`).
+
+Two related shapes worth internalising:
+- **A flag that duplicates a fact will drift from it.** `state.phoneBackup` was set false by
+  `goHome()` while the phone's clips were still loaded, so re-entry ran the CARD copy path on phone
+  files — bypassing the "Send to Uncompressed" gate. It's now `isPhoneFlow()`, derived from
+  `state.scannedDrive`, which cannot disagree with what's loaded.
+- **In-memory state that gates a destructive step is a bug.** `state.copied` gated the Delete step
+  and died with the window, so clearing a card in a LATER session (the actual workflow) was
+  impossible without re-copying the whole card. It's now the durable `copiedLog` store, keyed by the
+  stable `name__size` fingerprint, rebuilt from the intersection of *what's on this card now* and
+  *what we logged* — which is also what stops one card's clips ever appearing in another's delete
+  list. It is a convenience for rebuilding the list, never an authority: `delete:source` still
+  re-hashes and refuses whatever it can't prove.
+
+### 2026-07-12 — The app REMEMBERED the analysis, then refused to use it
+
+"It forgets where it was" turned out to be the opposite problem. `clip-observations.json` is
+written correctly, per clip, immediately, keyed by the stable `name__size` fingerprint (so it
+even survives a replug and a new drive letter). The data was always there. Three things then
+threw it away:
+
+1. **Mode `empty` ("Only name blank clips") ran the full vision pass on EVERY selected clip**
+   and discarded the answer inside `applyAiResult`, which gates subject/description/category on
+   being blank. Cancel at clip 40 of 100, hit Analyze again → all 100 re-watched. There was no
+   notion of "already analyzed" anywhere. `aiAlreadyAnalyzed()` (04-tasks-ai.js) is now that
+   notion: a cached observation **and** a subject+description ⇒ nothing left to do ⇒ skip.
+2. **The "Reuse earlier analysis of N clips (faster)" checkbox was a lie in the default config.**
+   `dlg.reuse` was read in exactly one place — inside `if (aiCfg.multiPass)` — and `multiPass`
+   defaults to **false**. A default install ticked the box and got nothing.
+3. **Face clusters were keyed by absolute path** (`clip.key || clip.sourcePath`, and scanned
+   clips have no `.key` — main-mod/02-media.js never emits one) while every other store uses
+   `clipKey()`. Card replugs as `F:` instead of `E:` → the review still showed the faces, but
+   confirming them tagged **zero** clips, silently.
+
+Lesson: when a user says "it forgets", check whether it persisted and failed to *read back*
+before assuming it failed to *write*. Also — a defaulted-off config flag (`multiPass`,
+`updateSubject`) silently disabling a control the UI still renders is a recurring trap here.
+"Start over" had the same shape: it could never change a subject because `updateSubject`
+defaults false and batch-rename fills every subject first.
+
+### 2026-07-12 — The delete gate lived in the renderer, so a renderer bug could disarm it
+
+`delete:source` used to accept a bare array of paths and unlink whatever it was handed; the
+entire "only delete what's provably copied" check lived up in `09-phone-finalize.js`. The one
+irreversible operation in the app was therefore protected by a guard that any renderer bug could
+silently remove — in a codebase whose whole problem is renderer bugs. It now takes
+`{source, dest}` pairs, **re-hashes every file in main immediately before the unlink**, and
+refuses anything it can't prove (a bare path is refused outright — it carries no proof a copy
+exists). `test/delete-gate.test.mjs` asserts the footage survives a *lying renderer*.
+
+Related: `state.copied` (which gates the Delete step) was only cleared in `startFlow`'s
+fresh-scan branch, so importing a card and then backing up a phone left the **card's** clips in
+it — the Delete pill inside the phone flow listed them. Put the safety check next to the
+dangerous operation, not next to the button.
+
+### 2026-07-10 — Startup cost: defer the 1.3 MB face library and the heavy sidecar stores
+- `index.html` loaded **`face-api.min.js` (1.3 MB, bundles TensorFlow.js) as a blocking
+  `<script>` ahead of `renderer.js`** — every launch read, parsed and executed it, including
+  the many sessions that never open face recognition. It is now injected on first use by
+  `loadFaceApiLib()` in `src/mod/08-people.js`. That works because **`ensureFaceModels()` is
+  the single chokepoint** all eight face call sites go through, and all are already `async`.
+- `loadStores()` synchronously `JSON.parse`d **all seven sidecars at module load, before the
+  window existed** — including `people.json`, where the base64 face thumbnails are ~70% of the
+  bytes and which **grows without bound** as people are tagged (40 people × 15 faces ≈ 5 MB).
+  Startup got permanently slower the more the app was used.
+- `ai.people` / `ai.clipObs` / `ai.facesPending` are now in `LAZY_STORES` and load on first
+  access via `ensureStore()`. Boot store-loading went ~27 ms → ~7.8 ms on a 5 MB face DB, and
+  **no longer scales with the DB at all**.
+- **The invariant that makes deferral safe:** every read AND write of a lazy store goes through
+  an accessor (`aiPeople()`, `clipObsStore()`, `aiFacesPending()`) that calls `ensureStore()`
+  first. Otherwise a caller could mutate the in-memory value and *then* have the sidecar read
+  on top of it. `saveStore()` additionally **refuses to write a lazy store that was never
+  loaded** — nothing can have mutated it, so a write could only stamp an empty default over
+  real data. If you add a new lazy store, add its accessor in the same commit.
+- `migrateStores()` must `ensureStore()` before `saveStore()`, or a legacy value still living
+  inside `config.json` would never be re-homed to its sidecar.
+- Verified against the real app: with a *corrupt* `people.json`, a second launch boots cleanly
+  and **never even complains** — proof nothing on the launch path reads it — and the corrupt
+  bytes are left intact for recovery.
+
+### 2026-07-09 — The main process IS testable: load the bundle in a `vm` with a fake `electron`
+- `main.js` is one concatenated script with no `exports`, so nothing could be `require`d by a
+  test. That is *why* there were zero tests for 78 commits — not laziness, an actual wall.
+- The way through: `new vm.Script(mainJsSource).runInContext(ctx)` where `ctx.require` returns
+  an **electron stub**. Two properties make it work:
+  - top-level `const`/`let` land in the context's *global lexical environment*, which persists
+    across later `vm.runInContext()` calls — so every internal helper is readable by name;
+  - `ipcMain.handle(...)` runs at load, so a **recording stub captures all 157 channels** and
+    tests can invoke real IPC handlers with no Electron and no window.
+- `app.whenReady()` returns a **never-resolving promise** in the stub — that is what keeps
+  `createWindow()`/`createTray()` from firing. `ROAMING_DIR` reads `process.env.APPDATA`, so
+  pointing that at a temp dir gives each test an isolated config + sidecar directory.
+- Gotcha: values built *inside* the vm have a different `Array`/`Object` prototype, so
+  `assert.deepStrictEqual` fails a prototype check even when the structure matches. Use the
+  harness's `m.plain(v)` / `m.getJSON(name)` to re-materialize them in the host realm first.
+- See `test/harness.mjs`. Run with `npm test`; `npm run check` now includes it.
+
+### 2026-07-09 — Splitting the stores out of config.json quietly removed their data-safety guard
+- `config.json` has always been protected by `config_readFailed`: if the file exists but won't
+  parse, **every writer refuses to save**, so a transient read glitch can't replace real data
+  with defaults. That guard was never extended to the sidecar stores created in 0.4.20/0.4.26.
+- `readJsonRetry()` returns `null` for BOTH "file absent" and "file corrupt". Absent is
+  legitimate (first run), so `loadStores()` treated a **truncated `people.json` as a fresh
+  install**, defaulted it to `[]`, and the next `saveStore()` wrote that `[]` over the user's
+  entire face database. Same for `drafts.json` → every saved rename. Verified end-to-end
+  against the real app, not just a unit test.
+- Fixed with a per-store `storeReadFailed` latch (mirrors `config_readFailed`): the session
+  runs on defaults so the app still works, but `saveStore()` refuses to write. `freshStore()`
+  clears the latch if the user repairs the file. Regression tests in `test/stores.test.mjs`.
+- **The lesson is the shape, not the bug:** a *performance* refactor silently moved data out
+  from behind a *correctness* guard. When you relocate data, ask what invariant protected it
+  where it used to live.
+
+### 2026-07-09 — Two functions that "find the JSON in noisy text" were both wrong, differently
+- `parsePsJson` (PowerShell stdout) scanned for the first `[`/`{` and parsed to end-of-string.
+  A stray line containing a brace (`C:\{guid}`, a `[notice]` tag) made the slice start
+  mid-banner, `JSON.parse` threw, and the real trailing JSON was dropped → **"no phone
+  attached", silently**, with no error surfaced anywhere.
+- `parseJsonLoose` (LLM replies) used a greedy `/\{[\s\S]*\}/`, i.e. first `{` to the **last**
+  `}`. A trailing aside ending in a brace ("that's it :}") or a second JSON object swallowed
+  the real value → the whole AI suggestion came back empty. It could also return `null`/a
+  scalar, which every caller then property-accessed into a TypeError.
+- Both now delegate to one primitive, `scanBalancedJson()` in `main-mod/01-core.js`: walk the
+  text, and from each candidate opener scan with a depth counter that **skips string literals
+  and their escapes**. The first balanced span that actually parses wins. This is the DEDUP.md
+  rule in action — one primitive owns the decision, so a fix lands in both places at once.
+
+### 2026-07-09 — `verify:copies` is a DELETE GATE, so it must hash the whole file
+- The intake copy (`copyFileWithProgress`) performs **no verification at all**, which makes
+  `verify:copies` the only integrity check in the card-import → verify → clear-card flow.
+- It was using the *sampled* fingerprint (head/mid/tail, ~6 MB of a 4 GB clip), while its two
+  sibling delete gates — `copyFileVerified` and `moveFileCrossDevice` — both pass `{full:true}`
+  precisely because a sampled hash cannot see a mid-file bit-flip that preserves length.
+  A corrupt copy therefore reported "verified", and the user was invited to erase the card.
+- Now full-hashes both sides. The cost is a full read of each file, but this step is
+  explicitly user-initiated and already renders a "Verifying copies…" state — that is the
+  right place to pay it. If it ever gets too slow, hash the source *while copying* (the bytes
+  are already streaming through memory) rather than going back to sampling.
+- Rule of thumb: **whatever a check authorizes you to destroy, it must actually check.**
 
 ### 2026-06-28 — winCodeSign symlink error: disable signing, don't fight it
 - The build fails at `winCodeSign` extraction with **"Cannot create symbolic link : A required

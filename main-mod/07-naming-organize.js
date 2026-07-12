@@ -60,6 +60,10 @@ function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env
   });
 }
 function classifyGyro(meanMag) {
+  // A NaN mean (undecodable gyro samples) fails EVERY `<` test below and falls through to
+  // the max-motion bucket, mislabelling a locked-off tripod shot as "fast action" and
+  // feeding that lie to the AI namer. No reading beats a confidently wrong one.
+  if (!Number.isFinite(meanMag)) return '';
   if (meanMag < 0.05) return 'locked off / static (tripod or set down)';
   if (meanMag < 0.5) return 'handheld with small movement';
   if (meanMag < 1.5) return 'moving — panning, walking or following the subject';

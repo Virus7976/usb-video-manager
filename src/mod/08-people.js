@@ -7,13 +7,34 @@
 let _faceReady = null;
 let faceScanAborted = false;
 function faceDist(a, b) { let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i += 1) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
+
+// face-api.min.js is 1.3 MB and bundles TensorFlow.js. It used to sit in index.html as a
+// blocking <script> ahead of renderer.js, so EVERY launch paid to read, parse and execute
+// it — including the many sessions that never open face recognition. Inject it on first
+// use instead. The promise is cached, so N concurrent callers share ONE <script> insert;
+// on failure the cache is cleared so a later attempt can retry.
+let _faceLibPromise = null;
+function loadFaceApiLib() {
+  if (window.faceapi && window.faceapi.nets) return Promise.resolve(window.faceapi);
+  if (_faceLibPromise) return _faceLibPromise;
+  _faceLibPromise = new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = 'face-api.min.js';
+    s.onload = () => resolve(window.faceapi || null);
+    s.onerror = () => { _faceLibPromise = null; resolve(null); };   // not vendored in / unreadable
+    document.head.appendChild(s);
+  });
+  return _faceLibPromise;
+}
+
 async function ensureFaceModels() {
   if (_faceReady) return _faceReady;
   _faceReady = (async () => {
-    const fa = window.faceapi;
+    // Pulls the library in on demand — this is the first point any face path reaches.
+    const fa = await loadFaceApiLib();
     // The library + the model weights are BUNDLED with the app (no manual setup) —
     // a failure here is the engine not starting, not missing files.
-    if (window.__noFaceApi || !fa || !fa.nets) { _faceReady = null; return { ok: false, error: 'the face-recognition engine couldn’t start (the local library didn’t load).', kind: 'lib' }; }
+    if (!fa || !fa.nets) { _faceReady = null; return { ok: false, error: 'the face-recognition engine couldn’t start (the local library didn’t load).', kind: 'lib' }; }
     try {
       const url = 'face-models';   // bundled weights, served next to index.html
       await fa.nets.ssdMobilenetv1.loadFromUri(url);
@@ -109,7 +130,12 @@ async function collectClipFaces(clip, clusters, keys) {
   const r = clip._ref || clip;
   // Which clips a confirmed face should tag. Normally just this clip; in Quick mode we
   // scan one clip per subject and pass the whole group's keys so confirming tags them all.
-  const attach = (Array.isArray(keys) && keys.length) ? keys : [clip.key || clip.sourcePath];
+  // clipKey() — the stable name__size fingerprint, NOT the absolute path. Scanned clips have no
+  // `.key` field (main-mod/02-media.js never emits one), so this used to always fall through to
+  // sourcePath: `E:\DCIM\GX010023.MP4`. Replug the card and it comes back as `F:` — the face
+  // review still showed the faces, but confirming them tagged ZERO clips, silently. Every other
+  // store in the app (drafts, observations) is keyed by clipKey for exactly this reason.
+  const attach = (Array.isArray(keys) && keys.length) ? keys : [clipKey(clip)];
   let fr = null;
   pushActivity(`Scanning ${clip.name} for faces…`, 'face');
   try { fr = await detectFacesForClip({ sourcePath: clip.sourcePath }, (fi, ft) => { if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); }); } catch { return 0; }
@@ -306,43 +332,57 @@ async function scanFacesForClips(clipList, opts = {}) {
   clearActivity();
   // Start from the saved review so a new scan MERGES into what's already waiting
   // (by descriptor) instead of losing it — the review is cumulative and remembered.
-  const clusters = await loadPendingFaces();   // {thumb, descriptor, descriptors:[], clipKeys:Set, suggest}
+  let clusters = [];   // {thumb, descriptor, descriptors:[], clipKeys:Set, suggest}
   let done = 0;
-  for (const clip of toScan) {
-    if (faceScanAborted) break;
-    const ci = state.scannedFiles.indexOf(clip);   // the live scan overlay on the card
-    setTask('faces', 'Face scan', done + 1, toScan.length, 'scanning', clip.name);
-    markClipAnalyzing(ci, 'face scan');
-    pushActivity(`Scanning ${clip.name} for faces…`, 'face');
-    // eslint-disable-next-line no-await-in-loop
-    const res = await detectFacesForClip(clip, (fi, ft) => { setTask('faces', 'Face scan', done + 1, toScan.length, `frame ${fi}/${ft}`, clip.name); if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); });
-    markClipAnalyzing(ci, false);
-    pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
-    // Remember this clip was scanned (even if nothing matched) so we never re-nag,
-    // and PERSIST it now so a mid-stream cutoff still remembers what's done.
-    clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
-    const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
-    flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
-    for (const f of res.faces) {
+  // detectFacesForClip spawns ffmpeg to pull frames, and matchPerson/savePerson hit the
+  // face DB — any of them can REJECT. Without the finally, a throw left the footer "Face
+  // scan" task pinned in the conveyor forever and the clip card stuck under its spinning
+  // `analyzing` overlay, with no error surfaced. (scanFacesAuto and collectClipFaces already
+  // guard these exact calls — this path just never got the same treatment.) Whatever we
+  // clustered before the failure is kept: the review grid below is cumulative by design.
+  try {
+    clusters = await loadPendingFaces();
+    for (const clip of toScan) {
+      if (faceScanAborted) break;
+      const ci = state.scannedFiles.indexOf(clip);   // the live scan overlay on the card
+      setTask('faces', 'Face scan', done + 1, toScan.length, 'scanning', clip.name);
+      markClipAnalyzing(ci, 'face scan');
+      pushActivity(`Scanning ${clip.name} for faces…`, 'face');
       // eslint-disable-next-line no-await-in-loop
-      const m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST });
-      const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
-      const matched = !!(m && m.match);   // backend already applied the strict gate
-      // NEVER auto-tag or auto-confirm. Recognized faces become SUGGESTIONS you confirm
-      // in the Review grid, and are saved to the person's profile as UNCONFIRMED.
-      let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
-      if (!c) { c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null }; clusters.push(c); pushActivity(matched ? `Looks like ${m.match.name} — needs your confirmation` : 'New face — will ask you to name it', 'face', f.thumb); }
-      c.descriptors.push(f.descriptor); c.clipKeys.add(clip.key || clip.sourcePath);
-      if (matched) {
-        if (!c.suggest || dist < c.suggest.dist) c.suggest = { id: m.match.id, name: m.match.name, dist };
-        notePerson(m.match.name, f.thumb);
+      const res = await detectFacesForClip(clip, (fi, ft) => { setTask('faces', 'Face scan', done + 1, toScan.length, `frame ${fi}/${ft}`, clip.name); if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); });
+      markClipAnalyzing(ci, false);
+      pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
+      // Remember this clip was scanned (even if nothing matched) so we never re-nag,
+      // and PERSIST it now so a mid-stream cutoff still remembers what's done.
+      clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
+      const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
+      flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
+      for (const f of res.faces) {
         // eslint-disable-next-line no-await-in-loop
-        await window.api.savePerson({ name: m.match.name, descriptors: [f.descriptor], thumb: f.thumb, confirmed: false });
+        const m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST });
+        const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
+        const matched = !!(m && m.match);   // backend already applied the strict gate
+        // NEVER auto-tag or auto-confirm. Recognized faces become SUGGESTIONS you confirm
+        // in the Review grid, and are saved to the person's profile as UNCONFIRMED.
+        let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
+        if (!c) { c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null }; clusters.push(c); pushActivity(matched ? `Looks like ${m.match.name} — needs your confirmation` : 'New face — will ask you to name it', 'face', f.thumb); }
+        c.descriptors.push(f.descriptor); c.clipKeys.add(clipKey(clip));   // stable across replug — see collectClipFaces
+        if (matched) {
+          if (!c.suggest || dist < c.suggest.dist) c.suggest = { id: m.match.id, name: m.match.name, dist };
+          notePerson(m.match.name, f.thumb);
+          // eslint-disable-next-line no-await-in-loop
+          await window.api.savePerson({ name: m.match.name, descriptors: [f.descriptor], thumb: f.thumb, confirmed: false });
+        }
       }
+      done += 1;
     }
-    done += 1;
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    logIssue('Faces', `Face scan stopped: ${msg}`);
+    showToast(`Face scan stopped — ${msg}. The ${done} clip${done !== 1 ? 's' : ''} already scanned are remembered.`, 5500);
+  } finally {
+    clearAllAnalyzing(); clearTask('faces');
   }
-  clearAllAnalyzing(); clearTask('faces');
   scheduleDraftSave();   // make sure the last clips' scanned-flags persist
   if (faceScanAborted) { showToast(`Face scan stopped — ${done} scanned so far are remembered (resume to do the rest).`, 4500); }
   const toReview = clusters.length;
@@ -362,7 +402,11 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   try { people = await window.api.getPeople(); } catch { people = []; }
   return new Promise((resolveGrid) => {
   const names = people.map((p) => p.name);
-  const byKey = {}; for (const c of clipList) byKey[c.key || c.sourcePath] = c;
+  // Resolve a cluster's clipKeys back to clips by BOTH the stable fingerprint and the absolute
+  // path: clusters written before the key fix are still sitting in faces-pending.json keyed by
+  // path, and a pending review is exactly the work we must never drop on the floor.
+  const byKey = {};
+  for (const c of clipList) { byKey[clipKey(c)] = c; if (c.sourcePath) byKey[c.sourcePath] = c; }
   clusters.forEach((c, i) => { c._i = i; });
   const ov = document.createElement('div'); ov.className = 'modal-overlay';
   ov.innerHTML = `<div class="modal-card face-grid-card">
@@ -376,11 +420,19 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   ov.querySelector('.fg-done').addEventListener('click', close);
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
 
+  // Confirming a face is REAL WORK — it's the whole point of the review grid — so it has to be
+  // persisted the instant it happens. It wasn't: tagging only mutated clip.people in memory,
+  // while close() ran savePendingNow(), which DROPS every confirmed cluster from
+  // faces-pending.json. So confirming faces and then crashing (or being killed) lost the tags
+  // from the clips AND from the pending review — the work existed nowhere. It survived only by
+  // luck, if a later edit or a window blur happened to trigger a flush first.
   function tagClips(cl, name) {
     for (const k of cl.clipKeys) { const c = byKey[k]; if (c) c.people = [...new Set([...(c.people || []), name])]; }
+    flushDraftSave();
   }
   function untagClips(cl, name) {
     for (const k of cl.clipKeys) { const c = byKey[k]; if (c && Array.isArray(c.people)) c.people = c.people.filter((n) => n !== name); }
+    flushDraftSave();
   }
   async function assign(cl, name) {
     name = String(name || '').trim();
@@ -486,11 +538,17 @@ function showFaceSetup(reason) {
   const close = () => ov.remove();
   ov.querySelector('.fs-ok').addEventListener('click', close);
   ov.querySelector('.fs-retry').addEventListener('click', async () => {
-    const btn = ov.querySelector('.fs-retry'); btn.disabled = true; btn.textContent = 'Loading…';
-    _faceReady = null;
-    const r = await ensureFaceModels();
-    if (r && r.ok) { close(); showToast('Face recognition ready ✓'); }
-    else { btn.disabled = false; btn.textContent = 'Try again'; const p = ov.querySelector('.fs-reason'); if (p) p.textContent = `Still couldn’t start — ${(r && r.error) || 'unknown error'} Make sure your graphics drivers are up to date.`; }
+    const btn = ov.querySelector('.fs-retry');
+    const fail = (why) => { const p = ov.querySelector('.fs-reason'); if (p) p.textContent = `Still couldn’t start — ${why || 'unknown error'} Make sure your graphics drivers are up to date.`; };
+    // _faceReady is nulled to force a real retry — so if ensureFaceModels THREW, the old code
+    // left the memo cleared AND the button dead on "Loading…": face recognition was
+    // unrecoverable without a restart. withBusyBtn's finally always gives the button back.
+    await withBusyBtn(btn, 'Loading…', async () => {
+      _faceReady = null;
+      const r = await ensureFaceModels();
+      if (r && r.ok) { close(); showToast('Face recognition ready ✓'); }
+      else fail((r && r.error) || 'unknown error');
+    }, fail);
   });
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
 }
@@ -771,10 +829,20 @@ function showModelStore(opts = {}) {
       if (p.error) { statusEl.textContent = `Error: ${p.error}`; return; }
       statusEl.textContent = `${name}: ${p.status || 'working'}${p.percent != null ? ` · ${p.percent}%` : ''}`;
     });
-    const r = await window.api.aiPull(name);
-    if (unsub) { unsub(); unsub = null; }
-    pulling = false;
-    return r && r.ok;
+    // ai:pull talks to Ollama over HTTP, so it can REJECT (daemon stopped mid-download).
+    // Without the `finally`, that left `pulling` stuck true — every later download was
+    // refused with "A download is already running" until the app restarted — and orphaned
+    // the progress listener.
+    try {
+      const r = await window.api.aiPull(name);
+      return !!(r && r.ok);
+    } catch (e) {
+      statusEl.textContent = `Error: ${(e && e.message) || 'download failed'}`;
+      return false;
+    } finally {
+      if (unsub) { unsub(); unsub = null; }
+      pulling = false;
+    }
   }
   async function load() {
     q('.ms-status').textContent = 'Loading…';
@@ -1147,20 +1215,19 @@ function showAiSettings() {
   });
   $$('.ai-learn-btn').addEventListener('click', async () => {
     const btn = $$('.ai-learn-btn'); const st = $$('.ai-learn-status');
-    btn.disabled = true; st.classList.remove('hidden'); st.textContent = 'Reading your names and learning your style…';
-    const r = await window.api.aiLearnNames(learnDir ? { dir: learnDir } : {});
-    btn.disabled = false;
-    if (!r || !r.ok) { st.textContent = `Couldn't learn: ${r ? r.error : 'please try again'}`; return; }
+    st.classList.remove('hidden'); st.textContent = 'Reading your names and learning your style…';
+    const r = await withBusyBtn(btn, null, () => window.api.aiLearnNames(learnDir ? { dir: learnDir } : {}),
+      (msg) => { st.textContent = `Couldn't learn: ${msg}`; });
+    if (!r || !r.ok) { if (r) st.textContent = `Couldn't learn: ${r.error || 'please try again'}`; return; }
     st.textContent = `Read ${r.examples} of your names.`;
     if (!(r.proposed && r.proposed.length)) { st.textContent += ' No new rules to add — your style is already captured.'; return; }
     showProposedRulesDialog('Rules learned from your style', `From ${r.examples} of your own names. Tick the ones to remember.`, r.proposed, (mems) => { c.memories = mems.map((m) => ({ ...m })); renderMems(); });
   });
   // Tidy & group: consolidate many tiny memories into fewer grouped ones (confirm).
   $$('.ai-mem-tidy').addEventListener('click', async () => {
-    const btn = $$('.ai-mem-tidy'); const old = btn.textContent; btn.disabled = true; btn.textContent = 'Grouping…';
-    const r = await window.api.aiConsolidateMemories();
-    btn.disabled = false; btn.textContent = old;
-    if (!r || !r.ok) { showToast(`Couldn't group: ${r ? r.error : 'please try again'}`); return; }
+    const btn = $$('.ai-mem-tidy');
+    const r = await withBusyBtn(btn, 'Grouping…', () => window.api.aiConsolidateMemories());
+    if (!r || !r.ok) { if (r) showToast(`Couldn't group: ${r.error || 'please try again'}`); return; }
     showProposedRulesDialog('Tidy & group memories', `This replaces your ${r.before} memories with these ${r.proposed.length} grouped ones. Tick to keep, then Apply.`,
       r.proposed, (mems) => { c.memories = mems.map((m) => ({ ...m })); renderMems(); }, { replace: true });
   });
@@ -1415,7 +1482,11 @@ async function goHome() {
   $('finalize').classList.add('hidden');
   $('phone').classList.add('hidden');
   $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
-  state.phoneBackup = false;
+  // (no phoneBackup flag to reset — isPhoneFlow() is derived from state.scannedDrive)
+  // Leaving the flow ends the copy→verify→delete session. Anything we copied belonged to THAT
+  // session; carrying it home meant a later, unrelated flow could still offer to delete it.
+  // (Deleting from a card is only ever allowed as a deliberate act within the flow that copied it.)
+  state.copied = [];
   if (state.drive) $('driveBanner').classList.remove('hidden');
   saveSession({ view: 'home' });   // back on Home → nothing to resume into next launch
   refreshDriveList();   // re-read removable drives when returning home

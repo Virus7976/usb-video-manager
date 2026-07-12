@@ -159,11 +159,22 @@ async function endExifTool() {
   try { await et.end(); } catch { /* ignore */ }
 }
 
+// Windows refuses to create a file OR folder with one of these legacy DOS device names,
+// with or without an extension. A category/project genuinely named "Con" or "Aux" would
+// slug to a name that mkdir can never create, and the organize step would fail with an
+// opaque EINVAL. Suffix them so they stay readable and legal.
+const WIN_RESERVED_NAMES = new Set([
+  'con', 'prn', 'aux', 'nul',
+  'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+  'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+]);
 // Slug a metadata value into a filesystem-safe folder name (matches the
 // renderer's slug(): lowercase, runs of non-alphanumerics → single hyphen).
+// Note `..` needs no special handling: the dots become a hyphen, which is then stripped.
 function slugFolder(s) {
-  return String(s || '').trim().toLowerCase()
+  const out = String(s || '').trim().toLowerCase()
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return WIN_RESERVED_NAMES.has(out) ? `${out}-folder` : out;
 }
 function metaLevelValue(level, meta) {
   if (level === 'category') return meta.category;

@@ -19,7 +19,12 @@ function compressSettings(s) {
 }
 function buildCompressArgs(src, out, s) {
   const a = ['-y', '-i', src];
-  if (s.scale && s.scale !== 'source') a.push('-vf', `scale=-2:${s.scale}`);
+  // `scale` is interpolated into ONE -vf element, so a value like "720,transpose=1" would
+  // append an extra filter to the graph. Not a shell injection (spawn takes an argv array,
+  // no shell), but the height must still be a plain positive integer — anything else is
+  // ignored rather than passed through to the filtergraph.
+  const scaleH = Number(s.scale);
+  if (s.scale && s.scale !== 'source' && Number.isInteger(scaleH) && scaleH > 0) a.push('-vf', `scale=-2:${scaleH}`);
   if (s.codec === 'h265') a.push('-c:v', 'libx265', '-tag:v', 'hvc1', '-crf', String(s.crf ?? 28));
   else a.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', String(s.crf ?? 23));
   a.push('-preset', s.preset || 'medium');
@@ -72,9 +77,25 @@ ipcMain.handle('compress:run', async (evt, payload) => {
     produced.add(pathKey(outPath));
     let inBytes = 0; try { inBytes = (await fsp.stat(src)).size; } catch { /* ignore */ }
     let durationSec = 0; try { durationSec = (await probeMeta(src)).durationSec || 0; } catch { /* ignore */ }
+    // `skipExisting` (default ON) used to accept ANY non-empty file at outPath as "already done".
+    // ffmpeg wrote straight to outPath, and the rm-the-partial cleanup below only runs when ffmpeg
+    // exits cleanly with a non-zero code — so a crash, a power cut, or just quitting the app
+    // mid-encode left a plausible, truncated .mp4 sitting there. The next run skipped it, reported
+    // ok, and it was organized into Projects. The delete gate only compares card↔intake, so the card
+    // was legitimately cleared: the truncated compressed clip could end up the ONLY surviving copy.
+    //
+    // Now the encode is STAGED. A partial can only ever be a file inside .partial/, which
+    // listVideosShallow never sees (it lists files, not directories, at the top level only). So a
+    // .mp4 at outPath can only exist because an encode actually finished, and skipping it is safe.
     if (s.skipExisting) { try { const st = await fsp.stat(outPath); if (st.size > 0) { results.push({ name: f.name, ok: true, skipped: true, outPath, inBytes, outBytes: st.size }); send({ index: i, total: files.length, name: f.name, pct: 100, phase: 'skipped' }); continue; } } catch { /* not there */ } }
     send({ index: i, total: files.length, name: f.name, pct: 0, phase: 'starting', inBytes });
-    const args = buildCompressArgs(src, outPath, s);
+    // Keep the .mp4 extension — ffmpeg picks its muxer from it, so a bare ".part" would break the
+    // container. The DIRECTORY is what hides it.
+    const partDir = path.join(out, '.partial');
+    await ensureDir(partDir);
+    const partPath = path.join(partDir, path.basename(outPath));
+    try { await fsp.rm(partPath, { force: true }); } catch { /* no leftover */ }
+    const args = buildCompressArgs(src, partPath, s);
     // eslint-disable-next-line no-await-in-loop
     const res = await new Promise((resolve) => {
       let errBuf = '';
@@ -96,16 +117,32 @@ ipcMain.handle('compress:run', async (evt, payload) => {
       proc.on('close', (code) => { compressProc = null; resolve(code === 0 ? { ok: true } : { ok: false, error: compressAborted ? 'cancelled' : (ffmpegLastError(errBuf) || `ffmpeg exited ${code}`) }); });
     });
     if (res.ok) {
-      let outBytes = 0; try { outBytes = (await fsp.stat(outPath)).size; } catch { /* ignore */ }
+      // ffmpeg exited 0 → the encode is complete. Only NOW does it get the real name, so nothing
+      // that isn't a finished clip can ever appear in the Compressed folder.
+      let outBytes = 0;
+      try {
+        await flushToDisk(partPath);
+        await fsp.rename(partPath, outPath);
+        outBytes = (await fsp.stat(outPath)).size;
+      } catch (err) {
+        try { await fsp.rm(partPath, { force: true }); } catch { /* ignore */ }
+        results.push({ name: f.name, ok: false, error: `Could not finish ${path.basename(outPath)}: ${err.message}` });
+        send({ index: i, total: files.length, name: f.name, pct: 0, phase: 'error', error: err.message });
+        continue;
+      }
       results.push({ name: f.name, ok: true, outPath, inBytes, outBytes });
       send({ index: i, total: files.length, name: f.name, pct: 100, phase: 'done', inBytes, outBytes });
     } else {
-      try { await fsp.rm(outPath, { force: true }); } catch { /* ignore */ }   // never leave a half-written file
+      try { await fsp.rm(partPath, { force: true }); } catch { /* ignore */ }   // never leave a half-written file
       results.push({ name: f.name, ok: false, error: res.error });
       send({ index: i, total: files.length, name: f.name, pct: 0, phase: 'error', error: res.error });
       if (compressAborted) break;
     }
   }
+  // Sweep the staging dir: an encode killed by a crash or a power cut leaves a file here, and it
+  // would otherwise sit around forever. It was never visible to the Organize scan, so this is
+  // housekeeping, not a safety fix — the safety came from it never being at outPath in the first place.
+  try { await fsp.rm(path.join(out, '.partial'), { recursive: true, force: true }); } catch { /* ignore */ }
   // Point Finalize at where we just wrote, so "Organize" continues seamlessly.
   if (out && out !== config.finalizeSource) { config.finalizeSource = out; saveConfig(); }
   const okCount = results.filter((r) => r.ok && !r.skipped).length;
@@ -177,10 +214,18 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     .split(/[\s\-_.]+/).filter((t) => t && t.length > 1 && !/^(gx|gopro|hero|dji|img|dsc|mvi|mp4|mov|avi)\w*$/i.test(t)));
   const tokenScore = (a, b) => { let n = 0; for (const t of a) if (b.has(t)) n += /^\d{4}-\d{2}-\d{2}$/.test(t) ? 3 : 1; return n; };   // a shared date counts strong
   const storeEntries = Object.entries(store).map(([k, v]) => ({ v, tokens: fileTokens(k) }));
-  const out = files.map((f) => {
+  const out = await Promise.all(files.map(async (f) => {
     const lc = f.name.toLowerCase();
     let rec = byName[lc] || byStem[stemOf(lc)] || null;
     let matchType = rec ? 'saved' : null;
+    // ASK THE FILE. If the clip still carries the record we embedded at copy time, that is the
+    // real answer — no guessing, no sidecar, and it works on another machine or after the sidecar
+    // has been pruned. Only reached on a store miss, which is exactly the case where the
+    // compressor renamed the file — so we pay the exiftool read precisely when it earns its keep.
+    if (!rec && !f.isPhoto) {
+      const embedded = await readEmbeddedRecord(f.sourcePath);
+      if (embedded) { rec = embedded; matchType = 'embedded'; }
+    }
     if (!rec && storeEntries.length) {
       // Fuzzy: best token-overlap against the saved records; needs a strong match
       // (e.g. shared date + ≥1 subject token) so unrelated files don't false-match.
@@ -195,7 +240,7 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     // Photos almost never have a saved record yet (IMG_1234.jpg), but they should still
     // be SELECTABLE so Analyze can name them — so treat a photo as "matched/included".
     return { name: f.name, sourcePath: f.sourcePath, size: f.size, isPhoto: !!f.isPhoto, matched: !!rec || !!f.isPhoto, matchType: rec ? matchType : (f.isPhoto ? 'photo' : matchType), meta: rec };
-  });
+  }));
   return {
     ok: true, dir,
     files: out,
@@ -290,8 +335,58 @@ function buildEmbedTags(meta, parts, fallbackName) {
     tags['XMP-lr:HierarchicalSubject'] = uniqStrings([...(tags['XMP-lr:HierarchicalSubject'] || hier), `Places|${place}`]);
     tags['XMP-digiKam:TagsList'] = uniqStrings([...(tags['XMP-digiKam:TagsList'] || []), `Places/${place}`]);
   }
+  // A LOSSLESS copy of the record, carried by the file itself.
+  //
+  // Everything above is written for humans and for digiKam/Lightroom, and it is deliberately
+  // lossy: Title merges subject+description and de-hyphenates them, Description glues the AI's
+  // observation on after an em-dash. You cannot reconstruct the structured record from it.
+  //
+  // That matters because this app's own Organize step runs LATER, in a separate session, against
+  // files that have been through Tdarr — and its only way back to the metadata was a fuzzy
+  // filename token-guess against a sidecar. So we also stash the exact record here. If the tags
+  // survive the compressor, Organize reads them back perfectly and never has to guess. If Tdarr
+  // strips them (it often does), nothing is worse than before — and finalize:run re-embeds
+  // everything anyway, so the final archived file always ends up carrying its own truth.
+  const record = {};
+  for (const k of ['subject', 'description', 'location', 'context', 'shotType', 'category', 'project', 'date', 'observation', 'ledgerRel']) {
+    if (m[k]) record[k] = String(m[k]);
+  }
+  for (const k of ['people', 'peopleAuto', 'tags', 'keywords']) {
+    if (Array.isArray(m[k]) && m[k].length) record[k] = uniqStrings(m[k]).filter(Boolean);
+  }
+  for (const id of fieldIds) if (m[id]) record[id] = String(m[id]);
+  if (Object.keys(record).length) tags['XMP-dc:Identifier'] = `${EMBED_RECORD_PREFIX}${JSON.stringify(record)}`;
   return tags;
 }
+
+// Marker for our machine-readable record, so we never mistake somebody else's dc:Identifier
+// (or a half-written one) for ours.
+const EMBED_RECORD_PREFIX = 'usbvd1:';
+
+// Read our own record back out of a file. Returns null when the file carries no record of ours
+// — including when a compressor stripped the XMP, which is the expected case for Tdarr output.
+async function readEmbeddedRecord(filePath) {
+  try {
+    const et = getExifTool();
+    const t = await et.read(filePath);
+    const raw = t && (t.Identifier || t['XMP-dc:Identifier']);
+    const s = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof s !== 'string' || !s.startsWith(EMBED_RECORD_PREFIX)) return null;
+    const rec = JSON.parse(s.slice(EMBED_RECORD_PREFIX.length));
+    return (rec && typeof rec === 'object' && !Array.isArray(rec)) ? rec : null;
+  } catch { return null; }   // unreadable / no exiftool / not our record — fall through to the old ladder
+}
+
+// NOTE — why there is no embed-at-COPY step.
+//
+// Writing XMP into an MP4/MOV makes exiftool rewrite the WHOLE file (see getExifTool), so
+// embedding during the import would add a full extra read+write per clip — roughly doubling the
+// time to pull a card of multi-GB GoPro footage. And Tdarr strips metadata on re-encode, so that
+// expensive embed would be destroyed before Organize ever saw it. The metadata therefore travels
+// across the Tdarr gap in the finalMeta sidecar (which no longer expires — see finalMeta:save),
+// and finalize:run embeds it into the file ONCE, at organize time, where the cost is paid on the
+// final archived copy that keeps it. The lossless record written by buildEmbedTags means that
+// file can be re-read perfectly by readEmbeddedRecord on any later pass or any other machine.
 
 ipcMain.handle('finalize:run', async (evt, payload) => {
   const sender = evt.sender;
@@ -310,9 +405,22 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     return { ok: false, error: 'No destination folder set. Choose one in Edit → “Organizing & folders…”.' };
   }
 
-  const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
+  // Organizing MOVES files (organizeMove → moveFileCrossDevice → unlink of the source). If the
+  // Compressed folder were ever pointed at the SD card, Run would therefore strip footage off
+  // the card — a card delete that never went through the delete confirm or the delete gate.
+  // Deleting from the card is only ever allowed as a deliberate act on the Delete step, so
+  // refuse outright rather than quietly relocating someone's only copy.
+  if (opts.organize && await isOnRemovableVolume(dir)) {
+    return { ok: false, error: 'That folder is on a removable card or USB drive. Organizing MOVES files, so it would take them off the card — which is only ever allowed from the Delete step, after the copies are verified. Point “Compressed” at a folder on your computer first.' };
+  }
+
+  const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, unplanned: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
   const undoable = [];   // {from,to} per relocated clip → enables "Undo last organize"
   const csvRows = [];
+  const filed = [];      // clips whose metadata is now consumed → the finalMeta prune may evict them
+  // Is the caller driving us from the destination map's plan? (Any item carrying a `rel` means
+  // yes.) Under a plan we NEVER invent a folder for a clip the user didn't place.
+  const usingPlan = list.some((it) => typeof it.rel === 'string' && it.rel.trim());
   const et = opts.embed ? getExifTool() : null;
   const emit = (index, name, phase) => sender.send('finalize:progress', { index, total: list.length, name, phase });
 
@@ -321,7 +429,20 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     const meta = it.meta || {};
     let curPath = it.sourcePath;
     let finalFileName = it.name;
-    const parts = subdirParts(levels, meta);
+    // `rel` is the folder the DESTINATION MAP decided — the plan the user actually made and can
+    // see. It wins over recomputing a path from [category, project], which are normally empty and
+    // therefore produced NO subfolders at all: the file was already sitting in the destination, so
+    // organizeMove said "in-place" and Run reported "0 moved" while looking like it had worked.
+    // Falling back to subdirParts keeps the old behaviour for any caller that sends no plan.
+    const relRaw = (typeof it.rel === 'string') ? it.rel.trim() : '';
+    const parts = relRaw
+      ? relRaw.split(/[\\/]+/).map((s) => slugFolder(s)).filter(Boolean)
+      : subdirParts(levels, meta);
+    // Under a plan, a clip the user never placed has NO destination. Falling through to
+    // subdirParts here would hand it an empty path — i.e. dump it in the ROOT of the Projects
+    // tree, which is worse than leaving it alone. Skip its move; it still gets embed/CSV/NAS.
+    const skipMove = usingPlan && !relRaw;
+    if (skipMove) summary.unplanned += 1;   // reported, not silently dropped
     const tags = buildEmbedTags(meta, parts, it.name);
     const keywords = Array.isArray(tags['XMP-dc:Subject']) ? tags['XMP-dc:Subject'] : [];
 
@@ -344,7 +465,7 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     }
 
     // 2. Organize into <dest>/<folderLevels…>/ (idempotent).
-    if (opts.organize && dest) {
+    if (opts.organize && dest && !skipMove) {
       emit(i, it.name, 'moving');
       try {
         const before = curPath;   // capture origin BEFORE reassigning, for undo
@@ -352,7 +473,14 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         if (r.action === 'moved') { summary.moved += 1; undoable.push({ from: before, to: r.path }); } else summary.skipped += 1;
         curPath = r.path;
         finalFileName = path.basename(r.path);
-      } catch (err) { summary.errors.push(`Move ${it.name}: ${err.message}`); }
+      } catch (err) {
+        // A clip whose move FAILED was not filed. It used to fall through to filed.push() below,
+        // which marks its metadata `done` and therefore prune-eligible — so the clip stayed where it
+        // was AND its metadata became disposable. The embed-failure path above `continue`s for
+        // exactly this reason; the move path just didn't.
+        summary.errors.push(`Move ${it.name}: ${err.message}`);
+        continue;   // leave it — and its metadata — intact for a clean retry
+      }
     }
 
     // 3. Mirror to the NAS (organized structure), if enabled.
@@ -380,7 +508,12 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         scene
       });
     }
+    // This clip's metadata has now been CONSUMED — embedded into the file and/or filed into the
+    // tree. Only now may the finalMeta prune consider evicting it. (An embed failure `continue`s
+    // above, so a clip that didn't make it never gets marked and its metadata is kept for a retry.)
+    filed.push(it.name);
   }
+  markFinalMetaDone(filed);
 
   // Write the Resolve metadata CSV next to the organized folder (or the scan
   // folder when not organizing). Columns Resolve's Import Metadata maps directly.
@@ -398,6 +531,15 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
   // Record this run's relocations so "Undo last organize" can move them back.
   if (undoable.length) { config.lastOrganize = { ts: Date.now(), moves: undoable }; saveConfig(); }
 
+  // `ok` was set true at construction and never reconsidered, so a run in which EVERY clip failed
+  // still reported success and the renderer showed a tidy green summary. Report reality: a run that
+  // achieved nothing at all, but was asked to do something, did not succeed.
+  const didSomething = summary.embedded > 0 || summary.moved > 0 || summary.backedUp > 0
+    || summary.skipped > 0 || summary.unplanned > 0 || !!summary.csvPath;
+  if (summary.errors.length && !didSomething) {
+    summary.ok = false;
+    summary.error = summary.errors[0];
+  }
   return summary;
 });
 
@@ -508,28 +650,47 @@ async function fingerprintsMatch(a, b, opts) {
   catch { return false; }
 }
 // Verify each copied file against its source BEFORE the originals are deleted.
-ipcMain.handle('verify:copies', async (_evt, pairs) => {
-  const out = [];
-  for (const p of (Array.isArray(pairs) ? pairs : [])) {
-    const src = p && p.source; const dst = p && p.dest;
-    let ok = false; let reason = '';
-    try {
-      if (!dst) { reason = 'no copy on record'; }
-      else {
-        let ss = null; let ds = null;
-        try { ss = await fsp.stat(src); } catch { reason = 'source missing'; }
-        try { ds = await fsp.stat(dst); } catch { reason = reason || 'copy missing'; }
-        if (ss && ds) {
-          if (ss.size !== ds.size) { reason = `size mismatch (${ss.size} vs ${ds.size})`; }
-          else {
-            const [fa, fb] = await Promise.all([sampledFingerprint(src), sampledFingerprint(dst)]);
-            if (fa.hash === fb.hash) ok = true; else reason = 'content mismatch';
-          }
+//
+// This is a DELETE GATE: whatever it marks ok, the user is then invited to erase from the
+// card. So it hashes the FULL file, exactly like the other two delete gates
+// (copyFileVerified / moveFileCrossDevice in 02-media.js). A sampled head/mid/tail hash
+// reads ~6 MB of a 4 GB clip and cannot see a mid-file bit-flip that preserves length — it
+// would report "verified" on a corrupt copy and the only good original then gets wiped.
+// The intake copy itself (copyFileWithProgress) performs NO verification, so this is the
+// only integrity check in the whole card-import -> verify -> clear-card flow.
+// Cost is a full read of both files; this step is explicitly user-initiated and already
+// renders a "Verifying copies…" progress state, so that is the right place to pay it.
+// THE delete gate. Full-file hash of both sides; fail-closed on every error path. Deleting
+// from the card is the one irreversible act in this app, so this function is the single
+// source of truth for "is this file provably already copied?" — used both by the renderer's
+// Verify step AND, non-negotiably, by delete:source itself (see below).
+async function verifyCopyPair(src, dst) {
+  let ok = false; let reason = '';
+  try {
+    if (!src) { reason = 'no source path'; }
+    else if (!dst) { reason = 'no copy on record'; }
+    else {
+      let ss = null; let ds = null;
+      try { ss = await fsp.stat(src); } catch { reason = 'source missing'; }
+      try { ds = await fsp.stat(dst); } catch { reason = reason || 'copy missing'; }
+      if (ss && ds) {
+        if (ss.size !== ds.size) { reason = `size mismatch (${ss.size} vs ${ds.size})`; }
+        else {
+          const [fa, fb] = await Promise.all([
+            sampledFingerprint(src, { full: true }),
+            sampledFingerprint(dst, { full: true }),
+          ]);
+          if (fa.hash === fb.hash) ok = true; else reason = 'content mismatch';
         }
       }
-    } catch (e) { reason = e.message || String(e); }
-    out.push({ source: src, dest: dst, ok, reason });
-  }
+    }
+  } catch (e) { reason = e.message || String(e); }
+  return { source: src, dest: dst, ok, reason };
+}
+
+ipcMain.handle('verify:copies', async (_evt, pairs) => {
+  const out = [];
+  for (const p of (Array.isArray(pairs) ? pairs : [])) out.push(await verifyCopyPair(p && p.source, p && p.dest));
   return out;
 });
 
@@ -569,19 +730,41 @@ ipcMain.handle('imports:add', (_evt, payload) => {
   return { ok: true, total: Object.keys(config.importIndex).length };
 });
 
-ipcMain.handle('delete:source', async (_evt, sourcePaths) => {
+// Delete originals from the card. FAIL-CLOSED, and it re-verifies here rather than trusting
+// the caller.
+//
+// This used to take a bare array of paths and unlink whatever it was given — the entire
+// "only delete what's provably copied" gate lived up in the renderer. That put the one
+// irreversible operation in the app behind a guard that any renderer bug could silently
+// disarm (and this codebase has had plenty). The check now lives next to the delete:
+//   - the payload MUST be {source, dest} pairs — a bare path proves nothing and is refused;
+//   - every file is re-hashed against its copy right here, immediately before the unlink;
+//   - anything that doesn't verify is REFUSED and left on the card, with the reason returned.
+// It is deliberately impossible to talk this handler into deleting an unverified file.
+ipcMain.handle('delete:source', async (_evt, items) => {
   const results = [];
-  for (const p of sourcePaths) {
+  for (const it of (Array.isArray(items) ? items : [])) {
+    const src = (it && typeof it === 'object') ? it.source : null;
+    const dst = (it && typeof it === 'object') ? it.dest : null;
+    if (!src) {
+      results.push({ path: String((it && it.source) || it || ''), ok: false, method: '', refused: true, error: 'refused: delete:source needs {source, dest} — a bare path carries no proof a copy exists' });
+      continue;
+    }
+    const v = await verifyCopyPair(src, dst);
+    if (!v.ok) {
+      results.push({ path: src, ok: false, method: '', refused: true, error: `refused — not deleting: ${v.reason || 'the copy could not be verified'}` });
+      continue;
+    }
     let ok = false; let method = ''; let error = '';
     // Prefer the Recycle Bin (recoverable), but USB/SD cards (exFAT/removable)
     // usually have no Recycle Bin — there, permanently delete (the intent when
     // clearing a card after copying).
-    try { await shell.trashItem(p); ok = true; method = 'recycle'; }
+    try { await shell.trashItem(src); ok = true; method = 'recycle'; }
     catch (e1) {
-      try { await fsp.rm(p, { force: true }); ok = true; method = 'deleted'; }
+      try { await fsp.rm(src, { force: true }); ok = true; method = 'deleted'; }
       catch (e2) { error = e2.message || e1.message; }
     }
-    results.push({ path: p, ok, method, error });
+    results.push({ path: src, ok, method, error });
   }
   return results;
 });

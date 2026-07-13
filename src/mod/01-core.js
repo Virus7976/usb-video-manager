@@ -1278,9 +1278,11 @@ let versionsCache = [];
 let appVersionStr = '';   // real app version (from main) for the About box
 let routesCache = [];      // standing filing rules (subject → folder, by-day)
 let clipObsCache = {};     // clipKey → { obs, ts } prior AI observations
-// Is a model that can actually CALL TOOLS available? Latched by renderAiHealth() at boot and after
-// every fix. A vision model cannot call tools, so without this the analyze flow must not try.
+// Is a model that can actually CALL TOOLS available, and which one? Latched by renderAiHealth() at
+// boot and after every fix. A vision model cannot call tools, so without this the analyze flow must
+// not try. The NAME matters too: the run loop has to name the model it wants resident in VRAM.
 let aiToolModelReady = false;
+let aiToolModelName = '';
 function newVersionId() { return `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`; }
 function countNamedClips() { return state.scannedFiles.filter((c) => c.subject || c.description).length; }
 function fmtAgo(ts) {
@@ -1437,7 +1439,8 @@ async function renderAiHealth() {
   // analyze pay for a second /api/show round-trip. This MUST happen before the early-return below:
   // a HEALTHY config has no problems to render, and that is exactly the config where the tool path
   // should be on.
-  aiToolModelReady = !!(h && h.toolModel);
+  aiToolModelName = (h && h.toolModel) || '';
+  aiToolModelReady = !!aiToolModelName;
 
   const problems = (h && h.problems) || [];
   if (!problems.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }

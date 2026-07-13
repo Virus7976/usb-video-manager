@@ -43,7 +43,7 @@ function extractFn(relFile, name, injected = []) {
   return new Function(...injected, `${src.slice(start, end)}; return ${name};`);
 }
 
-const DEPS = ['state', 'aiToolModelReady', 'subjectsCache', 'clipObsCache', 'clipKey',
+const DEPS = ['state', 'aiToolModelReady', 'aiToolModelName', 'subjectsCache', 'clipObsCache', 'clipKey',
   'markClipAnalyzing', 'aiCallGuard', 'window', 'aiCfg', 'runContext'];
 
 /** Build aiNameWithTools with a controllable world around it. Returns the fn + a call log. */
@@ -52,13 +52,14 @@ function build({ toolReady = true, subjects = ['lawn-mowing', 'skiing'], obsCach
   const clip = { name: 'GX010042.MP4', size: 1234, sourcePath: 'E:/DCIM/GX010042.MP4', people: ['Jake'] };
   const state = { scannedFiles: [clip] };
   const fullApi = {
+    aiUseOnly: async (m) => { calls.push(['useOnly', m]); return { ok: true, freed: [] }; },
     aiPerceive: async (p) => { calls.push(['perceive', p]); return { ok: true, observation: 'A man mows a lawn.' }; },
     aiNameFromObservation: async (p) => { calls.push(['name', p]); return { ok: true, subject: 'lawn-mowing', description: 'front yard pass', tags: ['lawn'] }; },
     saveClipObs: async (p) => { calls.push(['saveObs', p]); return { ok: true }; },
     ...api,
   };
   const fn = extractFn('src/mod/04-tasks-ai.js', 'aiNameWithTools', DEPS)(
-    state, toolReady, subjects, obsCache,
+    state, toolReady, 'qwen3:8b', subjects, obsCache,
     (c) => `${c.name}__${c.size}`,
     () => {},                       // markClipAnalyzing — DOM, not under test
     (p) => p,                       // aiCallGuard — passthrough
@@ -77,7 +78,13 @@ test('the happy path: vision LOOKS, then the tool model CHOOSES', async () => {
   assert.equal(r.subject, 'lawn-mowing');
   assert.equal(r.description, 'front yard pass');
   assert.equal(r.observation, 'A man mows a lawn.');
-  assert.deepEqual(calls.map((c) => c[0]), ['perceive', 'saveObs', 'name']);
+
+  // ONE MODEL IN VRAM AT A TIME. Each model is claimed exclusively before it is used — the vision
+  // model to look, then the reasoning model to name. On a single-GPU / older machine, loading the
+  // second on top of the first is `cudaMalloc failed: out of memory`.
+  assert.deepEqual(calls.map((c) => c[0]), ['useOnly', 'perceive', 'saveObs', 'useOnly', 'name']);
+  assert.deepEqual(calls.filter((c) => c[0] === 'useOnly').map((c) => c[1]),
+    ['qwen2.5vl:7b', 'qwen3:8b'], 'vision first, then the reasoning model — never both');
 
   // The namer must be handed the real subject list — that list becomes the schema enum in main, and
   // it is the ONLY thing that makes inventing `car-door` impossible.
@@ -159,4 +166,97 @@ test('tool readiness is latched BEFORE the healthy-config early return', () => {
   const bail = body.indexOf('if (!problems.length)');
   assert.ok(latch > 0, 'renderAiHealth latches the flag');
   assert.ok(latch < bail, 'and it does so BEFORE the no-problems early return');
+});
+
+// --- THE RESOURCE POLICY: one model at a time, and give the GPU back ---------------------------
+//
+// "The computer can't run 2 AI models at once. It needs to work in batches." — and: "don't be a
+// resource hog really" / "build this to work on older computers but still work good".
+//
+// Older machines are the constraint, not the exception. A 6-8 GB card fits ONE 7-8B model. Three
+// rules make that work, and all three are easy to silently undo later:
+
+test('a BATCH never perceives inside the naming step — that would swap VRAM per clip', async () => {
+  // The worst thing the app could do: load vision, load reasoning, load vision, … once PER CLIP.
+  // The batch loop always supplies an observation; noPerceive makes that a rule the code enforces.
+  const { fn, calls } = build();
+  assert.equal(await fn(0, { noPerceive: true }), null, 'it bails rather than reloading the vision model');
+  assert.deepEqual(calls, [], 'no vision load, no tool load — nothing');
+});
+
+test('the run loop batches whenever a separate tool model exists — the checkbox gets no say', () => {
+  // multiPass was an opt-in quality setting and it was OFF by default, so the default install ran the
+  // swap-per-clip path. With a distinct reasoning model, batching is not a preference — it is the
+  // only correct way to run.
+  const src = read('src/mod/04-tasks-ai.js');
+  assert.match(src, /const batched = aiCfg\.multiPass \|\| aiToolModelReady;/);
+  assert.match(src, /if \(batched\) \{/);
+});
+
+test('phase 2 EVICTS the vision model before the reasoning model loads', () => {
+  // The load-bearing line. Batching separates the phases in TIME; only this separates them in MEMORY.
+  // Ollama holds a model for 5 minutes after its last request, so without this the vision model is
+  // still resident when the 8B loads — and the second load OOMs on exactly the machines we care about.
+  const src = read('src/mod/04-tasks-ai.js');
+  const p2 = src.slice(src.indexOf('// PHASE 2'), src.indexOf('// PHASE 2') + 1400);
+  assert.match(p2, /await window\.api\.aiUseOnly\(/, 'phase 2 claims its model exclusively');
+  assert.match(p2, /noPerceive: true/, 'and cannot fall back into a vision load mid-phase');
+
+  const p1 = src.slice(src.indexOf('// PHASE 1'), src.indexOf('// PHASE 2'));
+  assert.match(p1, /await window\.api\.aiUseOnly\(aiCfg\.model\)/, 'phase 1 claims the vision model');
+});
+
+test('EVERY path that ends AI work hands the GPU back — including when cancelled', () => {
+  // Ollama's 5-minute keep_alive meant a finished run sat on 5+ GB while the user went off to edit
+  // video. There are THREE functions that end AI work, not one; missing any of them leaks the card.
+  // The release sits after clearTask, which the abort `break`s also fall through to.
+  const src = read('src/mod/04-tasks-ai.js');
+  for (const fnName of ['aiAnalyzeSelected', 'aiImproveSelected', 'aiAutoEnhance']) {
+    const at = src.indexOf(`async function ${fnName}(`);
+    assert.ok(at > 0, `${fnName} exists`);
+    const next = src.indexOf('\nasync function ', at + 10);
+    const body = src.slice(at, next > 0 ? next : src.length);
+    assert.match(body, /releaseGpu\(\)/, `${fnName} releases the VRAM when it finishes`);
+  }
+  const rel = src.slice(src.indexOf('async function releaseGpu('));
+  assert.match(rel.slice(0, 300), /try \{ await window\.api\.aiRelease\(\); \} catch/,
+    'best-effort — failing to unload never fails a run that otherwise worked');
+});
+
+test('residency is driven by what is ACTUALLY loaded, not by our own bookkeeping', () => {
+  // Another app, an earlier run, or an `ollama run` in a terminal can load a model behind our back.
+  // Bookkeeping would say "nothing loaded" while the GPU is full. Ask Ollama.
+  const src = read('main-mod/06-copy-transfer.js');
+  const useOnly = src.slice(src.indexOf('async function ollamaUseOnly('));
+  assert.match(useOnly.slice(0, 600), /await ollamaLoaded\(\)/, 'reads real state from /api/ps');
+  assert.match(useOnly.slice(0, 600), /await ollamaUnload\(m\.name\)/, 'and evicts everything else');
+
+  const loaded = src.slice(src.indexOf('async function ollamaLoaded('));
+  assert.match(loaded.slice(0, 400), /\/api\/ps/);
+
+  const unload = src.slice(src.indexOf('async function ollamaUnload('));
+  assert.match(unload.slice(0, 600), /keep_alive: 0/, 'keep_alive:0 is what actually evicts a model');
+});
+
+test('an unload is VERIFIED against /api/ps, never assumed from a 200', () => {
+  // Measured on the real GPU (RTX 3060, 6 GB): one keep_alive:0 to /api/generate evicts both
+  // generate-loaded and chat-loaded models within ~1s, so the happy path is a single call. This
+  // verification is deliberate belt-and-braces, not a fix for an observed failure: an unload we only
+  // BELIEVE happened is the one failure that silently breaks everything downstream — the next model
+  // loads on top of it and OOMs on a card this size — and /api/ps costs nothing to check.
+  const src = read('main-mod/06-copy-transfer.js');
+  const unload = src.slice(src.indexOf('async function ollamaUnload('));
+  const body = unload.slice(0, unload.indexOf('\n}\n'));
+  assert.match(body, /isResident/, 'it checks whether the model actually left');
+  assert.match(body, /\['\/api\/generate', \{\}\], \['\/api\/chat', \{ messages: \[\] \}\]/, 'and escalates');
+  assert.match(body, /stillResident: true/, 'and reports honestly when a model will not budge');
+});
+
+test('a model that refuses to unload is REPORTED, not swallowed', () => {
+  // Returning a cheerful ok:true over a GPU that is still full is how the next load OOMs.
+  const src = read('main-mod/06-copy-transfer.js');
+  for (const fn of ['ollamaUseOnly', 'ollamaReleaseAll']) {
+    const body = src.slice(src.indexOf(`async function ${fn}(`));
+    assert.match(body.slice(0, body.indexOf('\n}\n')), /stuck/, `${fn} surfaces a stuck model`);
+  }
 });

@@ -434,13 +434,68 @@ them**. Three entry points close that:
 
 ### Still to do
 
-- **Verify tool-calling against the real `qwen3:8b`.** Still blocked: Jake runs long AI jobs on this
-  machine and loading an 8B text model beside the vision model = CUDA OOM. Run it when the GPU is
-  free. Everything is tested against a stubbed transport, so the *protocol* is proven — what is not
-  yet proven is how well qwen3 actually chooses tools on his footage.
+- ~~Verify tool-calling against the real `qwen3:8b`.~~ **DONE — it works.** Run on the real GPU
+  against his real footage: 6/6 tool calls, correct protocol (`get_naming_style` → `get_shoot_context`
+  → `set_clip_name`), 0 invented subjects, 0 camera-words, 80% subject match. See the two sections
+  above for the numbers and what they cost.
 - **Grow `styleExamples` from every user correction** (`learnFromLibrary` seeds them from the
   archive, and `recordAiEdit` now marks corrections with `_userNamed`, but the two aren't joined up).
 - Delete the dead `ai:batchQuestions` / `ai:parseRoute` handlers.
+
+### ⚠ THE SINGLE-GPU RULE — measured, and it constrains every AI design here
+
+**His card is an RTX 3060 Laptop with 6144 MiB.** Measured, on his machine, with `nvidia-smi` +
+`/api/ps`:
+
+| | VRAM |
+|---|---|
+| baseline (desktop) | 787 MiB |
+| `qwen2.5vl:7b` loaded, mid-run with images | **5411 MiB** (88% of the card) |
+| `qwen3:8b` loaded | **4937 MiB** |
+| both at once | **impossible** — `cudaMalloc failed: out of memory` |
+
+So: **one model resident at a time, ever.** Three rules, all enforced in code, all easy to silently
+undo:
+
+1. **Batch.** Vision phase (perceive every clip) → reasoning phase (name every clip). Never
+   perceive-then-name per clip: that swaps 5 GB of VRAM *on every clip*. `const batched =
+   aiCfg.multiPass || aiToolModelReady` — with a distinct tool model this is not a preference, and
+   `multiPass` (off by default!) gets no say. `aiNameWithTools` takes `noPerceive` so a batch
+   *cannot* fall back into a vision load mid-phase.
+2. **Evict at the phase boundary** (`ollamaUseOnly`). Batching alone is NOT enough and this is the
+   subtle one: Ollama keeps a model resident for `keep_alive` (5 min default) after its last request,
+   so the vision model is still in VRAM when the reasoning model loads. The phases were separated in
+   *time* but not in *memory*. `keep_alive: 0` is what actually evicts.
+3. **Release when the run ends** (`releaseGpu`, called from analyze, improve, auto-enhance AND
+   placement — "don't be a resource hog"). Otherwise a finished run sits on 5 GB while he goes off to
+   edit video.
+
+`ollamaUnload` **verifies** the eviction against `/api/ps` rather than trusting the HTTP 200, and
+`ollamaUseOnly` reads Ollama's *real* loaded state — another app, or an `ollama run` in a terminal,
+can load a model behind our back and our own bookkeeping would never know.
+
+### ⚠ get_shoot_context — the biggest naming win, and the least obvious
+
+**Measured end-to-end on his real footage (6 real clips, real GPU, his own filenames as ground truth):
+subject match 60% → 80%.** Nothing else came close. Full protocol results: 6/6 tool calls (zero
+prose), **0 invented subjects** (the enum holds), **0 camera-words** in descriptions.
+
+**HE SHOOTS IN BATCHES.** Mined from the 310 clips he named himself: 20 of his 28 shoot days are
+*entirely one subject*. `2026-06-01` = 37 lawn-mowing + 14 vlog. **Knowing only the DATE and guessing
+that day's dominant subject scores 88% on its own** — better than the entire vision pipeline.
+
+And it explains a failure vision can never fix. `2026-06-01_lawn-mowing_josiah_v23` is twelve minutes
+of two men **sitting on the grass repairing a mower**. Nobody mows. I pulled 9 frames and looked at
+them. The label is not in the pixels — **the subject is what the footage is FOR (the job), not the
+action on screen**, and that lives in the sibling clips. More frames would only have cost him time.
+
+The tool returns **counts, not a verdict**, so the model weighs it against what it saw. Verified on
+the adversarial case: `2026-05-11` is timelapse×13 vs pov×2, and it still correctly answered **pov**,
+because the observation said so. A tool that returned a single answer would have broken that.
+
+Residual: the mower-repair clip is still called `vlog`. That one is genuinely ambiguous from the
+frames, and it is exactly what `ask_user` + placement memory are for — *"or it only ever asks it once
+and then it knows."* Guessing it is wrong; asking once per shoot is right.
 
 ### Hardware constraint (the owner's machine)
 

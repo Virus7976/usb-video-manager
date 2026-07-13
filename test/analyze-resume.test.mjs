@@ -99,7 +99,7 @@ test('the analyze loop skips already-analyzed clips in `empty` mode', () => {
 test('the reuse cache is consulted OUTSIDE the multiPass branch', () => {
   // The regression that made the checkbox a lie: `dlg.reuse` read only inside if(multiPass).
   const src = readMod('04-tasks-ai.js');
-  const single = src.slice(src.indexOf('  } else {', src.indexOf('if (aiCfg.multiPass)')));
+  const single = src.slice(src.indexOf('  } else {', src.indexOf('if (batched) {')));
   const loop = single.slice(0, single.indexOf('\n  }\n'));
   assert.match(loop, /dlg\.reuse/, 'single-pass (the DEFAULT) honours Reuse too');
   assert.match(loop, /observation:\s*cached/, 'the cached observation is actually handed to the model');

@@ -535,6 +535,109 @@ async function ollamaGenerate(model, prompt, opts = {}) {
   // Strip any stray <think>…</think> reasoning so callers get clean text/JSON.
   return String(j.response || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
+// Free a model's VRAM, right now.
+//
+// THE SINGLE-GPU CONSTRAINT (this machine): it cannot hold a vision model and an 8B text model at the
+// same time. Verified — loading qwen3:8b during a vision run gives `cudaMalloc failed: out of memory`.
+//
+// Batching the work into a vision phase then a reasoning phase is necessary but NOT sufficient, and
+// this is the part that was missing: Ollama keeps a model resident for `keep_alive` (5 minutes by
+// default) after its last request. So the vision model was still sitting in VRAM when the reasoning
+// phase asked for the tool model, and the second load OOM'd anyway — the phases were separated in
+// TIME but never in MEMORY.
+//
+// `keep_alive: 0` with no prompt tells Ollama to evict the model immediately. Best-effort: a failure
+// here is not fatal (worst case we're back to the old behaviour), so it never breaks a run.
+async function ollamaUnload(model) {
+  const m = String(model || '').trim();
+  if (!m) return { ok: false };
+
+  const isResident = async () => (await ollamaLoaded()).some((x) => x.name === m);
+  const ask = async (path, extra) => {
+    try {
+      const res = await ollamaFetch(path, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: m, keep_alive: 0, ...extra }),
+      }, 30000);
+      return !!res.ok;
+    } catch { return false; }
+  };
+
+  // Verify the eviction; don't infer it from a 200.
+  //
+  // Measured on the real GPU (RTX 3060 6 GB): a single `keep_alive: 0` to /api/generate DOES evict
+  // both generate-loaded and chat-loaded models, within ~1s. So the happy path is one call. But an
+  // unload we merely *believe* happened is the one failure that silently breaks everything after it —
+  // the next model loads on top and OOMs on a card this size — and /api/ps costs nothing to check.
+  // So we watch until it's actually gone, escalate to the other endpoint if it isn't, and report
+  // honestly if it still won't budge, rather than returning a cheerful ok over a full GPU.
+  for (const [path, extra] of [['/api/generate', {}], ['/api/chat', { messages: [] }]]) {
+    // eslint-disable-next-line no-await-in-loop
+    await ask(path, extra);
+    for (let i = 0; i < 10; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      if (!(await isResident())) return { ok: true };
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+  return { ok: false, stillResident: true, model: m };
+}
+
+
+// What is ACTUALLY resident in VRAM right now. We ask Ollama rather than tracking it ourselves,
+// because anything else in the OS (another app, a previous run, an ollama CLI session) can load a
+// model behind our back — and then our bookkeeping says "nothing loaded" while the GPU is full.
+async function ollamaLoaded() {
+  try {
+    const res = await ollamaFetch('/api/ps', {}, 15000);
+    if (!res.ok) return [];
+    const j = await res.json();
+    return (j.models || []).map((m) => ({ name: String(m.name || m.model || ''), vram: Number(m.size_vram || 0) }))
+      .filter((m) => m.name);
+  } catch { return []; }
+}
+
+// Make `model` the ONLY thing in VRAM. This is the whole resource policy in one function.
+//
+// Older machines are the constraint, not the exception: a 6-8 GB card fits ONE 7-8B model and nothing
+// else. So the app must never need two at once. It doesn't — the work is batched into a vision phase
+// and a reasoning phase — but batching only separates them in time, and Ollama keeps a model resident
+// for 5 minutes after its last request. Call this at the top of each phase and the phases are
+// separated in MEMORY too, which is the thing that actually prevents the OOM.
+async function ollamaUseOnly(model) {
+  const want = String(model || '').trim();
+  const loaded = await ollamaLoaded();
+  const freed = [];
+  const stuck = [];
+  for (const m of loaded) {
+    if (want && (m.name === want || m.name.split(':')[0] === want.split(':')[0])) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const r = await ollamaUnload(m.name);
+    if (r.ok) freed.push(m.name); else stuck.push(m.name);
+  }
+  // A model that refuses to leave is worth knowing about — it means the next load may OOM. Report it
+  // rather than returning a cheerful ok:true over a GPU that is still full.
+  return { ok: !stuck.length, freed, stuck, kept: want };
+}
+
+// Give the GPU back. Called when a run ENDS — not just between phases.
+//
+// Ollama's default is to sit on the model for 5 minutes after the last request, so finishing an
+// analyze run used to leave 5+ GB of VRAM occupied while the user went off to do something else
+// (edit video, play a game). Nothing needs it at that point. Hand it back.
+async function ollamaReleaseAll() {
+  const loaded = await ollamaLoaded();
+  const freed = [];
+  const stuck = [];
+  for (const m of loaded) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await ollamaUnload(m.name);
+    if (r.ok) freed.push(m.name); else stuck.push(m.name);
+  }
+  return { ok: !stuck.length, freed, stuck };
+}
+
 // The model used for TEXT-ONLY tasks (distilling rules, consolidating memories, refining, importing,
 // project placement, and the reasoning passes of multi-pass).
 //

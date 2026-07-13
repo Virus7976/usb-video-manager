@@ -1852,7 +1852,18 @@ async function finPlaceIntoProjects() {
     _ref: f,
   }));
 
-  const placed = await withBusyBtn($('finPlaceBtn'), 'Sorting…', () => showPlacementReview(clips));
+  // Placement runs entirely on the REASONING model — no vision at all. So evict whatever the last
+  // analyze run left resident before we start, or the reasoning model loads on top of a vision model
+  // that nothing is using and OOMs on a smaller card.
+  try { await window.api.aiUseOnly(aiToolModelReady ? aiToolModelName : (aiCfg.textModel || aiCfg.model)); }
+  catch { /* non-fatal — worst case Ollama sorts it out or we fall back */ }
+
+  let placed = null;
+  try {
+    placed = await withBusyBtn($('finPlaceBtn'), 'Sorting…', () => showPlacementReview(clips));
+  } finally {
+    await releaseGpu();   // hand the card back whether they filed everything or closed the grid
+  }
   if (!placed || !placed.length) return;
 
   // Write the decision back onto the clips as ledgerRel — which is what the destination map reads to

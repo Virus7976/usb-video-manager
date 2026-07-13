@@ -371,6 +371,57 @@ defineTool('ask_user', {
 // calling set_clip_name. The learning arrives as tool RESULTS the model can ask for, instead of as a
 // wall of English rules stapled to the front of every prompt.
 
+// MEASURED ON HIS REAL LIBRARY (310 clips he named himself), and this is the single biggest accuracy
+// win in the naming loop — worth +20 percentage points on real footage (60% -> 80% subject match):
+//
+//   HE SHOOTS IN BATCHES. 20 of his 28 shoot days are ENTIRELY one subject. 2026-06-01 is 37
+//   lawn-mowing clips and 14 vlog. Knowing only the DATE and guessing that day's dominant subject
+//   scores 88% on its own — better than the whole vision pipeline managed.
+//
+// And it explains the failure the vision model could never fix: `2026-06-01_lawn-mowing_josiah_v23`
+// is twelve minutes of two men SITTING ON THE GRASS repairing a mower. Nobody mows. No number of
+// frames recovers "lawn-mowing" from those pixels, because the subject is what the footage is FOR —
+// the job, the shoot — not the action on screen. That lives in the sibling clips, not in the frame.
+//
+// Deliberately returns the COUNTS rather than a single verdict, so the model weighs this against what
+// it actually saw instead of parroting the majority. Verified on the adversarial case: on 2026-05-11
+// (timelapse 13, pov 2) it still correctly answered `pov`, because the observation said so.
+defineTool('get_shoot_context', {
+  description: 'What the user already called the OTHER clips from this same shoot (same day). They shoot '
+    + 'in batches, so this is usually the strongest signal about what a clip is FOR — which is not always '
+    + 'the action visible in the frame. Weigh it against what you saw; a day can hold more than one subject.',
+  parameters: { type: 'object', properties: {} },
+  run: async (_args, ctx) => {
+    const date = String(ctx.date || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { note: 'This clip has no date, so there is no shoot to compare it to.' };
+
+    const counts = {};
+    const bump = (sub) => { const k = aiSlug(sub); if (k) counts[k] = (counts[k] || 0) + 1; };
+
+    // 1) Clips named EARLIER IN THIS RUN. The batch names in order, so by the time we reach clip 30 of
+    //    a shoot we already know what the first 29 were — use it.
+    for (const sib of (ctx.siblings || [])) {
+      if (String(sib.date || '').slice(0, 10) === date) bump(sib.subject);
+    }
+    // 2) …and everything he has ALREADY named on disk from that day. This is what makes it work on the
+    //    very first clip of a re-visited shoot, where the run itself knows nothing yet.
+    //    currentFinalMeta(), NOT config.finalMeta — the latter is an in-memory copy that goes stale,
+    //    which is the whole reason freshStore() exists.
+    for (const rec of Object.values(currentFinalMeta() || {})) {
+      if (rec && String(rec.date || '').slice(0, 10) === date) bump(rec.subject);
+    }
+
+    if (!Object.keys(counts).length) {
+      return { date, note: 'Nothing else from this shoot has been named yet — go on what you saw.' };
+    }
+    return {
+      date,
+      you_already_named_these_from_the_same_day: counts,
+      note: 'His own names for the same shoot. Weigh against the observation — a day can hold more than one subject.',
+    };
+  },
+});
+
 defineTool('get_naming_style', {
   description: 'Get real examples of how the user names their own footage, plus the subjects they already use. Call this FIRST — matching their existing style matters more than being descriptive.',
   parameters: { type: 'object', properties: {} },
@@ -636,8 +687,11 @@ ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
 
   const system = [
     "You name a videographer's clips.",
-    'First call get_naming_style to see how THEY name things and which subjects they already use.',
-    'The SUBJECT is the kind of SHOOT (vlog, pov, lawn-mowing…), NOT the objects in frame. Everything you can see goes in the DESCRIPTION.',
+    'First call get_naming_style to see how THEY name things and which subjects they already use, and',
+    'get_shoot_context to see what they called the other clips from this same shoot.',
+    'The SUBJECT is what the footage is FOR — the shoot or the job (vlog, pov, lawn-mowing…) — NOT the',
+    'objects in frame and not always the action on screen: men repairing a mower still belong to a',
+    'lawn-mowing shoot. Everything you can actually see goes in the DESCRIPTION.',
     'Then call set_clip_name with one of their existing subjects. Only if genuinely none of them fit, call propose_new_subject.',
     'Do not explain — call the tools.',
   ].join(' ');
@@ -648,8 +702,8 @@ ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
   const subjects = (p.subjects || []).map((x) => aiSlug(x)).filter(Boolean);
   const r = await runToolLoop({
     model, system, user,
-    tools: ['get_naming_style', 'set_clip_name', 'propose_new_subject'],
-    ctx: { subjects, clipText: `${p.observation} ${p.context || ''}` },
+    tools: ['get_naming_style', 'get_shoot_context', 'set_clip_name', 'propose_new_subject'],
+    ctx: { subjects, clipText: `${p.observation} ${p.context || ''}`, date: p.date || '', siblings: p.siblings || [] },
     enums: subjects.length ? { set_clip_name: { subject: subjects } } : {},
     maxSteps: 5,
   });
@@ -897,6 +951,24 @@ ipcMain.handle('ai:learnFromLibrary', (_e, dirs) => {
 //
 // Not one of those was surfaced anywhere. The app just quietly did its worst and looked stupid. Each
 // of them is detectable, and each has a one-click fix — so say so, and fix it.
+// --- VRAM residency: one model at a time, and give it back when done ------------------------
+//
+// The single-GPU / older-machine rule. See ollamaUseOnly() for why batching alone was not enough.
+
+// Called at the top of each phase of a run: "I am about to use this model, and only this model."
+ipcMain.handle('ai:useOnly', async (_e, model) => {
+  const m = String(model || '').trim();
+  if (!m) return { ok: false, freed: [] };
+  return ollamaUseOnly(m);
+});
+
+// Called when a run ENDS. Hands the VRAM back rather than sitting on it for Ollama's 5-minute
+// keep_alive while the user goes off to edit video.
+ipcMain.handle('ai:release', async () => ollamaReleaseAll());
+
+// What's resident right now — so the UI can tell the truth about it instead of guessing.
+ipcMain.handle('ai:loaded', async () => ({ ok: true, models: await ollamaLoaded() }));
+
 ipcMain.handle('ai:health', async () => {
   const ai = config.ai || {};
   const problems = [];

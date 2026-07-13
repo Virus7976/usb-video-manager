@@ -204,6 +204,10 @@ contextBridge.exposeInMainWorld('api', {
   aiRecallPlacement: (p) => ipcRenderer.invoke('ai:recallPlacement', p),
   // AI health: the four things that were silently wrong in the real config.
   aiHealth: () => ipcRenderer.invoke('ai:health'),
+  // VRAM residency — one model at a time, and hand it back when the run ends.
+  aiUseOnly: (model) => ipcRenderer.invoke('ai:useOnly', model),
+  aiRelease: () => ipcRenderer.invoke('ai:release'),
+  aiLoaded: () => ipcRenderer.invoke('ai:loaded'),
   aiVisionAdvice: () => ipcRenderer.invoke('ai:visionAdvice'),
   aiUseVisionModel: (name) => ipcRenderer.invoke('ai:useVisionModel', name),
   aiLearnFromLibrary: (dirs) => ipcRenderer.invoke('ai:learnFromLibrary', dirs),

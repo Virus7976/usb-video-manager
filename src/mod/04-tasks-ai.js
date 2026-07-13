@@ -799,6 +799,15 @@ function matchKnownSubject(subj) {
 // against a hard ceiling so we never sit on clip 1 forever — a stuck clip is marked
 // failed (with a clear reason) and the loop moves to the next. This is the real fix
 // for "stuck on the first clip and doesn't move to the second".
+// Hand the GPU back. Ollama sits on a model for 5 minutes after its last request, so a finished run
+// used to leave 5+ GB of VRAM occupied while the user walked away to edit video or play a game.
+// Nothing needs it once the run is over — and on an older machine, that VRAM is the whole budget.
+//
+// Called from EVERY path that ends AI work (analyze, improve, auto-enhance), including cancellation.
+// Best-effort: failing to unload must never fail a run that otherwise succeeded.
+async function releaseGpu() {
+  try { await window.api.aiRelease(); } catch { /* non-fatal */ }
+}
 function aiCallGuard(promise, ms = 150000) {
   return new Promise((resolve) => {
     let settled = false;
@@ -847,6 +856,7 @@ async function aiImproveSelected() {
     done += 1;
   }
   clearAllAnalyzing(); clearTask('ai');
+  await releaseGpu();
   maybeFlushEdits(true);
   if (visionNote) showToast(visionNote, 8000);   // surfaced an auto-swapped vision model
   // Improve refines names from the saved observation — learn from the result too, so
@@ -991,6 +1001,7 @@ async function aiAutoEnhance() {
     if (withObs.length >= 2) await reflectFromClips(withObs);
   } catch { /* best-effort */ }
   clearAllAnalyzing(); clearTask('ai'); maybeFlushEdits(true);
+  await releaseGpu();
   autoEnhancing = false;
   showToast('AI auto-enhance complete ✓', 4000);
   pcNotify('AI auto-enhance complete', 'Your clips were named and rules were learned.');
@@ -1021,6 +1032,13 @@ async function aiNameWithTools(i, opts = {}) {
   // most expensive thing the app can do.
   let obs = (opts.observation || '').trim() || (clipObsCache[clipKey(clip)] || {}).obs || '';
   if (!obs) {
+    // A BATCH RUN MUST NEVER LAND HERE. Perceiving inside the naming step means loading the vision
+    // model, then the tool model, then the vision model again — a full VRAM swap PER CLIP. On a
+    // single-GPU machine that is minutes of thrash per clip and it is the worst thing the app could
+    // possibly do. The batch loop always hands us an observation; `noPerceive` makes that a rule the
+    // code enforces rather than a convention someone can quietly break later.
+    if (opts.noPerceive) return null;
+    await window.api.aiUseOnly(aiCfg.model);                 // vision alone in VRAM
     markClipAnalyzing(i, 'looking');
     const p = await aiCallGuard(window.api.aiPerceive({
       sourcePath: clip.sourcePath, model: aiCfg.model,
@@ -1039,11 +1057,20 @@ async function aiNameWithTools(i, opts = {}) {
   markClipAnalyzing(i, 'naming');
   let r = null;
   try {
+    await window.api.aiUseOnly(aiToolModelName);   // the reasoning model, alone in VRAM
     r = await window.api.aiNameFromObservation({
       observation: obs,
       context: runContext(clip),
       people: Array.isArray(clip.people) ? clip.people : [],
       subjects: subjectsCache,
+      // The shoot. He shoots in batches — 20 of his 28 shoot days are a single subject — so what he
+      // called the OTHER clips from this same day is the strongest signal there is about what this one
+      // is for. Measured: +20 points of subject accuracy on his real footage. Send both the date and
+      // what we have already named in THIS run, so clip 30 of a shoot benefits from clips 1-29.
+      date: clip.date || '',
+      siblings: state.scannedFiles
+        .filter((c) => c !== clip && c.subject && c.date)
+        .map((c) => ({ date: c.date, subject: c.subject })),
     });
   } catch { return null; }
   if (!r || !r.ok || !r.subject) return null;                // fall back rather than half-name it
@@ -1284,9 +1311,18 @@ async function aiAnalyzeSelected(preset = null) {
   }
 
   let done = 0;
-  if (aiCfg.multiPass) {
+  // BATCH, ALWAYS, when the naming model is a different model from the vision model.
+  //
+  // This machine — and any older machine — cannot hold a vision model and an 8B reasoning model in
+  // VRAM at once. The alternative to batching is swapping models on every single clip, which is
+  // minutes of pure thrash per clip. So the moment a separate tool model exists, the two-phase path
+  // is not an "opt-in quality setting" (which is what multiPass was, and it was OFF by default) —
+  // it is the only correct way to run, and the checkbox does not get a say.
+  const batched = aiCfg.multiPass || aiToolModelReady;
+  if (batched) {
     // PHASE 1 — the vision model "looks" at EVERY clip first (it stays loaded the
     // whole phase, no per-clip reload), producing an observation each.
+    await window.api.aiUseOnly(aiCfg.model);   // vision alone in VRAM for the whole phase
     const observations = {};
     for (const i of idxs) {
       if (aiAborted) break;
@@ -1313,13 +1349,20 @@ async function aiAnalyzeSelected(preset = null) {
     }
     // PHASE 2 — the reasoning model names them all from those observations (it
     // stays loaded for this phase). No swapping vision↔text per clip.
+    //
+    // Evicting the vision model here is the load-bearing line. Ollama holds a model for 5 minutes
+    // after its last request, so without this the vision model is STILL in VRAM when the reasoning
+    // model loads — the phases were separated in time but not in memory, and the second load OOM'd.
+    if (!aiAborted) await window.api.aiUseOnly(aiToolModelReady ? aiToolModelName : (aiCfg.textModel || aiCfg.model));
     done = 0;
     for (const i of idxs) {
       if (aiAborted) break;
       setTask('ai', aiModelLabel(), done + 1, idxs.length, 'naming', state.scannedFiles[i].name);
       markClipAnalyzing(i, 'naming');
+      // noPerceive: the observation is already in hand. If it somehow isn't, fall back rather than
+      // reloading the vision model mid-phase and thrashing the GPU.
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, mode, { observation: observations[i] || '', quiet: true });
+      const r = await aiSuggestClip(i, mode, { observation: observations[i] || '', quiet: true, noPerceive: true });
       queueQuestions(i, r);
       markClipAnalyzing(i, false);
       flushDraftSave();   // persist each named clip immediately — survives a mid-run crash
@@ -1350,6 +1393,7 @@ async function aiAnalyzeSelected(preset = null) {
   }
   clearAllAnalyzing();
   clearTask('ai');
+  await releaseGpu();   // give the VRAM back — this also runs on abort, so cancelling frees it too
   const q = aiQuestions.length;
   if (failCount && !okCount) showToast(`AI couldn't name any clips — ${lastErr || 'check the model in AI settings'}`, 6000);
   else if (failCount) showToast(`AI named ${okCount}, ${failCount} failed${lastErr ? ` (${lastErr})` : ''} · ${q} to review`, 5000);

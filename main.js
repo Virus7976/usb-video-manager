@@ -3732,6 +3732,109 @@ async function ollamaGenerate(model, prompt, opts = {}) {
   // Strip any stray <think>…</think> reasoning so callers get clean text/JSON.
   return String(j.response || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
+// Free a model's VRAM, right now.
+//
+// THE SINGLE-GPU CONSTRAINT (this machine): it cannot hold a vision model and an 8B text model at the
+// same time. Verified — loading qwen3:8b during a vision run gives `cudaMalloc failed: out of memory`.
+//
+// Batching the work into a vision phase then a reasoning phase is necessary but NOT sufficient, and
+// this is the part that was missing: Ollama keeps a model resident for `keep_alive` (5 minutes by
+// default) after its last request. So the vision model was still sitting in VRAM when the reasoning
+// phase asked for the tool model, and the second load OOM'd anyway — the phases were separated in
+// TIME but never in MEMORY.
+//
+// `keep_alive: 0` with no prompt tells Ollama to evict the model immediately. Best-effort: a failure
+// here is not fatal (worst case we're back to the old behaviour), so it never breaks a run.
+async function ollamaUnload(model) {
+  const m = String(model || '').trim();
+  if (!m) return { ok: false };
+
+  const isResident = async () => (await ollamaLoaded()).some((x) => x.name === m);
+  const ask = async (path, extra) => {
+    try {
+      const res = await ollamaFetch(path, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: m, keep_alive: 0, ...extra }),
+      }, 30000);
+      return !!res.ok;
+    } catch { return false; }
+  };
+
+  // Verify the eviction; don't infer it from a 200.
+  //
+  // Measured on the real GPU (RTX 3060 6 GB): a single `keep_alive: 0` to /api/generate DOES evict
+  // both generate-loaded and chat-loaded models, within ~1s. So the happy path is one call. But an
+  // unload we merely *believe* happened is the one failure that silently breaks everything after it —
+  // the next model loads on top and OOMs on a card this size — and /api/ps costs nothing to check.
+  // So we watch until it's actually gone, escalate to the other endpoint if it isn't, and report
+  // honestly if it still won't budge, rather than returning a cheerful ok over a full GPU.
+  for (const [path, extra] of [['/api/generate', {}], ['/api/chat', { messages: [] }]]) {
+    // eslint-disable-next-line no-await-in-loop
+    await ask(path, extra);
+    for (let i = 0; i < 10; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      if (!(await isResident())) return { ok: true };
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+  return { ok: false, stillResident: true, model: m };
+}
+
+
+// What is ACTUALLY resident in VRAM right now. We ask Ollama rather than tracking it ourselves,
+// because anything else in the OS (another app, a previous run, an ollama CLI session) can load a
+// model behind our back — and then our bookkeeping says "nothing loaded" while the GPU is full.
+async function ollamaLoaded() {
+  try {
+    const res = await ollamaFetch('/api/ps', {}, 15000);
+    if (!res.ok) return [];
+    const j = await res.json();
+    return (j.models || []).map((m) => ({ name: String(m.name || m.model || ''), vram: Number(m.size_vram || 0) }))
+      .filter((m) => m.name);
+  } catch { return []; }
+}
+
+// Make `model` the ONLY thing in VRAM. This is the whole resource policy in one function.
+//
+// Older machines are the constraint, not the exception: a 6-8 GB card fits ONE 7-8B model and nothing
+// else. So the app must never need two at once. It doesn't — the work is batched into a vision phase
+// and a reasoning phase — but batching only separates them in time, and Ollama keeps a model resident
+// for 5 minutes after its last request. Call this at the top of each phase and the phases are
+// separated in MEMORY too, which is the thing that actually prevents the OOM.
+async function ollamaUseOnly(model) {
+  const want = String(model || '').trim();
+  const loaded = await ollamaLoaded();
+  const freed = [];
+  const stuck = [];
+  for (const m of loaded) {
+    if (want && (m.name === want || m.name.split(':')[0] === want.split(':')[0])) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const r = await ollamaUnload(m.name);
+    if (r.ok) freed.push(m.name); else stuck.push(m.name);
+  }
+  // A model that refuses to leave is worth knowing about — it means the next load may OOM. Report it
+  // rather than returning a cheerful ok:true over a GPU that is still full.
+  return { ok: !stuck.length, freed, stuck, kept: want };
+}
+
+// Give the GPU back. Called when a run ENDS — not just between phases.
+//
+// Ollama's default is to sit on the model for 5 minutes after the last request, so finishing an
+// analyze run used to leave 5+ GB of VRAM occupied while the user went off to do something else
+// (edit video, play a game). Nothing needs it at that point. Hand it back.
+async function ollamaReleaseAll() {
+  const loaded = await ollamaLoaded();
+  const freed = [];
+  const stuck = [];
+  for (const m of loaded) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await ollamaUnload(m.name);
+    if (r.ok) freed.push(m.name); else stuck.push(m.name);
+  }
+  return { ok: !stuck.length, freed, stuck };
+}
+
 // The model used for TEXT-ONLY tasks (distilling rules, consolidating memories, refining, importing,
 // project placement, and the reasoning passes of multi-pass).
 //
@@ -7296,6 +7399,57 @@ defineTool('ask_user', {
 // calling set_clip_name. The learning arrives as tool RESULTS the model can ask for, instead of as a
 // wall of English rules stapled to the front of every prompt.
 
+// MEASURED ON HIS REAL LIBRARY (310 clips he named himself), and this is the single biggest accuracy
+// win in the naming loop — worth +20 percentage points on real footage (60% -> 80% subject match):
+//
+//   HE SHOOTS IN BATCHES. 20 of his 28 shoot days are ENTIRELY one subject. 2026-06-01 is 37
+//   lawn-mowing clips and 14 vlog. Knowing only the DATE and guessing that day's dominant subject
+//   scores 88% on its own — better than the whole vision pipeline managed.
+//
+// And it explains the failure the vision model could never fix: `2026-06-01_lawn-mowing_josiah_v23`
+// is twelve minutes of two men SITTING ON THE GRASS repairing a mower. Nobody mows. No number of
+// frames recovers "lawn-mowing" from those pixels, because the subject is what the footage is FOR —
+// the job, the shoot — not the action on screen. That lives in the sibling clips, not in the frame.
+//
+// Deliberately returns the COUNTS rather than a single verdict, so the model weighs this against what
+// it actually saw instead of parroting the majority. Verified on the adversarial case: on 2026-05-11
+// (timelapse 13, pov 2) it still correctly answered `pov`, because the observation said so.
+defineTool('get_shoot_context', {
+  description: 'What the user already called the OTHER clips from this same shoot (same day). They shoot '
+    + 'in batches, so this is usually the strongest signal about what a clip is FOR — which is not always '
+    + 'the action visible in the frame. Weigh it against what you saw; a day can hold more than one subject.',
+  parameters: { type: 'object', properties: {} },
+  run: async (_args, ctx) => {
+    const date = String(ctx.date || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { note: 'This clip has no date, so there is no shoot to compare it to.' };
+
+    const counts = {};
+    const bump = (sub) => { const k = aiSlug(sub); if (k) counts[k] = (counts[k] || 0) + 1; };
+
+    // 1) Clips named EARLIER IN THIS RUN. The batch names in order, so by the time we reach clip 30 of
+    //    a shoot we already know what the first 29 were — use it.
+    for (const sib of (ctx.siblings || [])) {
+      if (String(sib.date || '').slice(0, 10) === date) bump(sib.subject);
+    }
+    // 2) …and everything he has ALREADY named on disk from that day. This is what makes it work on the
+    //    very first clip of a re-visited shoot, where the run itself knows nothing yet.
+    //    currentFinalMeta(), NOT config.finalMeta — the latter is an in-memory copy that goes stale,
+    //    which is the whole reason freshStore() exists.
+    for (const rec of Object.values(currentFinalMeta() || {})) {
+      if (rec && String(rec.date || '').slice(0, 10) === date) bump(rec.subject);
+    }
+
+    if (!Object.keys(counts).length) {
+      return { date, note: 'Nothing else from this shoot has been named yet — go on what you saw.' };
+    }
+    return {
+      date,
+      you_already_named_these_from_the_same_day: counts,
+      note: 'His own names for the same shoot. Weigh against the observation — a day can hold more than one subject.',
+    };
+  },
+});
+
 defineTool('get_naming_style', {
   description: 'Get real examples of how the user names their own footage, plus the subjects they already use. Call this FIRST — matching their existing style matters more than being descriptive.',
   parameters: { type: 'object', properties: {} },
@@ -7561,8 +7715,11 @@ ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
 
   const system = [
     "You name a videographer's clips.",
-    'First call get_naming_style to see how THEY name things and which subjects they already use.',
-    'The SUBJECT is the kind of SHOOT (vlog, pov, lawn-mowing…), NOT the objects in frame. Everything you can see goes in the DESCRIPTION.',
+    'First call get_naming_style to see how THEY name things and which subjects they already use, and',
+    'get_shoot_context to see what they called the other clips from this same shoot.',
+    'The SUBJECT is what the footage is FOR — the shoot or the job (vlog, pov, lawn-mowing…) — NOT the',
+    'objects in frame and not always the action on screen: men repairing a mower still belong to a',
+    'lawn-mowing shoot. Everything you can actually see goes in the DESCRIPTION.',
     'Then call set_clip_name with one of their existing subjects. Only if genuinely none of them fit, call propose_new_subject.',
     'Do not explain — call the tools.',
   ].join(' ');
@@ -7573,8 +7730,8 @@ ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
   const subjects = (p.subjects || []).map((x) => aiSlug(x)).filter(Boolean);
   const r = await runToolLoop({
     model, system, user,
-    tools: ['get_naming_style', 'set_clip_name', 'propose_new_subject'],
-    ctx: { subjects, clipText: `${p.observation} ${p.context || ''}` },
+    tools: ['get_naming_style', 'get_shoot_context', 'set_clip_name', 'propose_new_subject'],
+    ctx: { subjects, clipText: `${p.observation} ${p.context || ''}`, date: p.date || '', siblings: p.siblings || [] },
     enums: subjects.length ? { set_clip_name: { subject: subjects } } : {},
     maxSteps: 5,
   });
@@ -7822,6 +7979,24 @@ ipcMain.handle('ai:learnFromLibrary', (_e, dirs) => {
 //
 // Not one of those was surfaced anywhere. The app just quietly did its worst and looked stupid. Each
 // of them is detectable, and each has a one-click fix — so say so, and fix it.
+// --- VRAM residency: one model at a time, and give it back when done ------------------------
+//
+// The single-GPU / older-machine rule. See ollamaUseOnly() for why batching alone was not enough.
+
+// Called at the top of each phase of a run: "I am about to use this model, and only this model."
+ipcMain.handle('ai:useOnly', async (_e, model) => {
+  const m = String(model || '').trim();
+  if (!m) return { ok: false, freed: [] };
+  return ollamaUseOnly(m);
+});
+
+// Called when a run ENDS. Hands the VRAM back rather than sitting on it for Ollama's 5-minute
+// keep_alive while the user goes off to edit video.
+ipcMain.handle('ai:release', async () => ollamaReleaseAll());
+
+// What's resident right now — so the UI can tell the truth about it instead of guessing.
+ipcMain.handle('ai:loaded', async () => ({ ok: true, models: await ollamaLoaded() }));
+
 ipcMain.handle('ai:health', async () => {
   const ai = config.ai || {};
   const problems = [];

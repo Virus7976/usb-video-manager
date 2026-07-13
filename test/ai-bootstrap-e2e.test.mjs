@@ -15,10 +15,13 @@
 // asserts the app ends up genuinely working — not merely "no problems reported".
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadMain } from './harness.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 let app; let compressed;
 const plain = (v) => JSON.parse(JSON.stringify(v ?? null));
@@ -156,4 +159,55 @@ test('the Learn button is pointed at the folders that actually hold his named cl
   assert.ok(learn, 'the problem is raised');
   assert.ok(learn.arg.includes(app.get('config').finalizeSource),
     'it must scan the Compressed folder — that is where the 310 clips he named himself live');
+});
+
+// --- FILING BACK ONTO HIS COMPUTER --------------------------------------------------------------
+//
+// "C:\Users\jakeg\Videos\02 - Projects\2026 ... I would like to be able to select what footage goes
+//  back here onto my computer" — and: file in BATCHES, not per clip.
+//
+// The numbers that shape this: C: has 31 GB free, L: has 2.3 TB, and the compressed archive is 73 GB.
+// It does not all fit, which is exactly why he wants to choose what comes back.
+
+test('the default Projects root finds his YEAR folder, not the level above it', () => {
+  // His tree is ~/Videos/02 - Projects/2026/{2026 - Client Work, - Personal, - Social Media}.
+  // Defaulting to `02 - Projects` would file every clip one level ABOVE his real project folders —
+  // technically "organized", completely useless.
+  const src = readFileSync(join(ROOT, 'main-mod', '02-media.js'), 'utf8');
+  const fn = src.slice(src.indexOf('function defaultProjectsRoot()'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /String\(new Date\(\)\.getFullYear\(\)\)/, 'prefers the current year…');
+  assert.match(body, /statSync\(path\.join\(base, year\)\)\.isDirectory\(\)/, '…but only when it really exists');
+  assert.match(body, /return base;/, 'and falls back honestly when it does not');
+});
+
+test('a Projects folder that already EXISTS is offered in one click, not a file browser', async () => {
+  const cfg = app.get('config');
+  cfg.projectsRoot = '';
+  const h = plain(await app.invoke('ai:health'));
+  const p = h.problems.find((x) => x.id === 'no-projects-root');
+  assert.ok(p, 'it still says there is nowhere to file to');
+  // On this test machine the guessed folder does not exist, so it must ask him to browse — and must
+  // NOT invent a path he never agreed to.
+  assert.equal(p.fix, 'pickProjects');
+  assert.equal(p.arg, '', 'it never fabricates a destination for his footage');
+});
+
+test('filing COPIES by default — config.organizeCopy is opt-OUT, not opt-in', () => {
+  // The default has to be the safe one. If organizeCopy were unset and treated as false, the very
+  // first Run would empty his Compressed folder into a 31 GB disk.
+  const src = readFileSync(join(ROOT, 'main-mod', '09-ipc-boot.js'), 'utf8');
+  assert.match(src, /const copyMode = opts\.copy !== undefined \? !!opts\.copy : \(config\.organizeCopy !== false\);/,
+    'unset must mean COPY');
+});
+
+test('the UI says what it does — the checkbox no longer claims to MOVE', () => {
+  // It said "Move the files into the folders shown above" while copying. A checkbox that lies about
+  // what happens to his footage is worse than no checkbox.
+  const html = readFileSync(join(ROOT, 'src', 'index.html'), 'utf8');
+  assert.equal(/Move the files into the folders/.test(html), false, 'the stale label is gone');
+  assert.match(html, /id="finKeepSource"[^>]*checked/, 'and "Keep the originals" is on by default');
+
+  const boot = readFileSync(join(ROOT, 'src', 'mod', '10-boot.js'), 'utf8');
+  assert.match(boot, /copy: \$\('finKeepSource'\)\.checked/, 'and it is actually wired to the run');
 });

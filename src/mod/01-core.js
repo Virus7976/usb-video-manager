@@ -1481,6 +1481,12 @@ async function applyAiHealthFix(p, card) {
       done(`Learned ${r.subjects.length} of your subjects and ${r.examples.length} real examples from ${r.parsed} clips ✓${dupes.length ? ` · Heads up: ${dupes[0]} — I won't create any more of those.` : ''}`);
       return;
     }
+    if (p.fix === 'useProjects') {
+      // The folder was already there — accept it in one click rather than opening a file browser.
+      await withBusyBtn(card, 'Setting…', () => window.api.setProjectsRoot(p.arg));
+      done(`Projects folder set to ${p.arg} ✓ — Organize can file into it now.`);
+      return;
+    }
     if (p.fix === 'pickProjects') {
       const dir = await window.api.pickProjectsRoot();
       if (dir) done('Projects folder set — organizing has somewhere to go now ✓');

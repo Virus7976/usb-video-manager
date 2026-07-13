@@ -620,6 +620,41 @@ in `02 - Compressed`. So *"get AI to work out which project each video belongs i
 sucks"* is partly not an AI problem at all: **there is almost nothing to file into.** Placement will
 mostly want to CREATE projects. Do not invent an organizational scheme for him — that is his call.
 
+### ⚠ FILING BACK ONTO HIS COMPUTER — it COPIES, and the disk is the constraint
+
+His decision, 2026-07-13: *"C:\Users\jakeg\Videos\02 - Projects\2026 … I would like to be able to
+select what footage goes back here onto my computer"*, filed **in batches, not per clip**.
+
+The numbers that shape every decision here:
+
+| | |
+|---|---|
+| archive — `L:\…\02 - Compressed` | 310 clips, **73 GB**, on a 2.3 TB-free disk |
+| projects — `C:\…\02 - Projects\2026` | `2026 - Client Work` / `- Personal` / `- Social Media`, **30 GB free**, and it is his SYSTEM disk |
+
+**It does not all fit. That is not a bug — it is why he wants to choose what comes back.**
+
+1. **Organize COPIES now, it does not move** (`config.organizeCopy`, opt-OUT). The project folder on C:
+   is a WORKING copy he can clear out when the disk fills, and the archive on L: has to still be there
+   when he does. A move would quietly make the C: copy the only copy, on the smaller and fuller disk.
+   Move is still available — the "Keep the originals in the Compressed folder" tick.
+2. **`organizeMove()` routes both modes through ONE staged+verified writer** (`stageVerifiedCopy`:
+   stage → flush → **full** fingerprint → rename). A second hand-rolled copy of the footage is exactly
+   how you get one path that verifies and one that doesn't. See [[usb-app-copy-integrity]].
+3. **`finalize:run` refuses a run that will not fit**, before a single byte is written — with 2 GB of
+   headroom, because filling a *system* disk to the last byte breaks the machine, not just the app.
+   Copy-only: a move consumes no space on the destination.
+4. **The Organize screen shows the two numbers up front** (`renderFinSpace`): how much he has selected,
+   and how much room is left. A refusal at the end of a long think is a worse answer than a number he
+   could see all along.
+5. **`defaultProjectsRoot()` prefers the current YEAR folder** when it exists. His projects live at
+   `02 - Projects/2026/…`; defaulting to `02 - Projects` would file every clip one level ABOVE his
+   real project folders — technically organized, completely useless. Verified on his machine: it
+   resolves to the right folder, and the health card offers it in one click rather than a file browser.
+
+The batch unit is the SHOOT (`date|subject`) — see the placement section. That is what "recognize in
+batches where stuff goes, not per clip" means.
+
 ### Hardware constraint (the owner's machine)
 
 `qwen3:8b` (tools), `llama3.2-vision` (tools+vision, **but returns HTTP 500 on this machine — broken**),

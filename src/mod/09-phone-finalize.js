@@ -1430,9 +1430,44 @@ function setFinStep(n) {
 
 // The Organize step IS the destination map now — render it inline into Step 2.
 // Apply embeds metadata (when ticked) and files clips into the real Projects tree.
+// "I would like to be able to select what footage goes back here onto my computer."
+//
+// He is filing from a 73 GB archive on L: (2.3 TB free) into projects on C: (31 GB free). It does not
+// all fit, and that is not a bug — it is why he wants to choose. So show him the two numbers that
+// decide it, BEFORE he presses Run: how much he has selected, and how much room is left. finalize:run
+// refuses a run that will not fit, but a refusal at the end of a long think is a worse answer than a
+// number he could see all along.
+async function renderFinSpace(sel) {
+  const el = $('finSpaceLine'); if (!el) return;
+  if (!$('finOrganize').checked || !sel.length) { el.classList.add('hidden'); return; }
+
+  const need = sel.reduce((n, f) => n + (f.size || 0), 0);
+  let dest = '';
+  try { dest = await window.api.getProjectsRoot(); } catch { dest = ''; }
+  if (!dest) { el.classList.add('hidden'); return; }
+
+  let free = null;
+  try { const r = await window.api.freeSpace(dest); if (r && r.ok) free = r.free; } catch { free = null; }
+
+  const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
+  const n = sel.length;
+  // A copy adds bytes to the destination; a move does not. Only warn about the thing that can happen.
+  const copying = $('finKeepSource') ? $('finKeepSource').checked : true;
+  const tight = copying && free !== null && need + 2e9 > free;
+
+  el.classList.remove('hidden');
+  el.classList.toggle('tight', !!tight);
+  el.innerHTML = `<span class="fsl-what"><b>${n} clip${n !== 1 ? 's' : ''}</b> · ${escapeHtml(GB(need))}</span>`
+    + `<span class="fsl-arrow">→</span>`
+    + `<span class="fsl-where">${escapeHtml(dest)}</span>`
+    + (free === null ? '' : `<span class="fsl-free">${escapeHtml(GB(free))} free</span>`)
+    + (tight ? `<span class="fsl-warn">Won't fit — untick some clips, or file fewer shoots</span>` : '');
+}
+
 function renderFinMap() {
   const host = $('finMapHost'); if (!host) return;
   const sel = (finSelected().length ? finSelected() : finMatched());
+  renderFinSpace(sel);
   if (!sel.length) { host.innerHTML = '<p class="muted small">No matched clips — go back to the Match step and tick some.</p>'; return; }
   // _ledgerRel closes the loop on the same-shoot offer: the destination map reads it (07-organize-
   // map.js:86,166,277) to file these clips straight into the project the user already confirmed.

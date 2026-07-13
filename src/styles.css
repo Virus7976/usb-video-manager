@@ -736,6 +736,21 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .dmap-embed .dmap-bar { margin-bottom: 8px; }
 .dmap-embed .dmap-legend { margin-bottom: 8px; opacity: .9; }
 .dmap-introline { margin: 0 0 8px; }
+/* What is coming back, and will it fit. Two numbers he needs BEFORE pressing Run — his C: has 31 GB
+   free against a 73 GB archive, so "which footage comes back" is a real decision, not a formality. */
+.fin-space-line {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 2px 10px; padding: 9px 12px; border-radius: 8px;
+  border: 1px solid var(--stroke); background: color-mix(in srgb, var(--text-3) 4%, transparent);
+  font-size: 13px; color: var(--text-2);
+}
+.fin-space-line .fsl-what { color: var(--text-1); }
+.fin-space-line .fsl-arrow { color: var(--text-3); }
+.fin-space-line .fsl-where { font-family: ui-monospace, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.fin-space-line .fsl-free { margin-left: auto; color: var(--text-3); white-space: nowrap; }
+.fin-space-line.tight { border-color: var(--danger, #d9534f); background: color-mix(in srgb, var(--danger, #d9534f) 10%, transparent); }
+.fin-space-line.tight .fsl-free { color: var(--danger, #d9534f); }
+.fin-space-line .fsl-warn { flex-basis: 100%; color: var(--danger, #d9534f); }
 .fin-map-host { margin-top: 4px; }
 /* The entry point to "which project does this go in" — the step Jake called out as the worst part of
    his flow. It leads the Organize step because it is the decision everything below it depends on. */
@@ -747,6 +762,9 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .fin-place-tx { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .fin-place-bar .btn { flex: none; white-space: nowrap; }
 .org-hint-ic { color: var(--text-3); font-size: 12px; cursor: help; }
+/* A sub-option of "File the clips…" — indented so it reads as a qualifier, not a peer. */
+.org-toggle.org-sub { margin-left: 22px; }
+.org-toggle.org-sub span { color: var(--text-2); }
 
 /* ---- Phone backup destinations (upload step) ---- */
 .phone-dest { margin: 6px 0 12px; padding: 12px 14px; border: 1px solid var(--card-stroke); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--text-3) 4%, transparent); }

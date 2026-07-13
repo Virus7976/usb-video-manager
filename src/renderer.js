@@ -1483,6 +1483,12 @@ async function applyAiHealthFix(p, card) {
       done(`Learned ${r.subjects.length} of your subjects and ${r.examples.length} real examples from ${r.parsed} clips ✓${dupes.length ? ` · Heads up: ${dupes[0]} — I won't create any more of those.` : ''}`);
       return;
     }
+    if (p.fix === 'useProjects') {
+      // The folder was already there — accept it in one click rather than opening a file browser.
+      await withBusyBtn(card, 'Setting…', () => window.api.setProjectsRoot(p.arg));
+      done(`Projects folder set to ${p.arg} ✓ — Organize can file into it now.`);
+      return;
+    }
     if (p.fix === 'pickProjects') {
       const dir = await window.api.pickProjectsRoot();
       if (dir) done('Projects folder set — organizing has somewhere to go now ✓');
@@ -11852,9 +11858,44 @@ function setFinStep(n) {
 
 // The Organize step IS the destination map now — render it inline into Step 2.
 // Apply embeds metadata (when ticked) and files clips into the real Projects tree.
+// "I would like to be able to select what footage goes back here onto my computer."
+//
+// He is filing from a 73 GB archive on L: (2.3 TB free) into projects on C: (31 GB free). It does not
+// all fit, and that is not a bug — it is why he wants to choose. So show him the two numbers that
+// decide it, BEFORE he presses Run: how much he has selected, and how much room is left. finalize:run
+// refuses a run that will not fit, but a refusal at the end of a long think is a worse answer than a
+// number he could see all along.
+async function renderFinSpace(sel) {
+  const el = $('finSpaceLine'); if (!el) return;
+  if (!$('finOrganize').checked || !sel.length) { el.classList.add('hidden'); return; }
+
+  const need = sel.reduce((n, f) => n + (f.size || 0), 0);
+  let dest = '';
+  try { dest = await window.api.getProjectsRoot(); } catch { dest = ''; }
+  if (!dest) { el.classList.add('hidden'); return; }
+
+  let free = null;
+  try { const r = await window.api.freeSpace(dest); if (r && r.ok) free = r.free; } catch { free = null; }
+
+  const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
+  const n = sel.length;
+  // A copy adds bytes to the destination; a move does not. Only warn about the thing that can happen.
+  const copying = $('finKeepSource') ? $('finKeepSource').checked : true;
+  const tight = copying && free !== null && need + 2e9 > free;
+
+  el.classList.remove('hidden');
+  el.classList.toggle('tight', !!tight);
+  el.innerHTML = `<span class="fsl-what"><b>${n} clip${n !== 1 ? 's' : ''}</b> · ${escapeHtml(GB(need))}</span>`
+    + `<span class="fsl-arrow">→</span>`
+    + `<span class="fsl-where">${escapeHtml(dest)}</span>`
+    + (free === null ? '' : `<span class="fsl-free">${escapeHtml(GB(free))} free</span>`)
+    + (tight ? `<span class="fsl-warn">Won't fit — untick some clips, or file fewer shoots</span>` : '');
+}
+
 function renderFinMap() {
   const host = $('finMapHost'); if (!host) return;
   const sel = (finSelected().length ? finSelected() : finMatched());
+  renderFinSpace(sel);
   if (!sel.length) { host.innerHTML = '<p class="muted small">No matched clips — go back to the Match step and tick some.</p>'; return; }
   // _ledgerRel closes the loop on the same-shoot offer: the destination map reads it (07-organize-
   // map.js:86,166,277) to file these clips straight into the project the user already confirmed.
@@ -12655,7 +12696,10 @@ document.querySelectorAll('.fin-step').forEach((pill) => {
 });
 
 // Step 2 controls
-$('finOrganize').addEventListener('change', () => { syncFinOptionRows(); });
+$('finOrganize').addEventListener('change', () => { syncFinOptionRows(); renderFinMap(); });
+// A move consumes no space on the destination, so the "won't fit" warning must recompute when he
+// switches — otherwise it warns about a problem he has just solved.
+$('finKeepSource').addEventListener('change', () => { renderFinMap(); });
 $('finNas').addEventListener('change', () => { syncFinOptionRows(); });
 document.querySelectorAll('input[name="finDestMode"]').forEach((r) => {
   r.addEventListener('change', () => { finDestMode = document.querySelector('input[name="finDestMode"]:checked').value; syncFinOptionRows(); finRenderLevels(); });
@@ -12677,7 +12721,12 @@ $('finMap2Btn').addEventListener('click', showDestinationMapAuto);
 $('finRunBtn').addEventListener('click', async () => {
   const matched = finSelected();
   if (!matched.length) { showToast('Tick at least one clip to run on'); return; }
-  const options = { embed: $('finEmbed').checked, csv: $('finCsv').checked, organize: $('finOrganize').checked, nas: $('finNas').checked };
+  // `copy` mirrors "Keep the originals": ticked = copy into the project, leave the archive alone.
+  const options = {
+    embed: $('finEmbed').checked, csv: $('finCsv').checked,
+    organize: $('finOrganize').checked, nas: $('finNas').checked,
+    copy: $('finKeepSource').checked,
+  };
   if (!options.embed && !options.csv && !options.organize && !options.nas) { showToast('Pick at least one action on the Organize step'); return; }
 
   // THE PLAN the user made on the destination map (Organize step 2) is what Run executes. Run

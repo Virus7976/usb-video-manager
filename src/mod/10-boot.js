@@ -239,7 +239,10 @@ document.querySelectorAll('.fin-step').forEach((pill) => {
 });
 
 // Step 2 controls
-$('finOrganize').addEventListener('change', () => { syncFinOptionRows(); });
+$('finOrganize').addEventListener('change', () => { syncFinOptionRows(); renderFinMap(); });
+// A move consumes no space on the destination, so the "won't fit" warning must recompute when he
+// switches — otherwise it warns about a problem he has just solved.
+$('finKeepSource').addEventListener('change', () => { renderFinMap(); });
 $('finNas').addEventListener('change', () => { syncFinOptionRows(); });
 document.querySelectorAll('input[name="finDestMode"]').forEach((r) => {
   r.addEventListener('change', () => { finDestMode = document.querySelector('input[name="finDestMode"]:checked').value; syncFinOptionRows(); finRenderLevels(); });
@@ -261,7 +264,12 @@ $('finMap2Btn').addEventListener('click', showDestinationMapAuto);
 $('finRunBtn').addEventListener('click', async () => {
   const matched = finSelected();
   if (!matched.length) { showToast('Tick at least one clip to run on'); return; }
-  const options = { embed: $('finEmbed').checked, csv: $('finCsv').checked, organize: $('finOrganize').checked, nas: $('finNas').checked };
+  // `copy` mirrors "Keep the originals": ticked = copy into the project, leave the archive alone.
+  const options = {
+    embed: $('finEmbed').checked, csv: $('finCsv').checked,
+    organize: $('finOrganize').checked, nas: $('finNas').checked,
+    copy: $('finKeepSource').checked,
+  };
   if (!options.embed && !options.csv && !options.organize && !options.nas) { showToast('Pick at least one action on the Organize step'); return; }
 
   // THE PLAN the user made on the destination map (Organize step 2) is what Run executes. Run

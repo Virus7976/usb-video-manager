@@ -405,13 +405,42 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     return { ok: false, error: 'No destination folder set. Choose one in Edit → “Organizing & folders…”.' };
   }
 
+  // COPY, not move, unless he explicitly says otherwise.
+  //
+  // He files from his L: archive into projects on C:. C: has 31 GB free; the compressed archive is
+  // 73 GB. So the project folder on C: is a WORKING copy he can clear out whenever the disk fills —
+  // and the archive on L: has to still be there when he does. A move would quietly make the C: copy
+  // the ONLY copy, on the smaller and fuller of the two disks. ("Copy — keep the archive on L:",
+  // his call, 2026-07-13.)
+  const copyMode = opts.copy !== undefined ? !!opts.copy : (config.organizeCopy !== false);
+
   // Organizing MOVES files (organizeMove → moveFileCrossDevice → unlink of the source). If the
   // Compressed folder were ever pointed at the SD card, Run would therefore strip footage off
   // the card — a card delete that never went through the delete confirm or the delete gate.
   // Deleting from the card is only ever allowed as a deliberate act on the Delete step, so
   // refuse outright rather than quietly relocating someone's only copy.
-  if (opts.organize && await isOnRemovableVolume(dir)) {
+  // (A COPY takes nothing off the card, so it is not part of this.)
+  if (opts.organize && !copyMode && await isOnRemovableVolume(dir)) {
     return { ok: false, error: 'That folder is on a removable card or USB drive. Organizing MOVES files, so it would take them off the card — which is only ever allowed from the Delete step, after the copies are verified. Point “Compressed” at a folder on your computer first.' };
+  }
+
+  // WILL IT EVEN FIT? Copying adds bytes to the destination volume, and his is the tight one: 31 GB
+  // free on C: against a 73 GB archive. Finding that out 40 clips in — with a half-filed shoot and a
+  // full system disk — is the worst possible time. Check before writing anything.
+  if (opts.organize && dest && copyMode) {
+    let need = 0;
+    for (const it of list) {
+      try { need += (await fsp.stat(it.sourcePath || it.path)).size; } catch { /* counted as 0 */ }
+    }
+    try {
+      const st = await fsp.statfs(await nearestExistingDir(dest));
+      const free = Number(st.bavail) * Number(st.bsize);
+      const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
+      // 2 GB of headroom: filling a system disk to the last byte breaks the machine, not just the app.
+      if (need + 2e9 > free) {
+        return { ok: false, error: `Not enough room: this needs ${GB(need)} but only ${GB(free)} is free on that drive. File fewer shoots, or point the projects folder at a bigger disk.` };
+      }
+    } catch { /* if we genuinely cannot read the volume, don't block the run over it */ }
   }
 
   const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, unplanned: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
@@ -469,9 +498,14 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       emit(i, it.name, 'moving');
       try {
         const before = curPath;   // capture origin BEFORE reassigning, for undo
-        const r = await organizeMove(curPath, path.join(dest, ...parts), it.name);
-        if (r.action === 'moved') { summary.moved += 1; undoable.push({ from: before, to: r.path }); } else summary.skipped += 1;
-        curPath = r.path;
+        const r = await organizeMove(curPath, path.join(dest, ...parts), it.name, { copy: copyMode });
+        if (r.action === 'moved' || r.action === 'copied') {
+          summary.moved += 1;
+          undoable.push({ from: before, to: r.path, copied: r.action === 'copied' });
+        } else summary.skipped += 1;
+        // A COPY leaves the original where it is — the archive on L: is the whole point — so the rest
+        // of the run (embed, CSV, NAS) must keep operating on the SOURCE, not chase the new copy.
+        if (r.action !== 'copied') curPath = r.path;
         finalFileName = path.basename(r.path);
       } catch (err) {
         // A clip whose move FAILED was not filed. It used to fall through to filed.push() below,
@@ -751,13 +785,24 @@ ipcMain.handle('verify:copies', async (_evt, pairs) => {
 
 // Free space on the volume that contains `folderPath` (walks up to the nearest
 // existing ancestor so it works even before the folder is created).
+// Walk up to the nearest ancestor that actually exists, so free space can be read for a folder we
+// have not created yet (a brand-new project folder is the normal case).
+async function nearestExistingDir(folderPath) {
+  let probe = String(folderPath || '');
+  if (!probe) throw new Error('no path');
+  for (let i = 0; i < 8; i += 1) {
+    try { await fsp.access(probe); return probe; } catch { /* keep walking up */ }
+    const up = path.dirname(probe);
+    if (!up || up === probe) break;
+    probe = up;
+  }
+  return probe;
+}
+
 ipcMain.handle('disk:freeSpace', async (_evt, folderPath) => {
   try {
-    let probe = String(folderPath || '');
-    if (!probe) return { ok: false, error: 'no path' };
-    for (let i = 0; i < 8; i += 1) {
-      try { await fsp.access(probe); break; } catch { const up = path.dirname(probe); if (!up || up === probe) break; probe = up; }
-    }
+    if (!folderPath) return { ok: false, error: 'no path' };
+    const probe = await nearestExistingDir(folderPath);
     const st = await fsp.statfs(probe);
     return { ok: true, free: Number(st.bavail) * Number(st.bsize), total: Number(st.blocks) * Number(st.bsize), path: probe };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }

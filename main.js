@@ -1022,20 +1022,38 @@ async function flushToDisk(p) {
   try { const fh = await fsp.open(p, 'r+'); try { await fh.datasync(); } finally { await fh.close(); } }
   catch { /* best-effort */ }
 }
-async function moveFileCrossDevice(src, dest) {
-  try { await fsp.rename(src, dest); return; }
-  catch (err) { if (err.code !== 'EXDEV') throw err; }
+// Stage → flush → FULL verify → rename. The one way footage is written in this app.
+//
+// Shared by the move and the copy so they can never drift: a second hand-rolled copy of the footage
+// is exactly how you end up with one path that verifies and one that doesn't.
+async function stageVerifiedCopy(src, dest) {
   const tmp = `${dest}.part-${process.pid}-${Date.now()}`;
   try {
     await fsp.copyFile(src, tmp);
     await flushToDisk(tmp);
-    // FULL verify (not sampled) — we're about to delete the source, so prove the whole copy.
-    if (!(await fingerprintsMatch(src, tmp, { full: true }))) throw new Error('verify failed after cross-device copy');
+    // FULL verify (not sampled): a move DELETES the source, and a copy is the thing he will later
+    // trust instead of the source. Prove the whole file either way.
+    if (!(await fingerprintsMatch(src, tmp, { full: true }))) throw new Error('verify failed after copy');
     await fsp.rename(tmp, dest);
   } catch (err) {
     try { await fsp.unlink(tmp); } catch { /* best-effort cleanup of the temp copy */ }
-    throw err;
+    throw err;   // never leave a half-written clip behind under the real name
   }
+}
+
+// COPY the footage to `dest`, leaving the source exactly where it is.
+//
+// Jake files from his L: archive into projects on C:. C: has 31 GB free; the archive is 73 GB. So the
+// project folder on C: is a WORKING copy he can clear out at any time — and the archive on L: must
+// still be there when he does. A move would make the C: copy the only one, on the smaller, fuller disk.
+async function copyFileVerified(src, dest) {
+  await stageVerifiedCopy(src, dest);
+}
+
+async function moveFileCrossDevice(src, dest) {
+  try { await fsp.rename(src, dest); return; }
+  catch (err) { if (err.code !== 'EXDEV') throw err; }
+  await stageVerifiedCopy(src, dest);
   await fsp.unlink(src);
 }
 
@@ -1073,7 +1091,10 @@ async function copyFileVerified(src, dest, { retries = 1 } = {}) {
 //  - a byte-identical file already there   → 'skip-dup' (true duplicate / re-run, skip)
 //  - a DIFFERENT file sharing the name     → version the name " (n)" and move
 //  - nothing there                         → move
-async function organizeMove(srcPath, targetDir, fileName) {
+async function organizeMove(srcPath, targetDir, fileName, opts = {}) {
+  const copy = !!opts.copy;
+  const place = copy ? copyFileVerified : moveFileCrossDevice;
+  const verb = copy ? 'copied' : 'moved';
   await ensureDir(targetDir);
   const targetPath = path.join(targetDir, fileName);
   if (pathsEqual(srcPath, targetPath)) {
@@ -1089,11 +1110,11 @@ async function organizeMove(srcPath, targetDir, fileName) {
     // size-only test could collide two different files of equal size).
     if (await fingerprintsMatch(srcPath, targetPath)) return { action: 'skip-dup', path: targetPath };
     const versioned = await uniqueDest(targetDir, fileName);
-    await moveFileCrossDevice(srcPath, versioned);
-    return { action: 'moved', path: versioned };
+    await place(srcPath, versioned);
+    return { action: verb, path: versioned };
   }
-  await moveFileCrossDevice(srcPath, targetPath);
-  return { action: 'moved', path: targetPath };
+  await place(srcPath, targetPath);
+  return { action: verb, path: targetPath };
 }
 
 // Parse the app's naming format (yyyy-mm-dd_subject_description_v#) out of a
@@ -1169,7 +1190,17 @@ async function readProjectTree(dir, depth) {
   out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   return out;
 }
-function defaultProjectsRoot() { return path.join(os.homedir(), 'Videos', '02 - Projects'); }
+// His projects live one level deeper than the obvious guess: `~/Videos/02 - Projects/2026`, holding
+// `2026 - Client Work`, `2026 - Personal`, `2026 - Social Media`. Filing into `02 - Projects` itself
+// would drop every clip a level ABOVE his actual project folders — technically "organized", and
+// useless. Prefer the current year when that folder really exists, and this keeps working in 2027.
+function defaultProjectsRoot() {
+  const base = path.join(os.homedir(), 'Videos', '02 - Projects');
+  const year = String(new Date().getFullYear());
+  try { if (fs.statSync(path.join(base, year)).isDirectory()) return path.join(base, year); }
+  catch { /* no year folder — the base is the honest default */ }
+  return base;
+}
 ipcMain.handle('projects:getRoot', () => config.projectsRoot || defaultProjectsRoot());
 ipcMain.handle('projects:setRoot', (_e, p) => { config.projectsRoot = String(p || ''); saveConfig(); return config.projectsRoot; });
 ipcMain.handle('projects:pickRoot', async () => {
@@ -6592,13 +6623,42 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     return { ok: false, error: 'No destination folder set. Choose one in Edit → “Organizing & folders…”.' };
   }
 
+  // COPY, not move, unless he explicitly says otherwise.
+  //
+  // He files from his L: archive into projects on C:. C: has 31 GB free; the compressed archive is
+  // 73 GB. So the project folder on C: is a WORKING copy he can clear out whenever the disk fills —
+  // and the archive on L: has to still be there when he does. A move would quietly make the C: copy
+  // the ONLY copy, on the smaller and fuller of the two disks. ("Copy — keep the archive on L:",
+  // his call, 2026-07-13.)
+  const copyMode = opts.copy !== undefined ? !!opts.copy : (config.organizeCopy !== false);
+
   // Organizing MOVES files (organizeMove → moveFileCrossDevice → unlink of the source). If the
   // Compressed folder were ever pointed at the SD card, Run would therefore strip footage off
   // the card — a card delete that never went through the delete confirm or the delete gate.
   // Deleting from the card is only ever allowed as a deliberate act on the Delete step, so
   // refuse outright rather than quietly relocating someone's only copy.
-  if (opts.organize && await isOnRemovableVolume(dir)) {
+  // (A COPY takes nothing off the card, so it is not part of this.)
+  if (opts.organize && !copyMode && await isOnRemovableVolume(dir)) {
     return { ok: false, error: 'That folder is on a removable card or USB drive. Organizing MOVES files, so it would take them off the card — which is only ever allowed from the Delete step, after the copies are verified. Point “Compressed” at a folder on your computer first.' };
+  }
+
+  // WILL IT EVEN FIT? Copying adds bytes to the destination volume, and his is the tight one: 31 GB
+  // free on C: against a 73 GB archive. Finding that out 40 clips in — with a half-filed shoot and a
+  // full system disk — is the worst possible time. Check before writing anything.
+  if (opts.organize && dest && copyMode) {
+    let need = 0;
+    for (const it of list) {
+      try { need += (await fsp.stat(it.sourcePath || it.path)).size; } catch { /* counted as 0 */ }
+    }
+    try {
+      const st = await fsp.statfs(await nearestExistingDir(dest));
+      const free = Number(st.bavail) * Number(st.bsize);
+      const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
+      // 2 GB of headroom: filling a system disk to the last byte breaks the machine, not just the app.
+      if (need + 2e9 > free) {
+        return { ok: false, error: `Not enough room: this needs ${GB(need)} but only ${GB(free)} is free on that drive. File fewer shoots, or point the projects folder at a bigger disk.` };
+      }
+    } catch { /* if we genuinely cannot read the volume, don't block the run over it */ }
   }
 
   const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, unplanned: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
@@ -6656,9 +6716,14 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       emit(i, it.name, 'moving');
       try {
         const before = curPath;   // capture origin BEFORE reassigning, for undo
-        const r = await organizeMove(curPath, path.join(dest, ...parts), it.name);
-        if (r.action === 'moved') { summary.moved += 1; undoable.push({ from: before, to: r.path }); } else summary.skipped += 1;
-        curPath = r.path;
+        const r = await organizeMove(curPath, path.join(dest, ...parts), it.name, { copy: copyMode });
+        if (r.action === 'moved' || r.action === 'copied') {
+          summary.moved += 1;
+          undoable.push({ from: before, to: r.path, copied: r.action === 'copied' });
+        } else summary.skipped += 1;
+        // A COPY leaves the original where it is — the archive on L: is the whole point — so the rest
+        // of the run (embed, CSV, NAS) must keep operating on the SOURCE, not chase the new copy.
+        if (r.action !== 'copied') curPath = r.path;
         finalFileName = path.basename(r.path);
       } catch (err) {
         // A clip whose move FAILED was not filed. It used to fall through to filed.push() below,
@@ -6938,13 +7003,24 @@ ipcMain.handle('verify:copies', async (_evt, pairs) => {
 
 // Free space on the volume that contains `folderPath` (walks up to the nearest
 // existing ancestor so it works even before the folder is created).
+// Walk up to the nearest ancestor that actually exists, so free space can be read for a folder we
+// have not created yet (a brand-new project folder is the normal case).
+async function nearestExistingDir(folderPath) {
+  let probe = String(folderPath || '');
+  if (!probe) throw new Error('no path');
+  for (let i = 0; i < 8; i += 1) {
+    try { await fsp.access(probe); return probe; } catch { /* keep walking up */ }
+    const up = path.dirname(probe);
+    if (!up || up === probe) break;
+    probe = up;
+  }
+  return probe;
+}
+
 ipcMain.handle('disk:freeSpace', async (_evt, folderPath) => {
   try {
-    let probe = String(folderPath || '');
-    if (!probe) return { ok: false, error: 'no path' };
-    for (let i = 0; i < 8; i += 1) {
-      try { await fsp.access(probe); break; } catch { const up = path.dirname(probe); if (!up || up === probe) break; probe = up; }
-    }
+    if (!folderPath) return { ok: false, error: 'no path' };
+    const probe = await nearestExistingDir(folderPath);
     const st = await fsp.statfs(probe);
     return { ok: true, free: Number(st.bavail) * Number(st.bsize), total: Number(st.blocks) * Number(st.bsize), path: probe };
   } catch (err) { return { ok: false, error: err.message || String(err) }; }
@@ -8280,14 +8356,22 @@ ipcMain.handle('ai:health', async () => {
 
   // 4. Nowhere to file to.
   if (!config.projectsRoot) {
+    // If the folder we'd guess actually EXISTS, offer it — one click, no file browser. His is
+    // `~/Videos/02 - Projects/2026`, already holding `2026 - Client Work` / `- Personal` /
+    // `- Social Media`. Making him go and find a folder we could already see is busywork.
+    const guess = defaultProjectsRoot();
+    let found = false;
+    try { found = fs.statSync(guess).isDirectory(); } catch { found = false; }
     problems.push({
       id: 'no-projects-root',
       severity: 'high',
       title: 'No Projects folder set',
-      detail: 'Organize files clips into a Projects tree — and you have not got one. That is why organizing has never worked: there is nowhere for anything to go.',
-      fix: 'pickProjects',
-      fixLabel: 'Choose a folder',
-      arg: '',
+      detail: found
+        ? `Organize files clips into a Projects tree, and none is set — which is why organizing has never worked. Found one at ${guess}.`
+        : 'Organize files clips into a Projects tree — and you have not got one. That is why organizing has never worked: there is nowhere for anything to go.',
+      fix: found ? 'useProjects' : 'pickProjects',
+      fixLabel: found ? 'Use that folder' : 'Choose a folder',
+      arg: found ? guess : '',
     });
   }
 

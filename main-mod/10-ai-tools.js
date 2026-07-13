@@ -1197,14 +1197,22 @@ ipcMain.handle('ai:health', async () => {
 
   // 4. Nowhere to file to.
   if (!config.projectsRoot) {
+    // If the folder we'd guess actually EXISTS, offer it — one click, no file browser. His is
+    // `~/Videos/02 - Projects/2026`, already holding `2026 - Client Work` / `- Personal` /
+    // `- Social Media`. Making him go and find a folder we could already see is busywork.
+    const guess = defaultProjectsRoot();
+    let found = false;
+    try { found = fs.statSync(guess).isDirectory(); } catch { found = false; }
     problems.push({
       id: 'no-projects-root',
       severity: 'high',
       title: 'No Projects folder set',
-      detail: 'Organize files clips into a Projects tree — and you have not got one. That is why organizing has never worked: there is nowhere for anything to go.',
-      fix: 'pickProjects',
-      fixLabel: 'Choose a folder',
-      arg: '',
+      detail: found
+        ? `Organize files clips into a Projects tree, and none is set — which is why organizing has never worked. Found one at ${guess}.`
+        : 'Organize files clips into a Projects tree — and you have not got one. That is why organizing has never worked: there is nowhere for anything to go.',
+      fix: found ? 'useProjects' : 'pickProjects',
+      fixLabel: found ? 'Use that folder' : 'Choose a folder',
+      arg: found ? guess : '',
     });
   }
 

@@ -222,20 +222,38 @@ async function flushToDisk(p) {
   try { const fh = await fsp.open(p, 'r+'); try { await fh.datasync(); } finally { await fh.close(); } }
   catch { /* best-effort */ }
 }
-async function moveFileCrossDevice(src, dest) {
-  try { await fsp.rename(src, dest); return; }
-  catch (err) { if (err.code !== 'EXDEV') throw err; }
+// Stage → flush → FULL verify → rename. The one way footage is written in this app.
+//
+// Shared by the move and the copy so they can never drift: a second hand-rolled copy of the footage
+// is exactly how you end up with one path that verifies and one that doesn't.
+async function stageVerifiedCopy(src, dest) {
   const tmp = `${dest}.part-${process.pid}-${Date.now()}`;
   try {
     await fsp.copyFile(src, tmp);
     await flushToDisk(tmp);
-    // FULL verify (not sampled) — we're about to delete the source, so prove the whole copy.
-    if (!(await fingerprintsMatch(src, tmp, { full: true }))) throw new Error('verify failed after cross-device copy');
+    // FULL verify (not sampled): a move DELETES the source, and a copy is the thing he will later
+    // trust instead of the source. Prove the whole file either way.
+    if (!(await fingerprintsMatch(src, tmp, { full: true }))) throw new Error('verify failed after copy');
     await fsp.rename(tmp, dest);
   } catch (err) {
     try { await fsp.unlink(tmp); } catch { /* best-effort cleanup of the temp copy */ }
-    throw err;
+    throw err;   // never leave a half-written clip behind under the real name
   }
+}
+
+// COPY the footage to `dest`, leaving the source exactly where it is.
+//
+// Jake files from his L: archive into projects on C:. C: has 31 GB free; the archive is 73 GB. So the
+// project folder on C: is a WORKING copy he can clear out at any time — and the archive on L: must
+// still be there when he does. A move would make the C: copy the only one, on the smaller, fuller disk.
+async function copyFileVerified(src, dest) {
+  await stageVerifiedCopy(src, dest);
+}
+
+async function moveFileCrossDevice(src, dest) {
+  try { await fsp.rename(src, dest); return; }
+  catch (err) { if (err.code !== 'EXDEV') throw err; }
+  await stageVerifiedCopy(src, dest);
   await fsp.unlink(src);
 }
 
@@ -273,7 +291,10 @@ async function copyFileVerified(src, dest, { retries = 1 } = {}) {
 //  - a byte-identical file already there   → 'skip-dup' (true duplicate / re-run, skip)
 //  - a DIFFERENT file sharing the name     → version the name " (n)" and move
 //  - nothing there                         → move
-async function organizeMove(srcPath, targetDir, fileName) {
+async function organizeMove(srcPath, targetDir, fileName, opts = {}) {
+  const copy = !!opts.copy;
+  const place = copy ? copyFileVerified : moveFileCrossDevice;
+  const verb = copy ? 'copied' : 'moved';
   await ensureDir(targetDir);
   const targetPath = path.join(targetDir, fileName);
   if (pathsEqual(srcPath, targetPath)) {
@@ -289,11 +310,11 @@ async function organizeMove(srcPath, targetDir, fileName) {
     // size-only test could collide two different files of equal size).
     if (await fingerprintsMatch(srcPath, targetPath)) return { action: 'skip-dup', path: targetPath };
     const versioned = await uniqueDest(targetDir, fileName);
-    await moveFileCrossDevice(srcPath, versioned);
-    return { action: 'moved', path: versioned };
+    await place(srcPath, versioned);
+    return { action: verb, path: versioned };
   }
-  await moveFileCrossDevice(srcPath, targetPath);
-  return { action: 'moved', path: targetPath };
+  await place(srcPath, targetPath);
+  return { action: verb, path: targetPath };
 }
 
 // Parse the app's naming format (yyyy-mm-dd_subject_description_v#) out of a
@@ -369,7 +390,17 @@ async function readProjectTree(dir, depth) {
   out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   return out;
 }
-function defaultProjectsRoot() { return path.join(os.homedir(), 'Videos', '02 - Projects'); }
+// His projects live one level deeper than the obvious guess: `~/Videos/02 - Projects/2026`, holding
+// `2026 - Client Work`, `2026 - Personal`, `2026 - Social Media`. Filing into `02 - Projects` itself
+// would drop every clip a level ABOVE his actual project folders — technically "organized", and
+// useless. Prefer the current year when that folder really exists, and this keeps working in 2027.
+function defaultProjectsRoot() {
+  const base = path.join(os.homedir(), 'Videos', '02 - Projects');
+  const year = String(new Date().getFullYear());
+  try { if (fs.statSync(path.join(base, year)).isDirectory()) return path.join(base, year); }
+  catch { /* no year folder — the base is the honest default */ }
+  return base;
+}
 ipcMain.handle('projects:getRoot', () => config.projectsRoot || defaultProjectsRoot());
 ipcMain.handle('projects:setRoot', (_e, p) => { config.projectsRoot = String(p || ''); saveConfig(); return config.projectsRoot; });
 ipcMain.handle('projects:pickRoot', async () => {

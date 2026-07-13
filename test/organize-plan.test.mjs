@@ -54,10 +54,52 @@ test('Run files clips exactly where the MAP put them', async () => {
   });
 
   assert.equal(summary.ok, true, JSON.stringify(summary.errors));
-  assert.equal(summary.moved, 2, 'both clips moved — this is the "0 moved" bug, dead');
+  assert.equal(summary.moved, 2, 'both clips filed — this is the "0 moved" bug, dead');
   assert.equal(existsSync(join(dest, 'client', 'alps-2026', '2026-07-12', 'a.mp4')), true, 'a.mp4 landed in its planned folder');
   assert.equal(existsSync(join(dest, 'personal', 'skiing', 'b.mp4')), true, 'b.mp4 landed in its planned folder');
-  assert.equal(existsSync(a.sourcePath), false, 'and left the Compressed folder');
+
+  // FILING COPIES, IT DOES NOT MOVE. His archive lives on L: (2.3 TB free); he files into projects on
+  // C: (31 GB free, against a 73 GB archive). The project folder is a WORKING copy he can clear out
+  // when C: fills — and the archive has to still be there when he does. A move would silently make
+  // the C: copy the only copy, on the smaller and fuller disk. His call, 2026-07-13.
+  assert.equal(existsSync(a.sourcePath), true, 'the archive copy STAYS — filing must never empty it');
+  assert.equal(existsSync(b.sourcePath), true);
+});
+
+test('…and MOVE is still available for anyone who wants the folder to empty as they file', async () => {
+  const dest = projects();
+  const a = clip('mv.mp4');
+  const summary = await app.invoke('finalize:run', {
+    dir: join(dir, 'compressed'),
+    organizeDest: dest,
+    options: { organize: true, embed: false, csv: false, nas: false, copy: false },
+    items: [{ ...a, rel: 'Client/Alps-2026' }],
+  });
+  assert.equal(summary.ok, true, JSON.stringify(summary.errors));
+  assert.equal(existsSync(join(dest, 'client', 'alps-2026', 'mv.mp4')), true, 'it landed');
+  assert.equal(existsSync(a.sourcePath), false, 'and the source is gone — an explicit move');
+});
+
+test('the copy is VERIFIED, byte for byte, not just written', async () => {
+  // He will later trust the project copy instead of the archive. A copy nobody checked is a rumour.
+  const dest = projects();
+  const a = clip('verify.mp4');
+  await app.invoke('finalize:run', {
+    dir: join(dir, 'compressed'),
+    organizeDest: dest,
+    options: { organize: true, embed: false, csv: false, nas: false },
+    items: [{ ...a, rel: 'Client/X' }],
+  });
+  const landed = join(dest, 'client', 'x', 'verify.mp4');
+  assert.deepEqual(readFileSync(landed), readFileSync(a.sourcePath), 'byte-for-byte identical');
+
+  // …and organizeMove routes BOTH modes through the one staged+verified writer, so a copy can never
+  // become a second, unchecked implementation of "write the footage somewhere".
+  const src = readFileSync(join(ROOT, 'main-mod', '02-media.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function organizeMove('));
+  assert.match(fn.slice(0, 400), /const place = copy \? copyFileVerified : moveFileCrossDevice;/);
+  const staged = src.slice(src.indexOf('async function stageVerifiedCopy('));
+  assert.match(staged.slice(0, 600), /fingerprintsMatch\(src, tmp, \{ full: true \}\)/, 'full verify, not sampled');
 });
 
 test('a clip with NO place on the map is left alone — NOT dumped in the Projects root', async () => {
@@ -143,4 +185,90 @@ test('Organize step 2 has a visible way forward', () => {
   const btn = html.split('\n').find((l) => l.includes('id="finNext2Btn"'));
   assert.ok(btn, 'the Continue button exists');
   assert.equal(/class="[^"]*\bhidden\b/.test(btn), false, 'and it is no longer hidden');
+});
+
+// --- WILL IT EVEN FIT? --------------------------------------------------------------------------
+//
+// This is not hypothetical on his machine: C: has 31 GB free and the compressed archive is 73 GB.
+// Copying adds bytes to the destination, and C: is the tight disk AND the system disk. Discovering
+// that 40 clips into a run — half a shoot filed, system disk full — is the worst possible moment.
+
+test('a run that will not fit is refused BEFORE a single byte is written', async () => {
+  const dest = projects();
+  const a = clip('huge.mp4');
+
+  // Pretend the destination volume is nearly full.
+  const g = app.get('globalThis');
+  const realStatfs = g.__statfsPatch;
+  const fsp = app.get('fsp');
+  const orig = fsp.statfs;
+  fsp.statfs = async () => ({ bavail: 1, bsize: 1024, blocks: 1000, files: 0 });   // ~1 KB free
+  try {
+    const summary = await app.invoke('finalize:run', {
+      dir: join(dir, 'compressed'),
+      organizeDest: dest,
+      options: { organize: true, embed: false, csv: false, nas: false },
+      items: [{ ...a, rel: 'Client/X' }],
+    });
+    assert.equal(summary.ok, false, 'it must refuse rather than half-file the shoot');
+    assert.match(summary.error, /Not enough room/);
+    assert.match(summary.error, /free on that drive/);
+    assert.equal(existsSync(join(dest, 'client', 'x', 'huge.mp4')), false, 'nothing was written');
+    assert.equal(existsSync(a.sourcePath), true, 'and the archive is untouched');
+  } finally { fsp.statfs = orig; void realStatfs; }
+});
+
+test('a run that DOES fit is not blocked by the guard', async () => {
+  const dest = projects();
+  const a = clip('small.mp4');
+  const fsp = app.get('fsp');
+  const orig = fsp.statfs;
+  fsp.statfs = async () => ({ bavail: 1e9, bsize: 1024, blocks: 2e9, files: 0 });   // ~1 TB free
+  try {
+    const summary = await app.invoke('finalize:run', {
+      dir: join(dir, 'compressed'),
+      organizeDest: dest,
+      options: { organize: true, embed: false, csv: false, nas: false },
+      items: [{ ...a, rel: 'Client/Y' }],
+    });
+    assert.equal(summary.ok, true, JSON.stringify(summary.errors));
+    assert.equal(existsSync(join(dest, 'client', 'y', 'small.mp4')), true);
+  } finally { fsp.statfs = orig; }
+});
+
+test('the guard keeps headroom — it never fills a system disk to the last byte', () => {
+  // C: is his SYSTEM disk. Filling it completely breaks the machine, not just this app.
+  const src = readFileSync(join(ROOT, 'main-mod', '09-ipc-boot.js'), 'utf8');
+  const fn = src.slice(src.indexOf('WILL IT EVEN FIT'));
+  assert.match(fn.slice(0, 900), /need \+ 2e9 > free/, '2 GB of headroom');
+});
+
+test('a MOVE within the same volume is not blocked by a space check it does not need', async () => {
+  // Moving doesn't consume space. Applying the copy guard to it would refuse a legitimate run.
+  const src = readFileSync(join(ROOT, 'main-mod', '09-ipc-boot.js'), 'utf8');
+  const fn = src.slice(src.indexOf('WILL IT EVEN FIT'));
+  assert.match(fn.slice(0, 900), /if \(opts\.organize && dest && copyMode\)/, 'the space check is copy-only');
+});
+
+test('the Organize screen shows what is coming back, and whether it fits', () => {
+  // "I would like to be able to select what footage goes back here onto my computer." That is a real
+  // decision on his machine — 73 GB archive, 31 GB free on C: — so the two numbers that decide it must
+  // be on screen BEFORE he presses Run. finalize:run refuses a run that won't fit, but a refusal at the
+  // end of a long think is a worse answer than a number he could see all along.
+  const src = readFileSync(join(ROOT, 'src', 'mod', '09-phone-finalize.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function renderFinSpace('));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+
+  assert.match(body, /sel\.reduce\(\(n, f\) => n \+ \(f\.size \|\| 0\), 0\)/, 'how much he selected');
+  assert.match(body, /window\.api\.freeSpace\(dest\)/, 'how much room is left');
+  assert.match(body, /need \+ 2e9 > free/, 'and the same 2 GB headroom the run itself enforces');
+
+  // A MOVE consumes no space on the destination. Warning about a problem he has just solved by
+  // switching to move would be noise.
+  assert.match(body, /const copying = \$\('finKeepSource'\)/, 'only a COPY can run out of room');
+  assert.match(body, /const tight = copying && free !== null/);
+
+  const boot = readFileSync(join(ROOT, 'src', 'mod', '10-boot.js'), 'utf8');
+  assert.match(boot, /\$\('finKeepSource'\)\.addEventListener\('change', \(\) => \{ renderFinMap\(\); \}\)/,
+    'and it recomputes when he switches copy/move');
 });

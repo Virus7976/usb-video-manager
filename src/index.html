@@ -356,6 +356,10 @@
             </div>
             <button type="button" id="finPlaceBtn" class="btn primary">🤖 Sort into projects…</button>
           </div>
+          <!-- WHAT IS COMING BACK, AND WILL IT FIT. He files from a 73 GB archive on L: into projects
+               on C:, which has 31 GB free. It does not all fit — which is the whole reason he wants
+               to choose what comes back. Finding that out mid-run is the worst possible time. -->
+          <div id="finSpaceLine" class="fin-space-line hidden"></div>
           <div id="finMapHost" class="fin-map-host"></div>
           <!-- WHAT RUN WILL DO. These four drive finalize:run — and three of them used to sit inside
                the hidden #finLegacyOrg block below, so Run's behaviour was decided by controls the
@@ -363,7 +367,12 @@
                Resolve CSV and the NAS backup could never be switched on at all. -->
           <div class="fin-options fin-run-opts">
             <label class="org-toggle" title="Writes XMP — Title, Description, Keywords, hierarchical tags, people &amp; tags — read by Resolve, digiKam &amp; Windows search."><input type="checkbox" id="finEmbed" checked /> <span>Embed metadata into the files <span class="org-hint-ic">ⓘ</span></span></label>
-            <label class="org-toggle"><input type="checkbox" id="finOrganize" checked /> <span>Move the files into the folders shown above</span></label>
+            <label class="org-toggle"><input type="checkbox" id="finOrganize" checked /> <span>File the clips into the folders shown above</span></label>
+            <!-- COPY by default. He files from his L: archive into projects on C:, which has 31 GB
+                 free against a 73 GB archive — so the project folder is a WORKING copy he can clear
+                 out, and the archive has to still be there when he does. Moving would quietly make
+                 the C: copy the only one, on the smaller and fuller disk. -->
+            <label class="org-toggle org-sub" title="Copy leaves the originals in your Compressed folder — the project folder becomes a working copy you can delete any time. Move empties the Compressed folder as you file, leaving one copy."><input type="checkbox" id="finKeepSource" checked /> <span>Keep the originals in the Compressed folder <span class="org-hint-ic">ⓘ</span></span></label>
             <label class="org-toggle"><input type="checkbox" id="finCsv" /> <span>Also write a DaVinci Resolve metadata CSV</span></label>
             <label class="org-toggle"><input type="checkbox" id="finNas" /> <span>Also back up a copy to a NAS / second location</span></label>
             <div class="pref-row fin-nas-row hidden">

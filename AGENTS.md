@@ -579,6 +579,47 @@ Now streamed in 2 MB chunks: **+18 MB** instead of +944 MB, and the digest is **
 hash *less of the file than it claims to*, which on a verify-before-delete is the difference between
 checking the footage and pretending to. It now loops until the chunk is full.
 
+### ⚠ HIS ARCHIVE IS NOT A CLEAN TEACHER — learnFromLibrary poisons itself
+
+Read what it actually produced from his real 310 clips (not a fixture — the real filenames):
+
+1. **`delete` became a learned SUBJECT.** He writes `_delete_` to mean "this clip is junk" — 6 clips,
+   which sails past the "seen at least twice" filter and lands **in the enum**. The model could then
+   legitimately name a clip `delete`. It is a workflow marker, not a thing he films. → `MARKER_SUBJECTS`.
+
+2. **The OLD AI's own garbage was being taught back as HIS style.** `still-black-squares-grid-static`,
+   `still-liam-sitting-computer-cluttered-room`, `wide-establishing-panning-car-houses` — **49 of his
+   272 named clips (18%)** carry descriptions the previous naming pass wrote. Mining filenames cannot
+   tell his names from the AI's, so the new model was being handed the old model's mistakes as
+   exemplary. **That is the self-confirmation loop again, wearing a different hat.** `set_clip_name` is
+   explicitly forbidden from using camera words, so those examples don't merely fail to teach — they
+   *contradict the instruction*, in the one place the model trusts most. → `CAMERA_WORDS`.
+
+The camera-word filter is **hyphen-boundary aware**, not a substring match: his own compound word
+`josiah-topbunk-updownshot` must survive, and a naive `includes('shot')` would bin some of the best
+examples in the archive.
+
+### ⚠ NONE OF THE AI WORK RUNS ON HIS MACHINE UNTIL THE HEALTH CARD IS CLICKED
+
+His real config, read off disk 2026-07-13: `model: llava-llama3` (hallucinates), `textModel: ''`,
+`styleExamples: 0`, **no subjects**, `projectsRoot: ''`.
+
+`aiNameWithTools` returns `null` when `subjectsCache` is empty — so **out of the box, on his actual
+machine, the entire tool-naming path is DISABLED** and analyze silently falls back to the old
+giant-prompt behaviour he called gimmicky. The health card is the only thing that arms it.
+`test/ai-bootstrap-e2e.test.mjs` starts from his exact config, applies one fix per problem, and asserts
+the app ends up *genuinely working* — subjects in the enum, few-shot pairs clean, tool model resolved —
+not merely "no problems reported". **Keep that test honest; it is the one that decides whether any of
+this reaches him.**
+
+### He has almost no Projects tree (2026-07-13)
+
+`L:\Videos\02 - Projects` contains only `Compression`. His actual project-ish folders are `L:\liam`
+(Josiah, Karis, Mariah grad video, Random Files) — flat, and thin. All 310 named clips sit unorganized
+in `02 - Compressed`. So *"get AI to work out which project each video belongs in — this part I know
+sucks"* is partly not an AI problem at all: **there is almost nothing to file into.** Placement will
+mostly want to CREATE projects. Do not invent an organizational scheme for him — that is his call.
+
 ### Hardware constraint (the owner's machine)
 
 `qwen3:8b` (tools), `llama3.2-vision` (tools+vision, **but returns HTTP 500 on this machine — broken**),

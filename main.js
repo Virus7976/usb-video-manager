@@ -8072,6 +8072,24 @@ ipcMain.handle('ai:recallPlacement', (_e, payload) => {
 // It also surfaces the fragmentation he already has (`lawn-mowing` 68 clips AND `lawnmowing` 15) so
 // he can merge them — because until he does, BOTH are "existing subjects" and the enum will happily
 // keep offering the wrong one.
+// His archive is not a clean teacher. Two kinds of poison in it, both found by reading what
+// learnFromLibrary actually produced from his real 310 clips:
+//
+// 1. MARKERS, not subjects. He writes `_delete_` to mean "this clip is junk" — 6 clips, so it sails
+//    past the "used at least twice" filter and lands in the ENUM. The model could then legitimately
+//    name a clip `delete`. It is a workflow marker, not a thing he films.
+//
+// 2. THE OLD AI'S OWN GARBAGE. `still-black-squares-grid-static`, `still-still-wooden-fence-small-
+//    structures`, `wide-establishing-panning-car-houses` — these sit in his library because the OLD
+//    naming pass wrote them. Mining filenames cannot tell HIS names from the AI's bad ones, so it was
+//    feeding the old model's mistakes back to the new one as exemplary style. That is the
+//    self-confirmation loop again, wearing a different hat.
+//
+//    set_clip_name is explicitly forbidden from using camera words. An example full of them does not
+//    merely fail to teach — it contradicts the instruction, in the one place the model trusts most.
+const MARKER_SUBJECTS = new Set(['delete', 'deleted', 'trash', 'junk', 'tmp', 'temp', 'test', 'misc', 'unsorted', 'raw', 'new']);
+const CAMERA_WORDS = /(^|-)(still|wide|panning|pan|static|establishing|closeup|close-up|shot|angle|zoom|handheld|tracking|grid|footage|clip|video)(-|$)/;
+
 function learnFromLibrary(dirs) {
   const roots = (Array.isArray(dirs) ? dirs : [dirs]).filter(Boolean);
   const subjectCount = new Map();
@@ -8091,9 +8109,14 @@ function learnFromLibrary(dirs) {
       parsed += 1;
 
       const subj = aiSlug(meta.subject);
-      if (!subj) continue;
+      if (!subj || MARKER_SUBJECTS.has(subj)) continue;       // `delete` is a marker, not a subject
       subjectCount.set(subj, (subjectCount.get(subj) || 0) + 1);
-      if (meta.description) pairs.push(`${subj} / ${aiSlug(meta.description)}`);
+
+      const desc = aiSlug(meta.description || '');
+      // Never teach what we forbid. A marker description teaches nothing, and one full of camera words
+      // is the OLD model's output being laundered back in as if he had written it himself.
+      if (!desc || MARKER_SUBJECTS.has(desc) || CAMERA_WORDS.test(desc)) continue;
+      pairs.push(`${subj} / ${desc}`);
     }
   }
 

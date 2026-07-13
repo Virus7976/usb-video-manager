@@ -23,11 +23,24 @@ const REAL = [
   ...Array.from({ length: 7 }, (_, i) => `2026-06-01_lawn-mowing_josiah_v${i + 1}.mp4`),
   ...Array.from({ length: 3 }, (_, i) => `2026-06-02_lawnmowing_liam_v${i + 1}.mp4`),        // the SPLIT
   ...Array.from({ length: 4 }, (_, i) => `2026-05-06_pov_headcam-getting-into-truck_v${i + 1}.mp4`),
-  ...Array.from({ length: 3 }, (_, i) => `2026-06-03_calisthenics_still-static-grid_v${i + 1}.mp4`),
+  // Real proportions: MOST of his calisthenics clips he named himself; one is the old AI's garbage.
+  // (A subject whose examples are 100% garbage would end up in the enum with no style example at all
+  // — correct, but not what his archive looks like.)
+  ...Array.from({ length: 3 }, (_, i) => `2026-06-03_calisthenics_action-climbing-tree-rope-ladder_v${i + 1}.mp4`),
+  '2026-06-03_calisthenics_still-static-grid_v9.mp4',
   '2026-05-31_timelapse_wood-cleanup-farm_v1.mp4',
   '2026-05-31_timelapse_wood-cleanup-farm_v2.mp4',
   '2026-05-06_vloghead-owenpack-josiahpack-insidehouse_x_v1.mp4',   // used ONCE — a typo, not a subject
   'GH016805.mp4', 'GX016607.mp4', 'GH016823.mp4',                    // raw camera names — teach nothing
+  // His `_delete_` MARKER: 6 real clips in the archive. Used often enough to pass the "seen twice"
+  // filter, so it landed in the enum and the model could name a clip `delete`.
+  '2025-08-30_delete_bad-take_v1.mp4', '2025-08-30_delete_bad-take_v2.mp4',
+  '2026-05-06_pov_delete_v1.mp4',
+  // The OLD AI's camera-word garbage — 18% of his real archive (49 of 272). Mining filenames cannot
+  // tell HIS names from the AI's, so these were being taught back as exemplary style.
+  '2026-06-12_vlog_still-liam-sitting-computer-cluttered-room_v1.mp4',
+  '2026-06-12_vlog_still-blending-eggs-kitchen-counter_v1.mp4',
+  '2026-06-12_vlog_wide-establishing-panning-car-houses_v1.mp4'
 ];
 
 before(() => {
@@ -171,4 +184,54 @@ test('no advice when already on the best model — it does not nag', async () =>
   };
   const r = await app.invoke('ai:visionAdvice');
   assert.equal(r.advice, null);
+});
+
+// --- HIS ARCHIVE IS NOT A CLEAN TEACHER ---------------------------------------------------------
+//
+// Two kinds of poison, both found by reading what this actually produced from his real 310 clips.
+
+test('a workflow MARKER is not a subject — `delete` must never reach the enum', async () => {
+  // He writes `_delete_` to mean "this clip is junk". Six clips, so it sails past the seen-twice
+  // filter and lands in the subject enum — after which the model may legitimately name a clip
+  // `delete`. It is a marker, not a thing he films.
+  const r = plain(await app.invoke('ai:learnFromLibrary', [lib]));
+  assert.equal(r.subjects.includes('delete'), false, 'the model could have named a clip `delete`');
+  assert.equal((app.getJSON('config').ai.styleExamples || []).some((e) => /(^|\/ )delete\b/.test(e)), false,
+    'nor is it taught as a description');
+});
+
+test('the OLD AI\'s camera-word garbage is not laundered back in as HIS style', async () => {
+  // 18% of his real archive (49 of 272 named clips) has descriptions the old naming pass wrote:
+  // `still-liam-sitting-computer-cluttered-room`, `wide-establishing-panning-car-houses`. Mining
+  // filenames cannot tell his names from the AI's, so it was feeding the old model's mistakes to the
+  // new one as exemplary style. That is the self-confirmation loop again, wearing a different hat.
+  //
+  // set_clip_name is explicitly FORBIDDEN from using camera words. An example full of them does not
+  // merely fail to teach — it contradicts the instruction, in the one place the model trusts most.
+  await app.invoke('ai:learnFromLibrary', [lib]);
+  const examples = app.getJSON('config').ai.styleExamples || [];
+  assert.ok(examples.length, 'it still learns something');
+  for (const e of examples) {
+    assert.equal(/(^|-)(still|wide|panning|static|establishing|grid)(-|$)/.test(e), false,
+      `taught the model its own old garbage: "${e}"`);
+  }
+});
+
+test('…but HIS compound words survive — the filter is word-boundary aware, not a substring match', async () => {
+  // `josiah-topbunk-updownshot` is a real name HE wrote. A naive `includes('shot')` would bin it and
+  // quietly throw away the best examples in the archive.
+  writeFileSync(join(lib, '2024-11-29_vlog_josiah-topbunk-updownshot_v1.mp4'), '');
+  writeFileSync(join(lib, '2024-11-29_vlog_josiah-topbunk-updownshot_v2.mp4'), '');
+  await app.invoke('ai:learnFromLibrary', [lib]);
+  const examples = app.getJSON('config').ai.styleExamples || [];
+  assert.ok(examples.some((e) => e.includes('updownshot')), 'his own compound word was thrown away');
+});
+
+test('a subject that is ONLY ever marker-named still disappears cleanly', async () => {
+  // Guard against the filter half-working: dropping the example but keeping the subject, leaving an
+  // enum entry the model can choose but has no idea how to describe.
+  const r = plain(await app.invoke('ai:learnFromLibrary', [lib]));
+  for (const s of r.subjects) {
+    assert.equal(['delete', 'trash', 'junk', 'temp'].includes(s), false, `marker "${s}" survived`);
+  }
 });

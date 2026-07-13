@@ -546,6 +546,39 @@ Where the model IS in charge it is fine — 3/3 it asks when nothing in the tree
 correctly when an obvious project exists. It is good at *"does a matching project exist?"* and bad at
 *"is this the same job as last time?"*. Keep those separate.
 
+### ⚠⚠ THE DELETE GATE — it had a FAIL-OPEN. Read this before touching `verifyCopyPair`.
+
+Deleting from the card is the one irreversible act in the app, and Jake's hardest rule
+(*"THIS SHOULD NEVER BE AUTOMATED"*). The gate re-verifies in the main process and fails closed. It
+had **one way to fail open, and it did not merely allow a bad delete — it performed one:**
+
+**`dest === source`.** Stat the same file twice: same size. Hash it twice: same hash. *"Verified."*
+Then unlink it. The handler returned `{ ok: true, method: 'deleted' }` **while destroying the only
+copy of the footage.** Now refused three ways, because a string compare is not enough:
+
+1. `pathsEqual(src, dst)` — catches case/separator variants (`E:\DCIM\X.MP4` vs `e:/dcim/x.mp4`).
+2. **same inode + device** — catches a hardlink, a symlink, a junction, a `subst`ed drive, a `\\?\`
+   prefix. Genuinely different path strings, one file. The stats are already in hand; it costs nothing.
+3. **same removable volume** — `uniqueDest()` never overwrites, so pointing the intake folder at the
+   card produces a real, byte-identical second file that passes identity, size AND hash. The gate
+   would delete the original, report success, and leave him one copy: on the card he is about to wipe.
+   Checked BEFORE the hash — no point reading a gigabyte off a card to then reject it on volume
+   grounds. Only fires when the source really is removable, so internal-disk copies are untouched.
+
+### ⚠ …and the hash behind it was a 1 GB allocation per file
+
+`sampledFingerprint(…, { full: true })` was `readAt(0, size)` — i.e. `Buffer.alloc(size)`, **the whole
+file in one buffer.** Measured on a 900 MB clip: RSS **43 MB → 987 MB**. And `verifyCopyPair` hashes
+the source and the copy **in parallel**, so **~1.9 GB of RAM per clip** — on every copy and every
+delete, on the same 16 GB machine that is holding a 5 GB model in VRAM. GoPro chapters run to 4 GB,
+which is at `Buffer`'s ceiling and would simply throw.
+
+Now streamed in 2 MB chunks: **+18 MB** instead of +944 MB, and the digest is **byte-identical**
+(verified against the old implementation), so nothing that already stored a fingerprint changes.
+`fh.read()` is also not obliged to fill its buffer in one call — a short read there would silently
+hash *less of the file than it claims to*, which on a verify-before-delete is the difference between
+checking the footage and pretending to. It now loops until the chunk is full.
+
 ### Hardware constraint (the owner's machine)
 
 `qwen3:8b` (tools), `llama3.2-vision` (tools+vision, **but returns HTTP 500 on this machine — broken**),

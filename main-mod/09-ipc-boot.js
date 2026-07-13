@@ -629,17 +629,34 @@ async function sampledFingerprint(filePath, { full = false } = {}) {
     const CHUNK = 2 * 1024 * 1024;
     const hash = crypto.createHash('sha256');
     hash.update(`sz:${size}`);
+    // fh.read() may return FEWER bytes than asked for — it is not obliged to fill the buffer in one
+    // call. A short read here would silently hash less of the file than intended, which on a
+    // verify-before-delete is the difference between checking the footage and pretending to.
     const readAt = async (pos, len) => {
       if (len <= 0) return;
       const buf = Buffer.alloc(len);
-      const { bytesRead } = await fh.read(buf, 0, len, Math.max(0, pos));
-      hash.update(buf.subarray(0, bytesRead));
+      let got = 0;
+      while (got < len) {
+        // eslint-disable-next-line no-await-in-loop
+        const { bytesRead } = await fh.read(buf, got, len - got, Math.max(0, pos) + got);
+        if (!bytesRead) break;                     // genuine EOF
+        got += bytesRead;
+      }
+      hash.update(buf.subarray(0, got));
     };
     // full=true hashes the ENTIRE file (used to VERIFY a freshly-written copy — the sampled
     // head/mid/tail can't catch a mid-file corruption that preserves length). Sampled stays
     // the default for the resume/dedup pre-checks that scan whole cards.
-    if (full || size <= CHUNK * 3) { await readAt(0, size); }
-    else { await readAt(0, CHUNK); await readAt(Math.floor(size / 2) - CHUNK / 2, CHUNK); await readAt(size - CHUNK, CHUNK); }
+    //
+    // STREAM IT. This used to be a single readAt(0, size) — i.e. Buffer.alloc(size), the WHOLE FILE in
+    // one buffer. Measured: a 900 MB clip took RSS from 43 MB to 987 MB, and verifyCopyPair hashes the
+    // source and the copy IN PARALLEL, so ~1.9 GB of RAM per clip — on every copy and every delete.
+    // GoPro chapters run to 4 GB, which is at Buffer's ceiling and would simply throw. Feeding the
+    // same bytes in the same order to the same sha256 gives a byte-identical digest, so nothing that
+    // stored a fingerprint before needs to change.
+    if (full || size <= CHUNK * 3) {
+      for (let pos = 0; pos < size; pos += CHUNK) await readAt(pos, Math.min(CHUNK, size - pos));
+    } else { await readAt(0, CHUNK); await readAt(Math.floor(size / 2) - CHUNK / 2, CHUNK); await readAt(size - CHUNK, CHUNK); }
     return { size, hash: hash.digest('hex') };
   } finally { await fh.close(); }
 }
@@ -664,16 +681,54 @@ async function fingerprintsMatch(a, b, opts) {
 // from the card is the one irreversible act in this app, so this function is the single
 // source of truth for "is this file provably already copied?" — used both by the renderer's
 // Verify step AND, non-negotiably, by delete:source itself (see below).
+// Same volume? Removability is a property of the VOLUME, so a drive letter is exactly the right
+// granularity — the same thing isOnRemovableVolume() compares.
+function sameVolume(a, b) {
+  const letterOf = (s) => {
+    const m = /^([A-Za-z]):/.exec(String(s || '').replace(/^\\\\\?\\/, ''));
+    return m ? m[1].toUpperCase() : '';
+  };
+  const la = letterOf(a); const lb = letterOf(b);
+  return !!la && la === lb;
+}
+
 async function verifyCopyPair(src, dst) {
   let ok = false; let reason = '';
   try {
     if (!src) { reason = 'no source path'; }
     else if (!dst) { reason = 'no copy on record'; }
-    else {
+    else if (sameVolume(src, dst) && await isOnRemovableVolume(src)) {
+      // A COPY ON THE SAME CARD IS NOT A COPY OFF THE CARD.
+      //
+      // uniqueDest() never overwrites, so pointing the intake folder at the card itself produces a
+      // genuine, byte-identical second file — which passes identity, size AND hash. The gate would
+      // delete the original, report success, and leave him with exactly one copy: on the card he is
+      // about to wipe. The whole point of the delete step is that the footage is safe SOMEWHERE ELSE.
+      //
+      // Checked BEFORE the stat/hash: no point reading a gigabyte off a card to then reject it on
+      // volume grounds. Only fires when the source really IS removable, so copying within an internal
+      // disk (normal, safe) is untouched — and isOnRemovableVolume fails closed on Windows.
+      reason = 'the copy is on the same card as the original — that is not a backup';
+    }
+    else if (pathsEqual(src, dst)) {
+      // A FILE IS NOT A BACKUP OF ITSELF.
+      //
+      // Without this, `dest === source` sailed through every check below: stat the same file twice
+      // (same size), hash it twice (same hash), "verified" — and then delete it. The gate reported
+      // `ok: true, method: 'deleted'` while destroying the only copy of the footage. Deleting the
+      // card is the one thing in this app that is not undoable, and it was the one check that could
+      // fail OPEN.
+      reason = 'the copy on record IS the source file — that is not a copy';
+    } else {
       let ss = null; let ds = null;
       try { ss = await fsp.stat(src); } catch { reason = 'source missing'; }
       try { ds = await fsp.stat(dst); } catch { reason = reason || 'copy missing'; }
-      if (ss && ds) {
+      // Same inode on the same device = the same file reached by a different name: a hardlink, a
+      // symlink, a junction, a `subst`ed drive letter, a \\?\ prefix. pathsEqual compares strings
+      // and cannot see any of those. The stats are already in hand, so this costs nothing.
+      if (ss && ds && ss.ino && ss.ino === ds.ino && ss.dev === ds.dev) {
+        reason = 'the copy on record is the same file as the source (a link, not a copy)';
+      } else if (ss && ds) {
         if (ss.size !== ds.size) { reason = `size mismatch (${ss.size} vs ${ds.size})`; }
         else {
           const [fa, fb] = await Promise.all([

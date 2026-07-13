@@ -320,6 +320,190 @@ The app window grabs cleanly with PowerShell (no extra tools) — see `CONTRIBUT
 Drop PNGs in `docs/screenshots/` and reference them. Avoid screens that expose real client
 folder names in a public repo.
 
+## 7a. ⚠ IN PROGRESS — the AI redesign (tool-calling)
+
+**If you are picking this up mid-flight, read this first.** Owner's verdict: *"very gimmicky, it
+doesn't learn well, it has no idea how to group projects or how to ask questions. The AI shouldn't
+have to think that much, it should just be choosing when to use the tools it's given."*
+
+### Four root causes (all verified against the code)
+
+1. **No tool-calling, anywhere.** All 24 AI call sites go through `ollamaGenerate` → `/api/generate`
+   with `format:'json'` + a giant instruction prompt, parsed by `parseJsonLoose` — which *always*
+   returns an object, so a total model failure is indistinguishable from an empty answer.
+2. **`aiTextModel()` silently fell back to the VISION model**, and `textModel` defaults to `''`. Out
+   of the box, *every* text task — project placement, rule distillation, memory consolidation — ran
+   on `qwen2.5vl:7b`: weak at instructions, weak at JSON, and **incapable of calling tools**.
+3. **The "learning" is a self-confirmation loop.** `learnFromAnalysis` defaults ON; after each run
+   `ai:reflect` feeds the model its own observations paired with its own generated names and asks
+   "what rules explain these choices?", then auto-saves the result into memory. It writes down what
+   it already does and calls it the user's preference. Real user corrections aren't privileged.
+4. **Memories are injected uncapped** into every clip's prompt (the store caps at 300 → ~18 KB of
+   English rules per clip, on a 7B model).
+
+Also: project placement shows the model **folder names only, never contents**, and the ledger is only
+written *after this app files something* — so a pre-existing library gives it bare strings and an
+instruction that "PAST FILING MEMORY WINS" about an empty list. The LLM question-generator
+(`ai:batchQuestions`) is **dead code**, replaced by a hardcoded `for` loop over subjects.
+
+### The shape we're moving to
+
+Vision model **perceives** (observation only, no decisions) → a tool-capable text model **decides**
+by calling tools: `search_projects` / `inspect_project` / `place_clip` / `create_project` /
+`ask_user`. The folder tree becomes something the model *queries*, not a list it must memorise.
+
+### Landed so far
+
+**Transport + model choice** (`main-mod/06-copy-transfer.js`):
+- `ollamaChat(model, messages, {tools})` on `/api/chat` — parses `tool_calls`, tolerates
+  args-as-a-JSON-string, and reports "no tool call" honestly (the old `parseJsonLoose` *always*
+  returned an object, so total failure was indistinguishable from an empty answer).
+- `ollamaCapabilities()` / `ollamaModelTools()` — reads Ollama's own `capabilities` array. The code
+  already parsed that array and only ever tested it for `'vision'`. Cached; never *guesses* a model
+  into tool mode (a model that can't call tools just returns prose and breaks everything downstream).
+- `ollamaListModels()` — one owner for `/api/tags`, which was being re-fetched in four places.
+- `aiTextModel()` no longer falls back to vision. `aiToolModel()` / `autoPickToolModel()` select an
+  installed tool-capable model and persist it. **Not memoized** — a cached promise there outlives
+  config changes and model installs (a test caught this).
+
+**Learning** (root cause 3 + 4):
+- `reflectFromClips` now only samples clips the user actually CORRECTED (`clip._userNamed`, set in
+  `recordAiEdit`). An untouched clip's name IS the AI's output — feeding it back is the loop.
+- The `ai:reflect` prompt no longer says *"a system … produced these names"*. Filtering the samples
+  isn't enough on its own: the model was being told to reason about its own choices, so it looked for
+  the wrong thing. It now says these are THE USER's names, and that "none" is a fine answer.
+- `selectMemories()` caps the memories injected per clip at 24 (was UNCAPPED — up to 300 rules,
+  ~18 KB, into every clip's prompt). Deliberately **not** a pure relevance filter: a rule like
+  "always lowercase with hyphens" is global and has zero lexical overlap with any clip, so a naive
+  ranker would bin exactly the style rules that matter. Keep everything while it fits; only rank
+  (relevance, then recency) once over budget; emit in original order so the prompt stays stable.
+
+**Testing** — the harness had **no `fetch` in its vm context**, which is why the AI subsystem had
+never had a single test. It does now, with no Ollama and no GPU required:
+`test/ai-tools.test.mjs`, `test/ai-model-choice.test.mjs`, `test/ai-learning.test.mjs`. Stub the
+transport with `app.get('globalThis').fetch = …`, and normalise objects crossing the vm boundary
+with `JSON.parse(JSON.stringify(x))` — they carry the sandbox's `Object.prototype`, so
+`deepStrictEqual` fails on identity alone.
+
+### Landed: the tools themselves (`main-mod/10-ai-tools.js` — new file)
+
+`defineTool()` / `toolSchemas()` / `runToolLoop()`. The loop asks → runs a tool → feeds the result
+back → repeats until a **terminal** tool. It handles, in code and under test: no tool call at all
+(an honest "I don't know"), a hallucinated tool name (corrected in-band), a withheld tool, max-steps,
+a tool that throws, and the **protocol guard** below.
+
+**The structural bit that made the difference — don't undo it.** Every durable fix here was a change
+to what the model *can* do, not to how nicely it was asked:
+
+- It invented projects instead of asking → `create_project` now declares `requires:
+  ['search_projects']` and `place_in_project` declares `requiresAny: ['search_projects',
+  'recall_decision']`. `runToolLoop` **refuses the call in code** until the prerequisite has run. It
+  then asked, on its own.
+- It invented subjects (`car-door`, a second spelling of `lawn-mowing`) → `set_clip_name`'s `subject`
+  is a schema-level **`enum`** of his real subjects. It is now *impossible* to emit a new one;
+  `propose_new_subject` is a separate, deliberate act that refuses near-duplicates.
+- Descriptions ran 20+ words → capped in code (`aiCapWords`), not requested in a prompt.
+- Search couldn't match "alpine" → "Alps" → **the TOOL was stupid, not the model.** `aiTokenMatch`
+  matches on a 3-char shared prefix. Not 4: "alpine"/"alps" and "skinning"/"skiing" share exactly 3 —
+  measured against the words that actually failed.
+
+Placement memory (`rememberPlacement` / `recallPlacement`, persisted in `config.placementMemory`) +
+`backfillLedgerFromTree()` (the pre-existing library, which the ledger never knew about) +
+`learnFromLibrary()` (real subjects and `styleExamples` mined from the 310 clips he had already named
+himself). **An exact recall skips the model entirely** — that is "it only ever asks it once and then
+it knows".
+
+### Landed: all of it is now REACHABLE (this was the last gap)
+
+The tools, the loop and the grid all existed and passed tests while **nothing in the UI could reach
+them**. Three entry points close that:
+
+- **Analyze** (`aiSuggestClip`, `src/mod/04-tasks-ai.js`) → `aiNameWithTools()` runs
+  **perceive → choose**: the vision model only LOOKS, then the tool model NAMES from the subject
+  enum. Returns `null` — never a half-name — whenever it can't run, so the old single-call path is
+  an intact fallback. Gated on `aiToolModelReady`, latched by `renderAiHealth()` **before** its
+  no-problems early return (latching after it would have switched the tool path on only for a
+  *broken* config — see the test).
+- **Organize** (`finPlaceIntoProjects`, `src/mod/09-phone-finalize.js`) → the `#finPlaceBtn` bar in
+  step 2 opens `showPlacementReview()`. A confirmed choice is written back as **`f.meta.ledgerRel`**,
+  which is the *only* field the destination map reads: without that write-back the app asks, the user
+  answers, and everything still files into `_Unsorted`. **That exact bug already shipped once.**
+- **The AI health card** (`renderAiHealth` / `applyAiHealthFix`) surfaces the four things that were
+  silently wrong in his real config (weak vision model, no tool model, unlearned style, no
+  `projectsRoot`) — each with a one-click fix. Silent when healthy; it does not invent problems.
+
+### Still to do
+
+- **Verify tool-calling against the real `qwen3:8b`.** Still blocked: Jake runs long AI jobs on this
+  machine and loading an 8B text model beside the vision model = CUDA OOM. Run it when the GPU is
+  free. Everything is tested against a stubbed transport, so the *protocol* is proven — what is not
+  yet proven is how well qwen3 actually chooses tools on his footage.
+- **Grow `styleExamples` from every user correction** (`learnFromLibrary` seeds them from the
+  archive, and `recordAiEdit` now marks corrections with `_userNamed`, but the two aren't joined up).
+- Delete the dead `ai:batchQuestions` / `ai:parseRoute` handlers.
+
+### Hardware constraint (the owner's machine)
+
+`qwen3:8b` (tools), `llama3.2-vision` (tools+vision, **but returns HTTP 500 on this machine — broken**),
+`qwen2.5vl:7b` (vision), `llava-llama3` (vision). **One GPU — it cannot hold a vision model and an 8B
+text model at the same time** (verified: loading qwen3 during a vision run = `cudaMalloc failed: out
+of memory`). Any design that needs both must swap them deliberately rather than assume both fit.
+
+### ⚠ MEASURED ON HIS REAL FOOTAGE — read this before touching the AI
+
+Everything below came from running the real models on his real clips, with his real filenames as
+ground truth. It contradicts several things that "looked fine" in code review.
+
+**1. `llava-llama3` — his configured vision model — HALLUCINATES badly.** On the same contact sheets,
+side by side:
+
+| ground truth | `llava-llama3` (configured) | `qwen2.5vl:7b` |
+|---|---|---|
+| man at desk, "COME AND SEE" on monitor, bunk beds | *"a sign that reads **Cabinets for Sale**"* | *"desk, monitor displaying **COME AND SEE**, headphones, **bunk beds**"* |
+| truck doors open, trailer hitch, farm | *"a person riding a **motorcycle** on a road"* | *"white **pickup truck**, doors open… **farm**, barns"* |
+
+It invents whole objects. **A large part of "the AI is gimmicky" is simply that the app is running the
+worst vision model installed.** Prefer `qwen2.5vl:7b`. Do not trust `llava-*` for grounding.
+
+**2. His subjects are KINDS OF SHOOT, not objects.** Real distribution across 310 clips: `vlog` 129,
+`lawn-mowing` 68, `pov` 26, `calisthenics` 17, **`lawnmowing` 15**, `timelapse` 13. A vision model
+describes *objects*, so the namer invented `car-door`, `computertime`, `skateboarding`, `table-setup`
+as subjects. Note `lawn-mowing` **and** `lawnmowing`: **his archive is already permanently fragmented
+by a near-duplicate subject**, and nothing in the app prevented it.
+
+The fix is not a better prompt — it is a schema-level **`enum`** of his real subjects (Ollama enforces
+enums in tool schemas), plus `propose_new_subject`, which REFUSES anything that is merely a rewording
+of an existing subject. With the enum on, invented subjects went to **zero** and `vlog`/`pov` matched
+his own labels exactly.
+
+**3. His descriptions are 1–7 words.** Given a rich observation the model wrote 20+
+(`a-young-boy-moving-through-his-cluttered-bedroom-standing-near-the-bed-…`), which is an unusable
+filename. Capped in code (`aiCapWords`), not in a prompt.
+
+**4. A model will always rather ACT than admit ignorance.** Given a clip it could not identify, the
+real qwen3:8b invented a project called "Client - Grey Object" and justified it confidently. It only
+asked once the loop REFUSED, in code, to let it create a project it had never searched for. Hence
+`requires` / `requiresAny` in `defineTool`. **Structure beats instruction.**
+
+**5. A too-literal search tool makes the model look stupid.** Footage described as *"two people
+SKINNING up a snowy ridge, ALPINE"* scored ZERO against a project called "Alps 2026" (subjects:
+skiing, ski touring) because the matcher was exact — so the model created "Alpine Skinning Ridge". The
+model was not wrong; the TOOL was, and a model can only be as good as what the tool tells it.
+`aiTokenMatch` now matches on a 3-char shared prefix (`alp`, `ski`) — the number is measured against
+the words that actually failed.
+
+**6. VERIFY YOUR OWN HARNESS FIRST.** The first real-footage run produced garbage, and it looked like
+the vision model was useless. It wasn't: my `ffmpeg select` filter had silently dropped 2 of 3 frames
+and `tile=3x1` padded the sheet with **black** — the model said "the photo is black and white" because
+it *was*. The app's own `getContactSheet` seeks each frame individually (`-ss` at
+`duration*(i+0.5)/N`) and then tiles; do that. I was one step from writing off a working model on the
+basis of a broken test.
+
+**7. His config is the worst case, and it is real.** `ai.textModel: ''` (so every text task ran on the
+vision model), `ai.model: llava-llama3` (the hallucinating one), `projectsRoot: ''` (there is **no
+project tree at all** — which is why "organize sucks": there is nowhere to file to and the app never
+said so), `projectLedger: 0`, `styleExamples: 0`. The 310 clips sit flat in `02 - Compressed`.
+
 ## 8. Lessons & breakthroughs (append here)
 
 A running log of non-obvious things we learned the hard way, so nobody (human or AI) has to

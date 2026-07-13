@@ -290,6 +290,7 @@ async function withBusyBtn(btn, busyLabel, fn, onError) {
   window.api.onDriveOptions((drives) => onDriveOptions(drives));
   refreshDriveList();   // populate the device list at startup
   renderPendingWork();  // "you've got footage to deal with" — surfaced on every launch
+  renderAiHealth();     // …and anything silently broken about the AI (weak model, unlearned style)
   const amChk = $('autoModeChk');
   if (amChk) {
     amChk.checked = !!uiPrefs.autoMode;
@@ -299,7 +300,7 @@ async function withBusyBtn(btn, busyLabel, fn, onError) {
       if (amBar) amBar.classList.toggle('am-on', amChk.checked);
       window.api.setUiPref('autoMode', amChk.checked);
       showToast(amChk.checked
-        ? '⚡ Auto mode on — pick a device and it runs the whole backup itself (you only batch photos, nothing is ever deleted).'
+        ? 'Auto mode on — pick a device and it runs the whole backup itself (you only batch photos, nothing is ever deleted).'
         : 'Auto mode off — back up step by step.', 4000);
     });
   }
@@ -329,6 +330,15 @@ async function withBusyBtn(btn, busyLabel, fn, onError) {
 const DL_ICON_CARD = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v4M11 4v4M15 4v4"/><path d="M3 13h18"/></svg>`;
 const DL_ICON_USB = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="9" width="10" height="12" rx="2"/><path d="M9.5 9V4.5h5V9"/><path d="M12 13v4"/></svg>`;
 const DL_ICON_PHONE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2"/><line x1="10.5" y1="18" x2="13.5" y2="18"/></svg>`;
+// Film strip — for the "footage waiting" card. Same line vocabulary as the device icons above
+// (24 viewBox, 1.7 stroke, currentColor) so it inherits the .sc-icon chip's colour like they do.
+// It replaces a 🎬 emoji, which rendered as full-colour clip-art beside monochrome line icons.
+//
+// A clapperboard was the obvious choice and it was WRONG: at the 19px the chip renders it at, its
+// diagonals disappear and it collapses into "rounded rect with a horizontal line" — which is exactly
+// the SD-card icon sitting a few pixels below it. The sprocket rails read at that size and can't be
+// confused with anything else in the list.
+const PW_ICON_FILM = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7.5 5v14M16.5 5v14"/><path d="M3 9.5h4.5M3 14.5h4.5M16.5 9.5H21M16.5 14.5H21"/></svg>`;
 let lastDriveList = [];
 let lastPhoneList = [];
 function renderDriveList(drives) { if (Array.isArray(drives)) lastDriveList = drives; renderDevices(); }
@@ -339,7 +349,7 @@ function renderDevices() {
   const pbSrc = (cfg && cfg.phoneBackupSource) || '';   // wireless NAS backup folder
   if (!drives.length && !phones.length && !pbSrc) {
     host.innerHTML = `<p class="section-label">Devices</p><div class="dl-empty"><span class="dl-empty-dot"></span><span class="muted small">No card or phone detected. Plug one in — it shows up here automatically — or use “Choose drive…” to pick a folder.</span>
-      <button type="button" class="btn ghost" id="pbSetup" style="margin-top:8px">☁ Set up wireless phone backup</button></div>`;
+      <button type="button" class="btn ghost" id="pbSetup" style="margin-top:8px">Set up wireless phone backup</button></div>`;
     const su = host.querySelector('#pbSetup');
     if (su) su.addEventListener('click', pickPhoneBackupFolder);
     return;
@@ -351,7 +361,7 @@ function renderDevices() {
     </button>` : '';
   const phoneCards = phones.map((p, i) => `<button type="button" class="settings-card action dl-card" data-kind="phone" data-i="${i}">
       <span class="sc-icon accent">${DL_ICON_PHONE}</span>
-      <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : (p.wireless ? '📶 Phone · photos + videos (Wi-Fi)' : 'Phone · photos + videos (MTP)')}</span></span>
+      <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : (p.wireless ? 'Wi-Fi · photos + videos' : 'USB · photos + videos')}</span></span>
       <span class="sc-chevron">›</span>
     </button>`).join('');
   const driveCards = drives.map((d, i) => {
@@ -397,28 +407,40 @@ async function renderPendingWork() {
   let phoneStaged = 0;
   try { phoneStaged = (await scanPhoneStaged()).unfinished; } catch { phoneStaged = 0; }
 
+  // These sit directly above the Devices list, which uses the house .settings-card language (neutral
+  // surface, monochrome line icon in a tinted chip, title + muted sub, trailing affordance). These
+  // cards used to ignore all of it — a full accent-14% wash with an accent-40% border and a colour
+  // emoji — so two of them stacked read as two competing alert boxes shouting over the list beneath.
+  // Same card language now; the only accent is a slim left rail and the CTA pill, which is enough to
+  // say "there's work waiting" without drowning the screen.
   const cards = [];
   if (phoneStaged) {
-    cards.push(`<button type="button" class="pw-card" id="pwPhone">
-        <span class="pw-ic keep-emoji">📱</span>
-        <span class="pw-tx"><span class="pw-title">Phone media waiting for you</span><span class="pw-sub"><b>${phoneStaged}</b> video${phoneStaged !== 1 ? 's' : ''} already pulled — name &amp; organize without reconnecting your phone</span></span>
-        <span class="pw-cta">Continue ›</span>
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwPhone">
+        <span class="sc-icon accent">${DL_ICON_PHONE}</span>
+        <span class="sc-text">
+          <span class="sc-title">Phone media waiting</span>
+          <span class="sc-sub"><b>${phoneStaged}</b> video${phoneStaged !== 1 ? 's' : ''} pulled · name &amp; organize without reconnecting</span>
+        </span>
+        <span class="pw-cta">Continue<span class="pw-chev">›</span></span>
       </button>`);
   }
   if (ready || uncompressed) {
-    const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} already analyzed` : ''}` : '';
+    const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} analysed` : ''}` : '';
     let uncLine = '';
     if (uncompressed) {
       uncLine = ready
         ? `<b>${uncompressed}</b> still in Uncompressed`
-        : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'}, then organize`;
+        : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'} first`;
     }
-    const sub = [readyLine, uncLine].filter(Boolean).join(' &nbsp;·&nbsp; ');
-    const cta = ready ? `Organize ${ready} ›` : 'Open Organize ›';
-    cards.push(`<button type="button" class="pw-card" id="pwGo">
-        <span class="pw-ic keep-emoji">🎬</span>
-        <span class="pw-tx"><span class="pw-title">You've got footage to deal with</span><span class="pw-sub">${sub}</span></span>
-        <span class="pw-cta">${cta}</span>
+    const sub = [readyLine, uncLine].filter(Boolean).join(' · ');
+    const cta = ready ? `Organize ${ready}` : 'Open Organize';
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwGo">
+        <span class="sc-icon accent">${PW_ICON_FILM}</span>
+        <span class="sc-text">
+          <span class="sc-title">Footage ready to organize</span>
+          <span class="sc-sub">${sub}</span>
+        </span>
+        <span class="pw-cta">${cta}<span class="pw-chev">›</span></span>
       </button>`);
   }
   if (!cards.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
@@ -1256,6 +1278,9 @@ let versionsCache = [];
 let appVersionStr = '';   // real app version (from main) for the About box
 let routesCache = [];      // standing filing rules (subject → folder, by-day)
 let clipObsCache = {};     // clipKey → { obs, ts } prior AI observations
+// Is a model that can actually CALL TOOLS available? Latched by renderAiHealth() at boot and after
+// every fix. A vision model cannot call tools, so without this the analyze flow must not try.
+let aiToolModelReady = false;
 function newVersionId() { return `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`; }
 function countNamedClips() { return state.scannedFiles.filter((c) => c.subject || c.description).length; }
 function fmtAgo(ts) {
@@ -1382,3 +1407,89 @@ function showVersionHistory() {
   render();
 }
 
+
+// ---------------------------------------------------------------------------
+// AI HEALTH — surface the things that were silently wrong.
+//
+// The real config on this machine had FOUR problems, none of which appeared anywhere in the UI:
+//   • the vision model was llava-llama3, which hallucinates whole objects (measured on real clips —
+//     it called a pickup truck "a person riding a motorcycle");
+//   • textModel was empty, so every text task silently ran on that same vision model, which cannot
+//     call tools at all;
+//   • styleExamples was 0, while 310 clips the user had named himself sat on disk, unread;
+//   • projectsRoot was empty — there was literally nowhere to file anything, which is the real
+//     reason organizing "sucks", and nothing ever said so.
+//
+// Each is detectable and each has a one-click fix. So say it plainly and fix it, rather than quietly
+// doing the worst possible thing and looking stupid.
+// ---------------------------------------------------------------------------
+const AI_ICON_WARN = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>`;
+
+async function renderAiHealth() {
+  const host = $('aiHealth');
+  if (!host) return;
+  if (!aiCfg.enabled) { host.classList.add('hidden'); host.innerHTML = ''; return; }
+
+  let h = null;
+  try { h = await window.api.aiHealth(); } catch { h = null; }
+
+  // Health already told us whether a tool-capable model exists — so latch it here rather than making
+  // analyze pay for a second /api/show round-trip. This MUST happen before the early-return below:
+  // a HEALTHY config has no problems to render, and that is exactly the config where the tool path
+  // should be on.
+  aiToolModelReady = !!(h && h.toolModel);
+
+  const problems = (h && h.problems) || [];
+  if (!problems.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
+
+  host.innerHTML = problems.map((p, i) => `
+    <button type="button" class="settings-card action ai-health-card${p.severity === 'high' ? ' high' : ''}" data-i="${i}">
+      <span class="sc-icon accent">${AI_ICON_WARN}</span>
+      <span class="sc-text">
+        <span class="sc-title">${escapeHtml(p.title)}</span>
+        <span class="sc-sub">${escapeHtml(p.detail)}</span>
+      </span>
+      <span class="pw-cta">${escapeHtml(p.fixLabel)}<span class="pw-chev">›</span></span>
+    </button>`).join('');
+  host.classList.remove('hidden');
+
+  host.querySelectorAll('.ai-health-card').forEach((card) => {
+    card.addEventListener('click', async () => {
+      const p = problems[Number(card.dataset.i)];
+      if (!p) return;
+      await applyAiHealthFix(p, card);
+    });
+  });
+}
+
+async function applyAiHealthFix(p, card) {
+  const done = (msg) => { showToast(msg, 4500); renderAiHealth(); };
+  try {
+    if (p.fix === 'useVision') {
+      const r = await withBusyBtn(card, 'Switching…', () => window.api.aiUseVisionModel(p.arg));
+      if (r && r.ok) { aiCfg.model = p.arg; done(`Now using ${p.arg} — it actually sees what's in your footage ✓`); }
+      return;
+    }
+    if (p.fix === 'learn') {
+      const r = await withBusyBtn(card, 'Reading your clips…', () => window.api.aiLearnFromLibrary(p.arg));
+      if (!r || !r.ok) { showToast((r && r.error) || 'Could not read your clips', 6000); return; }
+      // The fragmentation it found is worth saying out loud — it is already costing him.
+      const dupes = (r.duplicates || []).map((d) => `"${d.merge}" (${d.mergeCount} clips) is really "${d.keep}" (${d.keepCount})`);
+      done(`Learned ${r.subjects.length} of your subjects and ${r.examples.length} real examples from ${r.parsed} clips ✓${dupes.length ? ` · Heads up: ${dupes[0]} — I won't create any more of those.` : ''}`);
+      return;
+    }
+    if (p.fix === 'pickProjects') {
+      const dir = await window.api.pickProjectsRoot();
+      if (dir) done('Projects folder set — organizing has somewhere to go now ✓');
+      return;
+    }
+    if (p.fix === 'pull') {
+      showToast(`Downloading ${p.arg} — this is a few GB, it'll take a minute.`, 5000);
+      const r = await window.api.aiPull(p.arg);
+      if (r && r.ok) done(`${p.arg} installed — naming and filing can use tools properly now ✓`);
+      else showToast(`Couldn't download ${p.arg}: ${(r && r.error) || 'unknown error'}`, 6000);
+    }
+  } catch (e) {
+    showToast(`That didn't work — ${(e && e.message) || e}`, 6000);
+  }
+}

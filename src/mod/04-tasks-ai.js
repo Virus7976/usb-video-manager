@@ -406,6 +406,10 @@ function recordAiEdit(clip, field, newVal) {
   const from = (clip[key] || '').trim();
   const to = (newVal || '').trim();
   if (!from || !to || from.toLowerCase() === to.toLowerCase()) return;
+  // THE one real signal in the whole learning system: the user looked at what the AI wrote and
+  // decided it was wrong. Mark the clip, so "learn from this analysis" can tell the difference
+  // between a name the USER chose and a name the AI simply produced — see reflectFromClips.
+  clip._userNamed = true;
   aiEdits.push({ field, from, to });
   clip[key] = '';             // record this correction only once
   maybeFlushEdits();
@@ -898,14 +902,29 @@ function applyNamesToDescriptions() {
 // REFLECT: after analysis, work BACKWARDS from what the AI saw + how it named the
 // clips → derive durable rules and fold them into memory (the app learning from its
 // own analysis). Background-friendly; deduped + capped in main.
+// Learn from the USER's naming — never from the AI's own.
+//
+// This used to send every analyzed clip: the AI's observation paired with the AI's OWN generated
+// name, under a prompt that literally read "a system … produced these names … work backwards, what
+// rules explain these choices?" — and it auto-saved the answer into memory, which is then injected
+// into the next clip's prompt. That is a self-confirmation loop. The AI wrote down what it already
+// does, called it Jake's preference, and then followed it harder. It ran after EVERY analyze run of
+// ≥2 clips, with `learnFromAnalysis` defaulting to on. It is a large part of "it doesn't learn well".
+//
+// A clip the user never touched carries no signal — its name IS the AI's output. A clip the user
+// CORRECTED is the one piece of ground truth in the entire system, so that's all we learn from.
 async function reflectFromClips(idxs, { manual = false } = {}) {
   const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsCache[clipKey(c)] && clipObsCache[clipKey(c)].obs) || '';
   const samples = (idxs || []).map((i) => {
     const c = state.scannedFiles[i]; if (!c) return null;
+    if (!c._userNamed) return null;                 // the AI's own output teaches it nothing
     const obs = obsOf(c);
     return obs && (c.subject || c.description) ? { observation: obs, subject: c.subject || '', description: c.description || '', shotType: c.shotType || '', people: Array.isArray(c.people) ? c.people : [], context: (c.context || '').trim() } : null;
   }).filter(Boolean);
-  if (samples.length < 2) { if (manual) showToast('Analyze at least 2 clips first — this learns from the analysis'); return; }
+  if (samples.length < 2) {
+    if (manual) showToast('Correct the AI on a couple of clips first — this learns from YOUR names, not its own.', 5000);
+    return;
+  }
   setTask('ai', aiModelLabel(), 1, 1, 'learning');
   try {
     const r = await window.api.aiReflect({ samples });
@@ -982,9 +1001,77 @@ async function aiAutoEnhance() {
 let aiRunDirection = '';
 function runContext(clip) { return [aiRunDirection, clip && clip.context].map((s) => (s || '').trim()).filter(Boolean).join(' — '); }
 
+// PERCEIVE, then CHOOSE.
+//
+// The old path did both in one call: a giant prompt telling a VISION model to look AND to emit a
+// naming JSON blob. That is three jobs at once (see, reason, serialise) and a 7B model gets one of
+// them wrong nearly every time — which is where the variability came from.
+//
+// Split: the vision model only LOOKS (it is good at that, given a good vision model), and a
+// tool-capable text model then names it by CHOOSING from the subjects Jake actually uses. The subject
+// is a schema-level enum, so it cannot invent `car-door` or a second spelling of `lawn-mowing`.
+//
+// Falls back to the old single-call path when there is no tool model — never worse than before.
+async function aiNameWithTools(i, opts = {}) {
+  const clip = state.scannedFiles[i];
+  if (!clip) return null;
+  if (!aiToolModelReady || !subjectsCache.length) return null;
+
+  // Reuse a cached observation if we have one — re-watching footage we've already seen is the single
+  // most expensive thing the app can do.
+  let obs = (opts.observation || '').trim() || (clipObsCache[clipKey(clip)] || {}).obs || '';
+  if (!obs) {
+    markClipAnalyzing(i, 'looking');
+    const p = await aiCallGuard(window.api.aiPerceive({
+      sourcePath: clip.sourcePath, model: aiCfg.model,
+      context: runContext(clip), people: Array.isArray(clip.people) ? clip.people : [],
+    }), 200000);
+    if (!p || !p.ok || !p.observation) return null;          // fall back to the old path
+    obs = String(p.observation).trim();
+  }
+  if (obs) {
+    clip.observation = obs;
+    const key = clipKey(clip);
+    clipObsCache[key] = { obs, ts: Date.now() };
+    try { window.api.saveClipObs({ key, obs }); } catch { /* non-fatal */ }
+  }
+
+  markClipAnalyzing(i, 'naming');
+  let r = null;
+  try {
+    r = await window.api.aiNameFromObservation({
+      observation: obs,
+      context: runContext(clip),
+      people: Array.isArray(clip.people) ? clip.people : [],
+      subjects: subjectsCache,
+    });
+  } catch { return null; }
+  if (!r || !r.ok || !r.subject) return null;                // fall back rather than half-name it
+
+  // Shaped exactly like the old aiSuggest result, so applyAiResult and everything downstream is
+  // untouched.
+  return {
+    ok: true,
+    subject: r.subject,
+    description: r.description || '',
+    shotType: r.shotType || '',
+    tags: Array.isArray(r.tags) ? r.tags : [],
+    observation: obs,
+    category: '',
+    newSubject: r.newSubject ? r.subject : '',
+  };
+}
+
 async function aiSuggestClip(i, mode = 'all', opts = {}) {
   const clip = state.scannedFiles[i];
   if (!clip || !aiReady()) return { ok: false };
+
+  // The tool path first. It only runs when there is a model that can actually call tools AND we know
+  // his real subjects — otherwise there is nothing to constrain the choice to, and the old path is
+  // genuinely no worse.
+  const toolResult = await aiNameWithTools(i, opts);
+  if (toolResult) return toolResult;
+
   try {
     const res = await window.api.aiSuggest({
       sourcePath: clip.sourcePath,

@@ -1666,3 +1666,210 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
   if (Array.isArray(pendingRules) && pendingRules.length) verifyRules(pendingRules);
 }
 
+
+// ---------------------------------------------------------------------------
+// PLACEMENT REVIEW — the face-confirm grid, for projects.
+//
+// The face-review grid is the best interaction in this app: it SHOWS you the thing, makes a
+// confident suggestion ("Is this Jake?"), gives you tap-chips of the people you already have, and
+// batches the whole lot onto one page so confirming is one tap. This is that, for filing.
+//
+// It is one card per SUBJECT GROUP, not per clip. Grouping clips by subject needs no model at all —
+// it's deterministic — so a card of 309 clips becomes ~15 decisions instead of 309, and every clip
+// in a shoot is guaranteed to land together. The old per-clip approach could scatter one shoot
+// across three projects.
+//
+// Every card's suggestion comes from ai:placeGroup, where the model SEARCHED the real tree and READ
+// what's actually inside the candidate projects. When it genuinely can't tell, it calls ask_user and
+// the card simply arrives with no suggestion and the candidates as chips — which is exactly the
+// "Who is this?" state of the face grid.
+// ---------------------------------------------------------------------------
+
+// Group clips deterministically: same subject (and same date, when the project files by day).
+function groupClipsForPlacement(clips) {
+  const groups = new Map();
+  for (const c of (clips || [])) {
+    const key = slug(c.subject || '') || '_unnamed';
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        subject: c.subject || '',
+        description: c.description || '',
+        location: c.location || '',
+        date: c.date || '',
+        observation: c.observation || '',
+        people: [],
+        clips: [],
+      });
+    }
+    const g = groups.get(key);
+    g.clips.push(c);
+    for (const p of (Array.isArray(c.people) ? c.people : [])) if (!g.people.includes(p)) g.people.push(p);
+    if (!g.observation && c.observation) g.observation = c.observation;
+    if (!g.location && c.location) g.location = c.location;
+  }
+  return [...groups.values()];
+}
+
+async function showPlacementReview(clips, opts = {}) {
+  const groups = groupClipsForPlacement(clips);
+  if (!groups.length) { showToast('Nothing to file'); return null; }
+
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML = `<div class="modal face-grid">
+      <div class="fg-head">
+        <div><b>Where should these go?</b><div class="muted small pr-status">Asking the AI — it's searching your Projects tree…</div></div>
+        <button type="button" class="btn fg-done">Done</button>
+      </div>
+      <div class="face-grid-scroll pr-scroll"></div>
+    </div>`;
+    document.body.appendChild(ov);
+    const scroll = ov.querySelector('.pr-scroll');
+    const status = ov.querySelector('.pr-status');
+
+    const close = () => {
+      ov.remove();
+      resolve(groups.filter((g) => g.chosen).map((g) => ({ clips: g.clips, path: g.chosen })));
+    };
+    ov.querySelector('.fg-done').addEventListener('click', close);
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+
+    const render = () => {
+      scroll.innerHTML = groups.map((g, i) => {
+        const n = g.clips.length;
+        const seen = `${n} clip${n !== 1 ? 's' : ''}${g.date ? ` · ${g.date}` : ''}`;
+        const thumb = g.poster
+          ? `<img src="${escapeAttr(g.poster)}" alt=""/>`
+          : '<span class="face-ph-icon">🎞</span>';
+
+        if (g.chosen) {
+          const why = g.recalled ? 'you filed this here before' : (g.suggest ? '' : 'you chose this');
+          return `<div class="face-grid-card-item confirmed" data-i="${i}">
+            <div class="fgc-photo">${thumb}<span class="fgc-badge">✓</span></div>
+            <div class="fgc-name">${escapeHtml(g.subject || 'unnamed')}</div>
+            <div class="fgc-sub muted small">→ ${escapeHtml(g.chosen)}${why ? ` · ${escapeHtml(why)}` : ''}</div>
+            <button class="fgc-undo" data-i="${i}">Undo</button>
+          </div>`;
+        }
+        if (g.pending) {
+          return `<div class="face-grid-card-item" data-i="${i}">
+            <div class="fgc-photo">${thumb}</div>
+            <div class="fgc-name">${escapeHtml(g.subject || 'unnamed')}</div>
+            <div class="fgc-sub muted small">${seen}</div>
+            <div class="fgc-sub muted small">Thinking…</div>
+          </div>`;
+        }
+
+        const chips = (g.options || []).slice(0, 6)
+          .map((o) => `<button class="fgc-chip" data-i="${i}" data-path="${escapeAttr(o)}">${escapeHtml(o.split('/').pop())}</button>`).join('');
+
+        // A confident suggestion → the "Is this Jake?" state. No suggestion → the "Who is this?" state.
+        if (g.suggest) {
+          return `<div class="face-grid-card-item suggested" data-i="${i}">
+            <div class="fgc-photo">${thumb}</div>
+            <div class="fgc-q">File into <b>${escapeHtml(g.suggest.split('/').pop())}</b>?</div>
+            <div class="fgc-sub muted small">${seen}${g.why ? ` · ${escapeHtml(g.why)}` : ''}</div>
+            <div class="fgc-btns"><button class="fgc-yes pr-yes" data-i="${i}">✓ Yes</button><button class="fgc-no pr-no" data-i="${i}">✗ Somewhere else</button></div>
+            <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="or type a project name…" autocomplete="off"/>
+            ${chips ? `<div class="fgc-chips compact">${chips}</div>` : ''}
+          </div>`;
+        }
+        return `<div class="face-grid-card-item" data-i="${i}">
+          <div class="fgc-photo">${thumb}</div>
+          <div class="fgc-q">Where does <b>${escapeHtml(g.subject || 'this')}</b> go?</div>
+          <div class="fgc-sub muted small">${seen}${g.question ? ` · ${escapeHtml(g.question)}` : ''}</div>
+          <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="type a project name…" autocomplete="off"/>
+          ${chips ? `<div class="fgc-chips compact">${chips}</div>` : ''}
+        </div>`;
+      }).join('');
+
+      const left = groups.filter((g) => !g.chosen && !g.pending).length;
+      status.textContent = left
+        ? `${left} to confirm — tick the ones it got right.`
+        : (groups.some((g) => g.pending) ? 'Asking the AI…' : 'All set — press Done to file them.');
+    };
+
+    // Confirming is the moment the app LEARNS. The user's answer is the ground truth — not the
+    // model's suggestion — so it is remembered permanently, and the same footage is never asked about
+    // again. This is the whole of "it only ever asks it once and then it knows".
+    const pick = (i, path) => {
+      const p = String(path || '').trim();
+      if (!p) return;
+      const g = groups[i];
+      g.chosen = p;
+      try {
+        window.api.aiRememberPlacement({ subject: g.subject, people: g.people, location: g.location, path: p });
+      } catch { /* non-fatal — the clips still file, we just don't learn from it */ }
+      render();
+    };
+
+    scroll.addEventListener('click', (e) => {
+      const t = e.target;
+      const i = Number(t.dataset && t.dataset.i);
+      if (t.classList.contains('pr-yes')) return pick(i, groups[i].suggest);
+      if (t.classList.contains('pr-no')) { groups[i].suggest = ''; render(); return; }
+      if (t.classList.contains('fgc-chip')) return pick(i, t.dataset.path);
+      if (t.classList.contains('fgc-undo')) { groups[i].chosen = ''; render(); return; }
+    });
+    scroll.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !e.target.classList.contains('pr-input')) return;
+      e.preventDefault();
+      pick(Number(e.target.dataset.i), e.target.value);
+    });
+
+    render();
+
+    // Ask the model about each group — one at a time, so the GPU only ever holds one model, and the
+    // cards fill in as answers arrive rather than making the user stare at a spinner.
+    (async () => {
+      for (const g of groups) {
+        // Already told us? Then it is not a question. No model call, no card to confirm — it is just
+        // done, with a note saying why, so the user can still see (and undo) what it did.
+        try {
+          const known = await window.api.aiRecallPlacement({ subject: g.subject, people: g.people, location: g.location });
+          if (known && known.path && known.confidence === 'exact') {
+            g.chosen = known.path;
+            g.recalled = known.told_before || 1;
+            render();
+            continue;
+          }
+        } catch { /* fall through to asking the model */ }
+
+        g.pending = true; render();
+        try {
+          const poster = g.clips[0] && g.clips[0].sourcePath ? await window.api.getPoster(g.clips[0].sourcePath) : '';
+          if (poster) g.poster = poster;
+        } catch { /* a missing thumbnail is cosmetic */ }
+        let r = null;
+        try {
+          r = await window.api.aiPlaceGroup({
+            subject: g.subject, description: g.description, observation: g.observation,
+            people: g.people, location: g.location, date: g.date, count: g.clips.length,
+          });
+        } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+        g.pending = false;
+
+        if (!r || !r.ok) {
+          g.question = (r && r.error) || 'the AI could not answer';
+          g.options = [];
+        } else if (r.action === 'place' || r.action === 'create') {
+          g.suggest = r.path;
+          g.why = r.action === 'create' ? 'new project' : '';
+          g.options = (r.trace || [])
+            .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
+            .flatMap((t) => t.result.matches.map((m) => m.path))
+            .filter((p) => p !== r.path).slice(0, 6);
+        } else {
+          // ask_user — exactly the face grid's "Who is this?" card.
+          g.question = r.question || '';
+          g.options = r.options && r.options.length ? r.options : (r.trace || [])
+            .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
+            .flatMap((t) => t.result.matches.map((m) => m.path)).slice(0, 6);
+        }
+        render();
+      }
+    })();
+  });
+}

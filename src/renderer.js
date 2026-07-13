@@ -292,6 +292,7 @@ async function withBusyBtn(btn, busyLabel, fn, onError) {
   window.api.onDriveOptions((drives) => onDriveOptions(drives));
   refreshDriveList();   // populate the device list at startup
   renderPendingWork();  // "you've got footage to deal with" — surfaced on every launch
+  renderAiHealth();     // …and anything silently broken about the AI (weak model, unlearned style)
   const amChk = $('autoModeChk');
   if (amChk) {
     amChk.checked = !!uiPrefs.autoMode;
@@ -301,7 +302,7 @@ async function withBusyBtn(btn, busyLabel, fn, onError) {
       if (amBar) amBar.classList.toggle('am-on', amChk.checked);
       window.api.setUiPref('autoMode', amChk.checked);
       showToast(amChk.checked
-        ? '⚡ Auto mode on — pick a device and it runs the whole backup itself (you only batch photos, nothing is ever deleted).'
+        ? 'Auto mode on — pick a device and it runs the whole backup itself (you only batch photos, nothing is ever deleted).'
         : 'Auto mode off — back up step by step.', 4000);
     });
   }
@@ -331,6 +332,15 @@ async function withBusyBtn(btn, busyLabel, fn, onError) {
 const DL_ICON_CARD = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v4M11 4v4M15 4v4"/><path d="M3 13h18"/></svg>`;
 const DL_ICON_USB = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="9" width="10" height="12" rx="2"/><path d="M9.5 9V4.5h5V9"/><path d="M12 13v4"/></svg>`;
 const DL_ICON_PHONE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2"/><line x1="10.5" y1="18" x2="13.5" y2="18"/></svg>`;
+// Film strip — for the "footage waiting" card. Same line vocabulary as the device icons above
+// (24 viewBox, 1.7 stroke, currentColor) so it inherits the .sc-icon chip's colour like they do.
+// It replaces a 🎬 emoji, which rendered as full-colour clip-art beside monochrome line icons.
+//
+// A clapperboard was the obvious choice and it was WRONG: at the 19px the chip renders it at, its
+// diagonals disappear and it collapses into "rounded rect with a horizontal line" — which is exactly
+// the SD-card icon sitting a few pixels below it. The sprocket rails read at that size and can't be
+// confused with anything else in the list.
+const PW_ICON_FILM = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7.5 5v14M16.5 5v14"/><path d="M3 9.5h4.5M3 14.5h4.5M16.5 9.5H21M16.5 14.5H21"/></svg>`;
 let lastDriveList = [];
 let lastPhoneList = [];
 function renderDriveList(drives) { if (Array.isArray(drives)) lastDriveList = drives; renderDevices(); }
@@ -341,7 +351,7 @@ function renderDevices() {
   const pbSrc = (cfg && cfg.phoneBackupSource) || '';   // wireless NAS backup folder
   if (!drives.length && !phones.length && !pbSrc) {
     host.innerHTML = `<p class="section-label">Devices</p><div class="dl-empty"><span class="dl-empty-dot"></span><span class="muted small">No card or phone detected. Plug one in — it shows up here automatically — or use “Choose drive…” to pick a folder.</span>
-      <button type="button" class="btn ghost" id="pbSetup" style="margin-top:8px">☁ Set up wireless phone backup</button></div>`;
+      <button type="button" class="btn ghost" id="pbSetup" style="margin-top:8px">Set up wireless phone backup</button></div>`;
     const su = host.querySelector('#pbSetup');
     if (su) su.addEventListener('click', pickPhoneBackupFolder);
     return;
@@ -353,7 +363,7 @@ function renderDevices() {
     </button>` : '';
   const phoneCards = phones.map((p, i) => `<button type="button" class="settings-card action dl-card" data-kind="phone" data-i="${i}">
       <span class="sc-icon accent">${DL_ICON_PHONE}</span>
-      <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : (p.wireless ? '📶 Phone · photos + videos (Wi-Fi)' : 'Phone · photos + videos (MTP)')}</span></span>
+      <span class="sc-text"><span class="sc-title">${escapeHtml(p.name || 'Phone')}</span><span class="sc-sub">${p.sim ? 'Simulated phone · photos + videos' : (p.wireless ? 'Wi-Fi · photos + videos' : 'USB · photos + videos')}</span></span>
       <span class="sc-chevron">›</span>
     </button>`).join('');
   const driveCards = drives.map((d, i) => {
@@ -399,28 +409,40 @@ async function renderPendingWork() {
   let phoneStaged = 0;
   try { phoneStaged = (await scanPhoneStaged()).unfinished; } catch { phoneStaged = 0; }
 
+  // These sit directly above the Devices list, which uses the house .settings-card language (neutral
+  // surface, monochrome line icon in a tinted chip, title + muted sub, trailing affordance). These
+  // cards used to ignore all of it — a full accent-14% wash with an accent-40% border and a colour
+  // emoji — so two of them stacked read as two competing alert boxes shouting over the list beneath.
+  // Same card language now; the only accent is a slim left rail and the CTA pill, which is enough to
+  // say "there's work waiting" without drowning the screen.
   const cards = [];
   if (phoneStaged) {
-    cards.push(`<button type="button" class="pw-card" id="pwPhone">
-        <span class="pw-ic keep-emoji">📱</span>
-        <span class="pw-tx"><span class="pw-title">Phone media waiting for you</span><span class="pw-sub"><b>${phoneStaged}</b> video${phoneStaged !== 1 ? 's' : ''} already pulled — name &amp; organize without reconnecting your phone</span></span>
-        <span class="pw-cta">Continue ›</span>
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwPhone">
+        <span class="sc-icon accent">${DL_ICON_PHONE}</span>
+        <span class="sc-text">
+          <span class="sc-title">Phone media waiting</span>
+          <span class="sc-sub"><b>${phoneStaged}</b> video${phoneStaged !== 1 ? 's' : ''} pulled · name &amp; organize without reconnecting</span>
+        </span>
+        <span class="pw-cta">Continue<span class="pw-chev">›</span></span>
       </button>`);
   }
   if (ready || uncompressed) {
-    const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} already analyzed` : ''}` : '';
+    const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} analysed` : ''}` : '';
     let uncLine = '';
     if (uncompressed) {
       uncLine = ready
         ? `<b>${uncompressed}</b> still in Uncompressed`
-        : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'}, then organize`;
+        : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'} first`;
     }
-    const sub = [readyLine, uncLine].filter(Boolean).join(' &nbsp;·&nbsp; ');
-    const cta = ready ? `Organize ${ready} ›` : 'Open Organize ›';
-    cards.push(`<button type="button" class="pw-card" id="pwGo">
-        <span class="pw-ic keep-emoji">🎬</span>
-        <span class="pw-tx"><span class="pw-title">You've got footage to deal with</span><span class="pw-sub">${sub}</span></span>
-        <span class="pw-cta">${cta}</span>
+    const sub = [readyLine, uncLine].filter(Boolean).join(' · ');
+    const cta = ready ? `Organize ${ready}` : 'Open Organize';
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwGo">
+        <span class="sc-icon accent">${PW_ICON_FILM}</span>
+        <span class="sc-text">
+          <span class="sc-title">Footage ready to organize</span>
+          <span class="sc-sub">${sub}</span>
+        </span>
+        <span class="pw-cta">${cta}<span class="pw-chev">›</span></span>
       </button>`);
   }
   if (!cards.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
@@ -1258,6 +1280,9 @@ let versionsCache = [];
 let appVersionStr = '';   // real app version (from main) for the About box
 let routesCache = [];      // standing filing rules (subject → folder, by-day)
 let clipObsCache = {};     // clipKey → { obs, ts } prior AI observations
+// Is a model that can actually CALL TOOLS available? Latched by renderAiHealth() at boot and after
+// every fix. A vision model cannot call tools, so without this the analyze flow must not try.
+let aiToolModelReady = false;
 function newVersionId() { return `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`; }
 function countNamedClips() { return state.scannedFiles.filter((c) => c.subject || c.description).length; }
 function fmtAgo(ts) {
@@ -1384,6 +1409,92 @@ function showVersionHistory() {
   render();
 }
 
+
+// ---------------------------------------------------------------------------
+// AI HEALTH — surface the things that were silently wrong.
+//
+// The real config on this machine had FOUR problems, none of which appeared anywhere in the UI:
+//   • the vision model was llava-llama3, which hallucinates whole objects (measured on real clips —
+//     it called a pickup truck "a person riding a motorcycle");
+//   • textModel was empty, so every text task silently ran on that same vision model, which cannot
+//     call tools at all;
+//   • styleExamples was 0, while 310 clips the user had named himself sat on disk, unread;
+//   • projectsRoot was empty — there was literally nowhere to file anything, which is the real
+//     reason organizing "sucks", and nothing ever said so.
+//
+// Each is detectable and each has a one-click fix. So say it plainly and fix it, rather than quietly
+// doing the worst possible thing and looking stupid.
+// ---------------------------------------------------------------------------
+const AI_ICON_WARN = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>`;
+
+async function renderAiHealth() {
+  const host = $('aiHealth');
+  if (!host) return;
+  if (!aiCfg.enabled) { host.classList.add('hidden'); host.innerHTML = ''; return; }
+
+  let h = null;
+  try { h = await window.api.aiHealth(); } catch { h = null; }
+
+  // Health already told us whether a tool-capable model exists — so latch it here rather than making
+  // analyze pay for a second /api/show round-trip. This MUST happen before the early-return below:
+  // a HEALTHY config has no problems to render, and that is exactly the config where the tool path
+  // should be on.
+  aiToolModelReady = !!(h && h.toolModel);
+
+  const problems = (h && h.problems) || [];
+  if (!problems.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
+
+  host.innerHTML = problems.map((p, i) => `
+    <button type="button" class="settings-card action ai-health-card${p.severity === 'high' ? ' high' : ''}" data-i="${i}">
+      <span class="sc-icon accent">${AI_ICON_WARN}</span>
+      <span class="sc-text">
+        <span class="sc-title">${escapeHtml(p.title)}</span>
+        <span class="sc-sub">${escapeHtml(p.detail)}</span>
+      </span>
+      <span class="pw-cta">${escapeHtml(p.fixLabel)}<span class="pw-chev">›</span></span>
+    </button>`).join('');
+  host.classList.remove('hidden');
+
+  host.querySelectorAll('.ai-health-card').forEach((card) => {
+    card.addEventListener('click', async () => {
+      const p = problems[Number(card.dataset.i)];
+      if (!p) return;
+      await applyAiHealthFix(p, card);
+    });
+  });
+}
+
+async function applyAiHealthFix(p, card) {
+  const done = (msg) => { showToast(msg, 4500); renderAiHealth(); };
+  try {
+    if (p.fix === 'useVision') {
+      const r = await withBusyBtn(card, 'Switching…', () => window.api.aiUseVisionModel(p.arg));
+      if (r && r.ok) { aiCfg.model = p.arg; done(`Now using ${p.arg} — it actually sees what's in your footage ✓`); }
+      return;
+    }
+    if (p.fix === 'learn') {
+      const r = await withBusyBtn(card, 'Reading your clips…', () => window.api.aiLearnFromLibrary(p.arg));
+      if (!r || !r.ok) { showToast((r && r.error) || 'Could not read your clips', 6000); return; }
+      // The fragmentation it found is worth saying out loud — it is already costing him.
+      const dupes = (r.duplicates || []).map((d) => `"${d.merge}" (${d.mergeCount} clips) is really "${d.keep}" (${d.keepCount})`);
+      done(`Learned ${r.subjects.length} of your subjects and ${r.examples.length} real examples from ${r.parsed} clips ✓${dupes.length ? ` · Heads up: ${dupes[0]} — I won't create any more of those.` : ''}`);
+      return;
+    }
+    if (p.fix === 'pickProjects') {
+      const dir = await window.api.pickProjectsRoot();
+      if (dir) done('Projects folder set — organizing has somewhere to go now ✓');
+      return;
+    }
+    if (p.fix === 'pull') {
+      showToast(`Downloading ${p.arg} — this is a few GB, it'll take a minute.`, 5000);
+      const r = await window.api.aiPull(p.arg);
+      if (r && r.ok) done(`${p.arg} installed — naming and filing can use tools properly now ✓`);
+      else showToast(`Couldn't download ${p.arg}: ${(r && r.error) || 'unknown error'}`, 6000);
+    }
+  } catch (e) {
+    showToast(`That didn't work — ${(e && e.message) || e}`, 6000);
+  }
+}
 // ---------------------------------------------------------------------------
 // Subject history — a custom Fluent combobox (the native <datalist> dropdown
 // can't be themed). The list is cached and a styled flyout filters as you type.
@@ -2790,6 +2901,10 @@ function recordAiEdit(clip, field, newVal) {
   const from = (clip[key] || '').trim();
   const to = (newVal || '').trim();
   if (!from || !to || from.toLowerCase() === to.toLowerCase()) return;
+  // THE one real signal in the whole learning system: the user looked at what the AI wrote and
+  // decided it was wrong. Mark the clip, so "learn from this analysis" can tell the difference
+  // between a name the USER chose and a name the AI simply produced — see reflectFromClips.
+  clip._userNamed = true;
   aiEdits.push({ field, from, to });
   clip[key] = '';             // record this correction only once
   maybeFlushEdits();
@@ -3282,14 +3397,29 @@ function applyNamesToDescriptions() {
 // REFLECT: after analysis, work BACKWARDS from what the AI saw + how it named the
 // clips → derive durable rules and fold them into memory (the app learning from its
 // own analysis). Background-friendly; deduped + capped in main.
+// Learn from the USER's naming — never from the AI's own.
+//
+// This used to send every analyzed clip: the AI's observation paired with the AI's OWN generated
+// name, under a prompt that literally read "a system … produced these names … work backwards, what
+// rules explain these choices?" — and it auto-saved the answer into memory, which is then injected
+// into the next clip's prompt. That is a self-confirmation loop. The AI wrote down what it already
+// does, called it Jake's preference, and then followed it harder. It ran after EVERY analyze run of
+// ≥2 clips, with `learnFromAnalysis` defaulting to on. It is a large part of "it doesn't learn well".
+//
+// A clip the user never touched carries no signal — its name IS the AI's output. A clip the user
+// CORRECTED is the one piece of ground truth in the entire system, so that's all we learn from.
 async function reflectFromClips(idxs, { manual = false } = {}) {
   const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsCache[clipKey(c)] && clipObsCache[clipKey(c)].obs) || '';
   const samples = (idxs || []).map((i) => {
     const c = state.scannedFiles[i]; if (!c) return null;
+    if (!c._userNamed) return null;                 // the AI's own output teaches it nothing
     const obs = obsOf(c);
     return obs && (c.subject || c.description) ? { observation: obs, subject: c.subject || '', description: c.description || '', shotType: c.shotType || '', people: Array.isArray(c.people) ? c.people : [], context: (c.context || '').trim() } : null;
   }).filter(Boolean);
-  if (samples.length < 2) { if (manual) showToast('Analyze at least 2 clips first — this learns from the analysis'); return; }
+  if (samples.length < 2) {
+    if (manual) showToast('Correct the AI on a couple of clips first — this learns from YOUR names, not its own.', 5000);
+    return;
+  }
   setTask('ai', aiModelLabel(), 1, 1, 'learning');
   try {
     const r = await window.api.aiReflect({ samples });
@@ -3366,9 +3496,77 @@ async function aiAutoEnhance() {
 let aiRunDirection = '';
 function runContext(clip) { return [aiRunDirection, clip && clip.context].map((s) => (s || '').trim()).filter(Boolean).join(' — '); }
 
+// PERCEIVE, then CHOOSE.
+//
+// The old path did both in one call: a giant prompt telling a VISION model to look AND to emit a
+// naming JSON blob. That is three jobs at once (see, reason, serialise) and a 7B model gets one of
+// them wrong nearly every time — which is where the variability came from.
+//
+// Split: the vision model only LOOKS (it is good at that, given a good vision model), and a
+// tool-capable text model then names it by CHOOSING from the subjects Jake actually uses. The subject
+// is a schema-level enum, so it cannot invent `car-door` or a second spelling of `lawn-mowing`.
+//
+// Falls back to the old single-call path when there is no tool model — never worse than before.
+async function aiNameWithTools(i, opts = {}) {
+  const clip = state.scannedFiles[i];
+  if (!clip) return null;
+  if (!aiToolModelReady || !subjectsCache.length) return null;
+
+  // Reuse a cached observation if we have one — re-watching footage we've already seen is the single
+  // most expensive thing the app can do.
+  let obs = (opts.observation || '').trim() || (clipObsCache[clipKey(clip)] || {}).obs || '';
+  if (!obs) {
+    markClipAnalyzing(i, 'looking');
+    const p = await aiCallGuard(window.api.aiPerceive({
+      sourcePath: clip.sourcePath, model: aiCfg.model,
+      context: runContext(clip), people: Array.isArray(clip.people) ? clip.people : [],
+    }), 200000);
+    if (!p || !p.ok || !p.observation) return null;          // fall back to the old path
+    obs = String(p.observation).trim();
+  }
+  if (obs) {
+    clip.observation = obs;
+    const key = clipKey(clip);
+    clipObsCache[key] = { obs, ts: Date.now() };
+    try { window.api.saveClipObs({ key, obs }); } catch { /* non-fatal */ }
+  }
+
+  markClipAnalyzing(i, 'naming');
+  let r = null;
+  try {
+    r = await window.api.aiNameFromObservation({
+      observation: obs,
+      context: runContext(clip),
+      people: Array.isArray(clip.people) ? clip.people : [],
+      subjects: subjectsCache,
+    });
+  } catch { return null; }
+  if (!r || !r.ok || !r.subject) return null;                // fall back rather than half-name it
+
+  // Shaped exactly like the old aiSuggest result, so applyAiResult and everything downstream is
+  // untouched.
+  return {
+    ok: true,
+    subject: r.subject,
+    description: r.description || '',
+    shotType: r.shotType || '',
+    tags: Array.isArray(r.tags) ? r.tags : [],
+    observation: obs,
+    category: '',
+    newSubject: r.newSubject ? r.subject : '',
+  };
+}
+
 async function aiSuggestClip(i, mode = 'all', opts = {}) {
   const clip = state.scannedFiles[i];
   if (!clip || !aiReady()) return { ok: false };
+
+  // The tool path first. It only runs when there is a model that can actually call tools AND we know
+  // his real subjects — otherwise there is nothing to constrain the choice to, and the old path is
+  // genuinely no worse.
+  const toolResult = await aiNameWithTools(i, opts);
+  if (toolResult) return toolResult;
+
   try {
     const res = await window.api.aiSuggest({
       sourcePath: clip.sourcePath,
@@ -8321,6 +8519,213 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
   if (Array.isArray(pendingRules) && pendingRules.length) verifyRules(pendingRules);
 }
 
+
+// ---------------------------------------------------------------------------
+// PLACEMENT REVIEW — the face-confirm grid, for projects.
+//
+// The face-review grid is the best interaction in this app: it SHOWS you the thing, makes a
+// confident suggestion ("Is this Jake?"), gives you tap-chips of the people you already have, and
+// batches the whole lot onto one page so confirming is one tap. This is that, for filing.
+//
+// It is one card per SUBJECT GROUP, not per clip. Grouping clips by subject needs no model at all —
+// it's deterministic — so a card of 309 clips becomes ~15 decisions instead of 309, and every clip
+// in a shoot is guaranteed to land together. The old per-clip approach could scatter one shoot
+// across three projects.
+//
+// Every card's suggestion comes from ai:placeGroup, where the model SEARCHED the real tree and READ
+// what's actually inside the candidate projects. When it genuinely can't tell, it calls ask_user and
+// the card simply arrives with no suggestion and the candidates as chips — which is exactly the
+// "Who is this?" state of the face grid.
+// ---------------------------------------------------------------------------
+
+// Group clips deterministically: same subject (and same date, when the project files by day).
+function groupClipsForPlacement(clips) {
+  const groups = new Map();
+  for (const c of (clips || [])) {
+    const key = slug(c.subject || '') || '_unnamed';
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        subject: c.subject || '',
+        description: c.description || '',
+        location: c.location || '',
+        date: c.date || '',
+        observation: c.observation || '',
+        people: [],
+        clips: [],
+      });
+    }
+    const g = groups.get(key);
+    g.clips.push(c);
+    for (const p of (Array.isArray(c.people) ? c.people : [])) if (!g.people.includes(p)) g.people.push(p);
+    if (!g.observation && c.observation) g.observation = c.observation;
+    if (!g.location && c.location) g.location = c.location;
+  }
+  return [...groups.values()];
+}
+
+async function showPlacementReview(clips, opts = {}) {
+  const groups = groupClipsForPlacement(clips);
+  if (!groups.length) { showToast('Nothing to file'); return null; }
+
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML = `<div class="modal face-grid">
+      <div class="fg-head">
+        <div><b>Where should these go?</b><div class="muted small pr-status">Asking the AI — it's searching your Projects tree…</div></div>
+        <button type="button" class="btn fg-done">Done</button>
+      </div>
+      <div class="face-grid-scroll pr-scroll"></div>
+    </div>`;
+    document.body.appendChild(ov);
+    const scroll = ov.querySelector('.pr-scroll');
+    const status = ov.querySelector('.pr-status');
+
+    const close = () => {
+      ov.remove();
+      resolve(groups.filter((g) => g.chosen).map((g) => ({ clips: g.clips, path: g.chosen })));
+    };
+    ov.querySelector('.fg-done').addEventListener('click', close);
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+
+    const render = () => {
+      scroll.innerHTML = groups.map((g, i) => {
+        const n = g.clips.length;
+        const seen = `${n} clip${n !== 1 ? 's' : ''}${g.date ? ` · ${g.date}` : ''}`;
+        const thumb = g.poster
+          ? `<img src="${escapeAttr(g.poster)}" alt=""/>`
+          : '<span class="face-ph-icon">🎞</span>';
+
+        if (g.chosen) {
+          const why = g.recalled ? 'you filed this here before' : (g.suggest ? '' : 'you chose this');
+          return `<div class="face-grid-card-item confirmed" data-i="${i}">
+            <div class="fgc-photo">${thumb}<span class="fgc-badge">✓</span></div>
+            <div class="fgc-name">${escapeHtml(g.subject || 'unnamed')}</div>
+            <div class="fgc-sub muted small">→ ${escapeHtml(g.chosen)}${why ? ` · ${escapeHtml(why)}` : ''}</div>
+            <button class="fgc-undo" data-i="${i}">Undo</button>
+          </div>`;
+        }
+        if (g.pending) {
+          return `<div class="face-grid-card-item" data-i="${i}">
+            <div class="fgc-photo">${thumb}</div>
+            <div class="fgc-name">${escapeHtml(g.subject || 'unnamed')}</div>
+            <div class="fgc-sub muted small">${seen}</div>
+            <div class="fgc-sub muted small">Thinking…</div>
+          </div>`;
+        }
+
+        const chips = (g.options || []).slice(0, 6)
+          .map((o) => `<button class="fgc-chip" data-i="${i}" data-path="${escapeAttr(o)}">${escapeHtml(o.split('/').pop())}</button>`).join('');
+
+        // A confident suggestion → the "Is this Jake?" state. No suggestion → the "Who is this?" state.
+        if (g.suggest) {
+          return `<div class="face-grid-card-item suggested" data-i="${i}">
+            <div class="fgc-photo">${thumb}</div>
+            <div class="fgc-q">File into <b>${escapeHtml(g.suggest.split('/').pop())}</b>?</div>
+            <div class="fgc-sub muted small">${seen}${g.why ? ` · ${escapeHtml(g.why)}` : ''}</div>
+            <div class="fgc-btns"><button class="fgc-yes pr-yes" data-i="${i}">✓ Yes</button><button class="fgc-no pr-no" data-i="${i}">✗ Somewhere else</button></div>
+            <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="or type a project name…" autocomplete="off"/>
+            ${chips ? `<div class="fgc-chips compact">${chips}</div>` : ''}
+          </div>`;
+        }
+        return `<div class="face-grid-card-item" data-i="${i}">
+          <div class="fgc-photo">${thumb}</div>
+          <div class="fgc-q">Where does <b>${escapeHtml(g.subject || 'this')}</b> go?</div>
+          <div class="fgc-sub muted small">${seen}${g.question ? ` · ${escapeHtml(g.question)}` : ''}</div>
+          <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="type a project name…" autocomplete="off"/>
+          ${chips ? `<div class="fgc-chips compact">${chips}</div>` : ''}
+        </div>`;
+      }).join('');
+
+      const left = groups.filter((g) => !g.chosen && !g.pending).length;
+      status.textContent = left
+        ? `${left} to confirm — tick the ones it got right.`
+        : (groups.some((g) => g.pending) ? 'Asking the AI…' : 'All set — press Done to file them.');
+    };
+
+    // Confirming is the moment the app LEARNS. The user's answer is the ground truth — not the
+    // model's suggestion — so it is remembered permanently, and the same footage is never asked about
+    // again. This is the whole of "it only ever asks it once and then it knows".
+    const pick = (i, path) => {
+      const p = String(path || '').trim();
+      if (!p) return;
+      const g = groups[i];
+      g.chosen = p;
+      try {
+        window.api.aiRememberPlacement({ subject: g.subject, people: g.people, location: g.location, path: p });
+      } catch { /* non-fatal — the clips still file, we just don't learn from it */ }
+      render();
+    };
+
+    scroll.addEventListener('click', (e) => {
+      const t = e.target;
+      const i = Number(t.dataset && t.dataset.i);
+      if (t.classList.contains('pr-yes')) return pick(i, groups[i].suggest);
+      if (t.classList.contains('pr-no')) { groups[i].suggest = ''; render(); return; }
+      if (t.classList.contains('fgc-chip')) return pick(i, t.dataset.path);
+      if (t.classList.contains('fgc-undo')) { groups[i].chosen = ''; render(); return; }
+    });
+    scroll.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !e.target.classList.contains('pr-input')) return;
+      e.preventDefault();
+      pick(Number(e.target.dataset.i), e.target.value);
+    });
+
+    render();
+
+    // Ask the model about each group — one at a time, so the GPU only ever holds one model, and the
+    // cards fill in as answers arrive rather than making the user stare at a spinner.
+    (async () => {
+      for (const g of groups) {
+        // Already told us? Then it is not a question. No model call, no card to confirm — it is just
+        // done, with a note saying why, so the user can still see (and undo) what it did.
+        try {
+          const known = await window.api.aiRecallPlacement({ subject: g.subject, people: g.people, location: g.location });
+          if (known && known.path && known.confidence === 'exact') {
+            g.chosen = known.path;
+            g.recalled = known.told_before || 1;
+            render();
+            continue;
+          }
+        } catch { /* fall through to asking the model */ }
+
+        g.pending = true; render();
+        try {
+          const poster = g.clips[0] && g.clips[0].sourcePath ? await window.api.getPoster(g.clips[0].sourcePath) : '';
+          if (poster) g.poster = poster;
+        } catch { /* a missing thumbnail is cosmetic */ }
+        let r = null;
+        try {
+          r = await window.api.aiPlaceGroup({
+            subject: g.subject, description: g.description, observation: g.observation,
+            people: g.people, location: g.location, date: g.date, count: g.clips.length,
+          });
+        } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+        g.pending = false;
+
+        if (!r || !r.ok) {
+          g.question = (r && r.error) || 'the AI could not answer';
+          g.options = [];
+        } else if (r.action === 'place' || r.action === 'create') {
+          g.suggest = r.path;
+          g.why = r.action === 'create' ? 'new project' : '';
+          g.options = (r.trace || [])
+            .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
+            .flatMap((t) => t.result.matches.map((m) => m.path))
+            .filter((p) => p !== r.path).slice(0, 6);
+        } else {
+          // ask_user — exactly the face grid's "Who is this?" card.
+          g.question = r.question || '';
+          g.options = r.options && r.options.length ? r.options : (r.trace || [])
+            .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
+            .flatMap((t) => t.result.matches.map((m) => m.path)).slice(0, 6);
+        }
+        render();
+      }
+    })();
+  });
+}
 // ---------------------------------------------------------------------------
 // Face recognition (fully local, opt-in). Detection runs HERE via face-api.js
 // (WebGL, no native modules); main persists/matches descriptors. Named people are
@@ -11643,6 +12048,58 @@ $('finMatchedOnly').addEventListener('change', (e) => {
 { const fq = $('finQuick'); if (fq) fq.addEventListener('change', (e) => { uiPrefs.quickAnalyze = e.target.checked; window.api.setUiPref('quickAnalyze', e.target.checked); }); }
 { const fp = $('finPhotos'); if (fp) fp.addEventListener('change', (e) => { uiPrefs.finalizePhotos = e.target.checked; window.api.setUiPref('finalizePhotos', e.target.checked); finRunScan(); }); }
 { const fa = $('finAuto'); if (fa) fa.addEventListener('change', (e) => { uiPrefs.autoTagFaces = e.target.checked; window.api.setUiPref('autoTagFaces', e.target.checked); }); }
+// "Later I go to the output folder and get AI to work out which project each video belongs in —
+// this part I know sucks."
+//
+// It sucked because it was a single giant prompt over every clip at once, it had no idea what
+// projects actually existed, and whatever you told it evaporated the moment the window closed.
+//
+// Now: group the clips → check what you already decided (no model call at all if we know) → ask the
+// model, which must SEARCH the real Projects tree before it may place or invent anything → show one
+// card per group, exactly like the faces popup → your answer is remembered forever.
+async function finPlaceIntoProjects() {
+  const sel = (finSelected().length ? finSelected() : finMatched());
+  if (!sel.length) { showToast('Nothing ticked to file'); return; }
+  if (!aiCfg.enabled) { showToast('Turn AI on in Settings first'); return; }
+
+  const clips = sel.map((f) => ({
+    name: f.name,
+    sourcePath: f.sourcePath,
+    subject: (f.meta && f.meta.subject) || '',
+    description: (f.meta && f.meta.description) || '',
+    location: (f.meta && f.meta.location) || '',
+    date: (f.meta && f.meta.date) || '',
+    people: (f.meta && f.meta.people) || [],
+    tags: (f.meta && f.meta.tags) || [],
+    observation: (f.meta && f.meta.observation) || '',
+    _ref: f,
+  }));
+
+  const placed = await withBusyBtn($('finPlaceBtn'), 'Sorting…', () => showPlacementReview(clips));
+  if (!placed || !placed.length) return;
+
+  // Write the decision back onto the clips as ledgerRel — which is what the destination map reads to
+  // decide where a clip goes. Without this the popup would ask, the user would answer, and the map
+  // would still file everything into _Unsorted.
+  const patch = {};
+  let n = 0;
+  for (const { clips: gClips, path } of placed) {
+    for (const c of gClips) {
+      const f = c._ref;
+      if (!f) continue;
+      f.meta = f.meta || {};
+      f.meta.ledgerRel = path;
+      patch[f.name] = { ...f.meta };
+      n += 1;
+    }
+  }
+  try { await window.api.saveFinalMeta(patch); } catch { /* the map still shows it; it just won't survive a restart */ }
+
+  renderFinMap();   // redraw the folder map with the destinations the user just confirmed
+  showToast(`${n} clip${n !== 1 ? 's' : ''} filed into ${placed.length} project${placed.length !== 1 ? 's' : ''} ✓ — it'll remember next time`, 5000);
+}
+
+$('finPlaceBtn').addEventListener('click', finPlaceIntoProjects);
 $('finAnalyzeBtn').addEventListener('click', finAnalyzeSelected);
 $('finDatesBtn').addEventListener('click', finResetDates);
 

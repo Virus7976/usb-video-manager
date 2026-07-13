@@ -737,6 +737,15 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .dmap-embed .dmap-legend { margin-bottom: 8px; opacity: .9; }
 .dmap-introline { margin: 0 0 8px; }
 .fin-map-host { margin-top: 4px; }
+/* The entry point to "which project does this go in" — the step Jake called out as the worst part of
+   his flow. It leads the Organize step because it is the decision everything below it depends on. */
+.fin-place-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  margin: 2px 2px 12px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--stroke); background: var(--card);
+}
+.fin-place-tx { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fin-place-bar .btn { flex: none; white-space: nowrap; }
 .org-hint-ic { color: var(--text-3); font-size: 12px; cursor: help; }
 
 /* ---- Phone backup destinations (upload step) ---- */
@@ -2611,18 +2620,35 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 }
 
 /* "You've got footage to deal with" — home banner surfaced on launch/return. */
-.pending-work { margin: 4px 0 10px; }
-.pw-card { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
-  padding: 12px 14px; border-radius: var(--radius-xl); cursor: pointer;
-  background: color-mix(in srgb, var(--accent) 14%, var(--card));
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--card-stroke)); }
-.pw-card:hover { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
-.pw-card + .pw-card { margin-top: 8px; }
-.pw-ic { font-size: 22px; line-height: 1; flex: 0 0 auto; }
-.pw-tx { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
-.pw-title { font-weight: 650; }
-.pw-sub { font-size: 12.5px; opacity: 0.85; }
-.pw-cta { flex: 0 0 auto; font-weight: 650; color: var(--accent-text); white-space: nowrap; }
+/* "Work waiting for you" cards on Home.
+   These are .settings-cards — the same language as the Devices list they sit directly above — with
+   two additions: a slim accent rail on the leading edge, and a real CTA pill instead of bare text.
+   They used to be a bespoke, much louder thing (the whole card washed in accent 14% behind an
+   accent 40% border, plus a colour emoji), so two stacked cards read as two competing alert boxes
+   and buried the list underneath them. The rail says "this needs you" quietly; the card doesn't
+   have to shout to be noticed when it's the only coloured thing on the screen. */
+.pending-work { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
+.pw-card { position: relative; padding-left: 18px; overflow: hidden; }
+.pw-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--accent);
+}
+.pw-cta {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 600; color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  transition: background var(--motion) ease, border-color var(--motion) ease;
+}
+.pw-card:hover .pw-cta {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.pw-chev { font-size: 13px; line-height: 1; opacity: .75; }
+/* The sub is a single muted line (house .sc-sub already ellipsizes); keep the counts legible
+   without the bold turning into a second colour. */
+.pw-card .sc-sub b { font-weight: 650; color: var(--text-2); }
 
 /* Auto mode toggle — home screen. */
 .automode-bar { margin: 4px 0 8px; }
@@ -2639,7 +2665,11 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .am-toggle input[type="checkbox"]:checked { background: var(--accent); }
 .am-toggle input[type="checkbox"]:checked::before { transform: translateX(18px); }
 .am-slot { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.am-title { font-weight: 650; }
+.am-title { font-weight: 650; display: inline-flex; align-items: center; gap: 7px; }
+/* The bolt is muted until Auto mode is actually ON, then it takes the accent — so the icon reports
+   state instead of being a permanently-yellow ⚡ emoji shouting for attention while switched off. */
+.am-bolt { width: 15px; height: 15px; flex: 0 0 auto; color: var(--text-3); transition: color var(--motion) ease; }
+.automode-bar.am-on .am-bolt { color: var(--accent-text); }
 .am-sub { font-size: 12.5px; opacity: 0.82; }
 
 /* Auto-mode sub-toggle (face scan) + unconfirmed people chip. */
@@ -2696,7 +2726,12 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .progress-bar::after, .tt-task-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.28), transparent); animation: pb-surge 1.3s ease-in-out infinite; }
 
 /* --- Native (WinUI) toggle switch for Auto mode --- */
-.am-toggle input[type="checkbox"] { width: 40px; height: 20px; border-radius: var(--radius-xl); background: transparent; border: 2px solid var(--text-3); transition: background var(--motion), border-color var(--motion); }
+/* This is a SWITCH, not a checkbox: the knob's position already says on/off. But the global
+   `input[type="checkbox"]::after` rule draws a tick inside every checkbox, and nothing here ever
+   turned it off — so the switch rendered a checkmark AND a knob, two indicators sitting on top of
+   each other in one 40px control. Kill the inherited tick; the knob is the only indicator. */
+.am-toggle input[type="checkbox"]::after { content: none; }
+.am-toggle input[type="checkbox"] { width: 40px; height: 20px; border-radius: var(--radius-xl); background: transparent; border: 2px solid var(--text-3); transition: background var(--motion), border-color var(--motion); display: block; }
 .am-toggle input[type="checkbox"]::before { content: ''; position: absolute; top: 3px; left: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--text-2); transition: transform var(--motion), background var(--motion), width var(--motion), height var(--motion), top var(--motion), left var(--motion); }
 .am-toggle input[type="checkbox"]:hover { border-color: var(--text-2); }
 .am-toggle input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
@@ -2793,3 +2828,22 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
        also silences the empty-drive pulse ring and any residual SVG loop so nothing
        twitches while you work. Functional spinners/progress keep moving. */
 .dl-empty-dot { animation: none; }
+
+/* AI health cards — same language as the "work waiting" cards, but the rail is a warning colour.
+   These say something is actually BROKEN (a hallucinating vision model, nowhere to file to), so they
+   earn a different signal from "here is some work". */
+.ai-health .ai-health-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--warn, #d98324);
+}
+.ai-health-card { position: relative; padding-left: 18px; overflow: hidden; }
+.ai-health-card.high::before { background: var(--danger); }
+.ai-health-card .sc-sub { white-space: normal; line-height: 1.35; }
+.ai-health-card .sc-icon.accent {
+  background: color-mix(in srgb, var(--warn, #d98324) 16%, transparent);
+  color: var(--warn, #d98324);
+}
+.ai-health-card.high .sc-icon.accent {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}

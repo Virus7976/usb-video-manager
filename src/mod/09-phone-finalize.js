@@ -1825,6 +1825,58 @@ $('finMatchedOnly').addEventListener('change', (e) => {
 { const fq = $('finQuick'); if (fq) fq.addEventListener('change', (e) => { uiPrefs.quickAnalyze = e.target.checked; window.api.setUiPref('quickAnalyze', e.target.checked); }); }
 { const fp = $('finPhotos'); if (fp) fp.addEventListener('change', (e) => { uiPrefs.finalizePhotos = e.target.checked; window.api.setUiPref('finalizePhotos', e.target.checked); finRunScan(); }); }
 { const fa = $('finAuto'); if (fa) fa.addEventListener('change', (e) => { uiPrefs.autoTagFaces = e.target.checked; window.api.setUiPref('autoTagFaces', e.target.checked); }); }
+// "Later I go to the output folder and get AI to work out which project each video belongs in —
+// this part I know sucks."
+//
+// It sucked because it was a single giant prompt over every clip at once, it had no idea what
+// projects actually existed, and whatever you told it evaporated the moment the window closed.
+//
+// Now: group the clips → check what you already decided (no model call at all if we know) → ask the
+// model, which must SEARCH the real Projects tree before it may place or invent anything → show one
+// card per group, exactly like the faces popup → your answer is remembered forever.
+async function finPlaceIntoProjects() {
+  const sel = (finSelected().length ? finSelected() : finMatched());
+  if (!sel.length) { showToast('Nothing ticked to file'); return; }
+  if (!aiCfg.enabled) { showToast('Turn AI on in Settings first'); return; }
+
+  const clips = sel.map((f) => ({
+    name: f.name,
+    sourcePath: f.sourcePath,
+    subject: (f.meta && f.meta.subject) || '',
+    description: (f.meta && f.meta.description) || '',
+    location: (f.meta && f.meta.location) || '',
+    date: (f.meta && f.meta.date) || '',
+    people: (f.meta && f.meta.people) || [],
+    tags: (f.meta && f.meta.tags) || [],
+    observation: (f.meta && f.meta.observation) || '',
+    _ref: f,
+  }));
+
+  const placed = await withBusyBtn($('finPlaceBtn'), 'Sorting…', () => showPlacementReview(clips));
+  if (!placed || !placed.length) return;
+
+  // Write the decision back onto the clips as ledgerRel — which is what the destination map reads to
+  // decide where a clip goes. Without this the popup would ask, the user would answer, and the map
+  // would still file everything into _Unsorted.
+  const patch = {};
+  let n = 0;
+  for (const { clips: gClips, path } of placed) {
+    for (const c of gClips) {
+      const f = c._ref;
+      if (!f) continue;
+      f.meta = f.meta || {};
+      f.meta.ledgerRel = path;
+      patch[f.name] = { ...f.meta };
+      n += 1;
+    }
+  }
+  try { await window.api.saveFinalMeta(patch); } catch { /* the map still shows it; it just won't survive a restart */ }
+
+  renderFinMap();   // redraw the folder map with the destinations the user just confirmed
+  showToast(`${n} clip${n !== 1 ? 's' : ''} filed into ${placed.length} project${placed.length !== 1 ? 's' : ''} ✓ — it'll remember next time`, 5000);
+}
+
+$('finPlaceBtn').addEventListener('click', finPlaceIntoProjects);
 $('finAnalyzeBtn').addEventListener('click', finAnalyzeSelected);
 $('finDatesBtn').addEventListener('click', finResetDates);
 

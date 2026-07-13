@@ -3732,10 +3732,65 @@ async function ollamaGenerate(model, prompt, opts = {}) {
   // Strip any stray <think>…</think> reasoning so callers get clean text/JSON.
   return String(j.response || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
-// The model used for TEXT-ONLY tasks (distilling rules, consolidating memories,
-// refining, importing, and the reasoning passes of multi-pass). Falls back to the
-// vision model when no dedicated reasoning model is set.
-function aiTextModel() { return (config.ai && config.ai.textModel) || (config.ai && config.ai.model) || ''; }
+// The model used for TEXT-ONLY tasks (distilling rules, consolidating memories, refining, importing,
+// project placement, and the reasoning passes of multi-pass).
+//
+// It used to fall back to the VISION model, and `textModel` defaults to '' — so out of the box every
+// single text task in the app ran on qwen2.5vl:7b, a vision model that is weak at instruction-
+// following, weak at JSON, and **cannot call tools at all**. That one line is most of why the AI
+// feels gimmicky: it was being asked to do reasoning work on a model chosen for looking at pictures.
+// (The multi-pass path even knew something was wrong and papered over it — ai:improve sends the
+// contact sheet on a *text* task because "many vision models fail or stall on a TEXT-ONLY generate".)
+//
+// No silent fallback now. Call sites that genuinely can degrade to the vision model still say so
+// explicitly (`aiTextModel() || ai.model`); the ones guarded by `if (aiTextModel())` now correctly
+// skip rather than running a text task on a vision model and calling the mush "learning".
+function aiTextModel() { return (config.ai && config.ai.textModel) || ''; }
+
+// The model for TOOL-CALLING work. Returns '' when we haven't got one — never a vision model, which
+// would just return prose and break every downstream assumption.
+//
+// If the user hasn't chosen a reasoning model, pick one for them: they almost certainly have a
+// tool-capable model installed already (qwen3, llama3.1/3.2…) and simply never opened the picker,
+// whose placeholder literally reads "(use vision model)".
+// NOT memoized. A cached promise here outlives config changes and model installs: pick once, and the
+// app would keep returning that answer even after the user chose a different reasoning model or
+// pulled a new one. The success path persists its choice to config.ai.textModel, so the `chosen`
+// branch short-circuits on every later call anyway — the only thing that re-probes is the case where
+// there genuinely isn't a tool-capable model, which is rare and worth re-checking.
+async function aiToolModel() {
+  const chosen = (config.ai && config.ai.textModel) || '';
+  if (chosen) return (await ollamaModelTools(chosen)) ? chosen : '';
+  return autoPickToolModel();
+}
+
+// Preference order among what's actually installed. These are the reasoning models the app already
+// offers in its own catalogue, and all three support tools.
+const TOOL_MODEL_PREFERENCE = ['qwen3:8b', 'qwen3:4b', 'llama3.1:8b', 'llama3.2', 'mistral-nemo'];
+async function autoPickToolModel() {
+  let installed = [];
+  try { installed = await ollamaListModels(); } catch { return ''; }
+  const names = installed.map((m) => (typeof m === 'string' ? m : (m && m.name) || '')).filter(Boolean);
+  // Preferred names first, then anything else Ollama reports as tool-capable.
+  const ordered = [
+    ...TOOL_MODEL_PREFERENCE.filter((p) => names.some((n) => n === p || n.startsWith(`${p}:`))).map((p) => names.find((n) => n === p || n.startsWith(`${p}:`))),
+    ...names,
+  ];
+  const seen = new Set();
+  for (const n of ordered) {
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    // eslint-disable-next-line no-await-in-loop
+    if (await ollamaModelTools(n)) {
+      config.ai = config.ai || {};
+      config.ai.textModel = n;                 // remember it — don't re-probe every launch
+      try { saveConfig(); } catch { /* non-fatal */ }
+      console.log(`[ai] no reasoning model was set — auto-selected the tool-capable "${n}"`);
+      return n;
+    }
+  }
+  return '';
+}
 
 // True when an Ollama error means the chosen model can't actually run on this
 // machine/version (not a transient timeout): the runner crashed loading it
@@ -3749,6 +3804,17 @@ function isModelLoadError(err) {
   if (status === 500 && /terminated|unknown model architecture|error loading model|failed to load|cannot (allocate|load)|out of memory|mllama|requires more system memory/.test(s)) return true;
   return false;
 }
+// Every model Ollama has installed, by name. /api/tags was being re-fetched and re-parsed in four
+// separate places; this is the one that owns it.
+async function ollamaListModels() {
+  try {
+    const res = await ollamaFetch('/api/tags', {}, 6000);
+    if (!res.ok) return [];
+    const j = await res.json();
+    return (j.models || []).map((m) => m && m.name).filter(Boolean);
+  } catch { return []; }
+}
+
 // Installed models that can take images, best→worst-ish, excluding `exclude`.
 async function listVisionModels(exclude) {
   try {
@@ -3758,6 +3824,11 @@ async function listVisionModels(exclude) {
     const names = (j.models || []).map((m) => m && m.name).filter(Boolean);
     const out = [];
     for (const n of names) { if (n === exclude) continue; if (await ollamaModelVision(n)) out.push(n); }
+    // BEST FIRST. This list is what the app falls back to when a model fails to load, and it used to
+    // be in whatever order Ollama happened to return — so a broken qwen2.5vl could silently demote the
+    // user to llava, which hallucinates whole objects (measured; see VISION_QUALITY). A fallback
+    // should degrade as little as possible, not arbitrarily.
+    out.sort((a, b) => visionRankOf(a) - visionRankOf(b));
     return out;
   } catch { return []; }
 }
@@ -3815,19 +3886,95 @@ function aiFieldStr(v) {
 // Best-effort check of whether a model can take images (newer Ollama reports
 // `capabilities: ["vision", …]` from /api/show; otherwise fall back to the name).
 async function ollamaModelVision(name) {
+  const caps = await ollamaCapabilities(name);
+  if (caps) return caps.includes('vision');
+  return /llava|vision|qwen.*vl|minicpm-v|moondream|bakllava/i.test(name);
+}
+
+// Capabilities straight from Ollama (`["completion","tools","vision","thinking"]`). Cached — this is
+// asked once per clip otherwise, and /api/show is not free. Returns null when we genuinely can't
+// tell, so callers can fall back to a name heuristic rather than assuming "no".
+const _capCache = new Map();
+async function ollamaCapabilities(name) {
+  const key = String(name || '');
+  if (!key) return null;
+  if (_capCache.has(key)) return _capCache.get(key);
+  let caps = null;
   try {
     const res = await ollamaFetch('/api/show', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: name })
+      body: JSON.stringify({ model: key })
     }, 5000);
     if (res.ok) {
       const j = await res.json();
-      if (Array.isArray(j.capabilities)) return j.capabilities.includes('vision');
-      const fams = (j.details && j.details.families) || [];
-      if (fams.some((f) => /clip|mllama|vision|qwen.*vl|gemma3/i.test(f))) return true;
+      if (Array.isArray(j.capabilities)) caps = j.capabilities;
+      else {
+        const fams = (j.details && j.details.families) || [];
+        if (fams.some((f) => /clip|mllama|vision|qwen.*vl|gemma3/i.test(f))) caps = ['completion', 'vision'];
+      }
     }
-  } catch { /* fall through to name heuristic */ }
-  return /llava|vision|qwen.*vl|minicpm-v|moondream|bakllava/i.test(name);
+  } catch { /* unreachable / old Ollama → null */ }
+  _capCache.set(key, caps);
+  return caps;
+}
+
+// Can this model CALL TOOLS? This is the whole basis of the naming/filing redesign: instead of
+// asking a model to reason its way to a JSON blob inside a giant instruction prompt, we hand it a
+// small set of tools and it just picks one. Ollama reports `tools` in capabilities for models that
+// support it (qwen3, llama3.1/3.2, mistral-nemo…). Vision models mostly do NOT — which is exactly
+// why perception and decision want to be different calls.
+async function ollamaModelTools(name) {
+  const caps = await ollamaCapabilities(name);
+  if (caps) return caps.includes('tools');
+  return false;   // never GUESS a model into tool mode — a model that can't will just return prose
+}
+
+/**
+ * One Ollama /api/chat call, with tools.
+ *
+ * The existing ollamaGenerate() hits /api/generate with `format:'json'` and a giant instruction
+ * prompt describing the exact JSON shape, then parses whatever comes back with a lenient parser.
+ * That makes the model do all the work: hold a schema in its head, reason about the task, AND
+ * serialise correctly — and a 7B model gets one of those three wrong constantly.
+ *
+ * /api/chat with `tools` inverts it. The tool schema is enforced by the runtime, so the model's only
+ * job is to CHOOSE. Returns { content, toolCalls: [{name, args}] } — toolCalls is [] when the model
+ * chose to answer in prose instead, which is itself a signal (usually "I don't know").
+ */
+async function ollamaChat(model, messages, opts = {}) {
+  const body = { model, messages, stream: false };
+  if (opts.tools && opts.tools.length) body.tools = opts.tools;
+  if (opts.format) body.format = opts.format;
+  // Thinking OFF by default: it slows a local 7-8B model down enormously and, for tool selection,
+  // buys nothing — the choice is the answer. (Ollama ignores `think` on models without it.)
+  body.think = opts.think === undefined ? false : !!opts.think;
+  body.options = { temperature: isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 0.2 };
+  const res = await ollamaFetch('/api/chat', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+  }, opts.timeout || 180000);
+  if (!res.ok) {
+    let detail = '';
+    try { const b = await res.json(); detail = (b && b.error && (b.error.message || b.error)) || ''; }
+    catch { try { detail = await res.text(); } catch { /* ignore */ } }
+    detail = String(detail || '').replace(/\s+/g, ' ').trim();
+    const e = new Error(`Ollama HTTP ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+    e.status = res.status; e.detail = detail; e.model = model;
+    throw e;
+  }
+  const j = await res.json();
+  const msg = (j && j.message) || {};
+  const raw = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+  const toolCalls = raw.map((t) => {
+    const fn = (t && t.function) || {};
+    let args = fn.arguments;
+    // Ollama normally hands back a parsed object, but some models emit a JSON *string*. Take both.
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+    return { name: String(fn.name || ''), args: (args && typeof args === 'object') ? args : {} };
+  }).filter((t) => t.name);
+  return {
+    content: String(msg.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim(),
+    toolCalls,
+  };
 }
 
 const AI_DEFAULT_GUIDANCE = "You are tagging one video clip for a videographer's archive. The image is a contact-sheet GRID of frames sampled across the clip in time order (left-to-right, top-to-bottom). They are all from the SAME clip. COMPARE the frames to judge CAMERA MOTION (static / handheld / moving — panning or following) and whether it stays one continuous shot or cuts between shots, then identify the main subject, the action, and the type of shot.";
@@ -4274,11 +4421,39 @@ function aiNamingSpec(ai, opts) {
   if (subjHint) rules.push(`Prefer these known subjects when they genuinely fit: [${subjHint}].`);
   const rulesText = rules.map((r) => `- ${r}`).join('\n');
   const exs = (Array.isArray(ai.styleExamples) ? ai.styleExamples : []).slice(0, 12);
-  const mems = (Array.isArray(ai.memories) ? ai.memories : []).map((m) => (m && m.text ? (m.example ? `${m.text} (e.g. ${m.example})` : m.text) : '')).filter(Boolean);
+  // `exs` was capped at 12; `mems` was capped at NOTHING. The store holds up to 300 memories, so a
+  // well-used install injected ~18 KB of English rules into EVERY clip's prompt, on a 7B model. A
+  // 7B model does not follow 300 rules — it drowns in them, and the ones that matter get buried.
+  const mems = selectMemories(ai.memories, (opts && opts.clipText) || '', 24)
+    .map((m) => (m.example ? `${m.text} (e.g. ${m.example})` : m.text));
   let styleBlock = '';
   if (exs.length) styleBlock += `\nMatch this user's own naming style. Real examples (subject / description):\n${exs.join('\n')}`;
   if (mems.length) styleBlock += `\nFollow these learned preferences from the user:\n- ${mems.join('\n- ')}`;
   return { fieldSpec, rulesText, styleBlock, detectShot, wantCat };
+}
+
+// Which of the user's learned preferences are worth spending prompt budget on for THIS clip?
+//
+// Not a pure relevance filter, deliberately. A rule like "always lowercase with hyphens" is global —
+// it has zero lexical overlap with any clip, and a naive relevance ranker would drop exactly the
+// style rules that matter most. So: keep everything while it fits, and only once we're over budget
+// rank by relevance to this clip, falling back to recency (a newer correction reflects what the user
+// wants NOW). The chosen set is emitted in its original order, so the prompt stays stable between
+// clips and the model isn't re-anchored by reshuffling.
+function selectMemories(memories, clipText, cap = 24) {
+  const mems = (Array.isArray(memories) ? memories : []).filter((m) => m && m.text);
+  if (mems.length <= cap) return mems;
+
+  const words = (s) => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  const clipWords = new Set(words(clipText));
+  const score = (m) => words(`${m.text} ${m.example || ''}`).reduce((n, t) => n + (clipWords.has(t) ? 1 : 0), 0);
+
+  return mems
+    .map((m, i) => ({ m, i, s: score(m) }))
+    .sort((a, b) => (b.s - a.s) || (b.i - a.i))   // relevant first, then newest
+    .slice(0, cap)
+    .sort((a, b) => a.i - b.i)                    // …but emit in the original order
+    .map((x) => x.m);
 }
 
 // Perceive ONE clip (vision only) → a free-text observation. Used by the batch
@@ -4332,7 +4507,10 @@ ipcMain.handle('ai:suggest', async (evt, payload) => {
   };
 
   const guidance = (ai.prompt && ai.prompt.trim()) || AI_DEFAULT_GUIDANCE;
-  const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects, categories, hasPeople });
+  // Relevance context for selectMemories: what this clip is actually ABOUT. With no precomputed
+  // observation we still have the user's shoot context and the recognised people.
+  const clipText = [precomputed, (payload && payload.context) || '', ((payload && payload.people) || []).join(' ')].filter(Boolean).join(' ');
+  const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects, categories, hasPeople, clipText });
 
   const finish = (out) => ({ ok: true, ...normalizeNaming(out, payload && payload.people) });
   const errMsg = (err) => (/aborted|timeout/i.test(err.message || '') ? 'Timed out — the model may still be loading; try again.' : (err.message || String(err)));
@@ -4415,7 +4593,8 @@ ipcMain.handle('ai:improve', async (_e, payload) => {
   const peopleBlock = aiPeopleBlock(payload && payload.people);
   const hasPeople = !!(payload && Array.isArray(payload.people) && payload.people.filter(Boolean).length);
   const ctxBlock = aiContextBlock(payload && payload.context);
-  const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects: payload && payload.subjects, categories: payload && payload.categories, hasPeople });
+  const clipText2 = [observation, (payload && payload.context) || '', ((payload && payload.people) || []).join(' ')].filter(Boolean).join(' ');
+  const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects: payload && payload.subjects, categories: payload && payload.categories, hasPeople, clipText: clipText2 });
   const prompt = `You earlier looked at a video clip and recorded this observation of what its frames show:\n"${observation}"${ctxBlock}${peopleBlock}\n\nThe clip's CURRENT name is:\nDRAFT: ${JSON.stringify({ subject: aiFieldStr(draft.subject), description: aiFieldStr(draft.description), shotType: aiFieldStr(draft.shotType), category: aiFieldStr(draft.category) })}\n\nReview the draft AGAINST the observation. Decide where it is wrong, vague, generic, or missing detail, and REWRITE it to be the best, most specific, most useful name possible using ALL the information (the visible action, the setting/objects, recognized people, the shot type). Don't lose anything correct; sharpen everything else. Output corrected STRICT JSON only — no prose: ${fieldSpec}\n${rulesText}${styleBlock}`;
   const sourcePath = (payload && payload.sourcePath) || '';
   // When there's no DEDICATED text model, `reason` is the vision model. Many vision
@@ -4491,6 +4670,49 @@ ipcMain.handle('ai:pull', async (evt, name) => {
 // In-app model "store": a curated list of current local VISION models (Ollama has
 // no official API to browse its whole library), enriched with install-state and a
 // best-effort live peek at ollama.com for anything newer. Download uses ai:pull.
+// VISION MODEL QUALITY, best → worst. Not a marketing order — measured on real footage.
+//
+// Side by side on the same contact sheets, given a man at a desk with "COME AND SEE" on his monitor
+// and bunk beds behind him:
+//   qwen2.5vl:7b   → "desk, monitor displaying COME AND SEE, headphones, bunk beds"   (read the screen)
+//   llava-llama3   → "a sign that reads Cabinets for Sale"                            (invented)
+// and given a pickup truck with its doors open on a farm:
+//   qwen2.5vl:7b   → "white pickup truck, doors open... farm, barns"
+//   llava-llama3   → "a person riding a motorcycle on a road"                         (invented)
+//
+// llava-* does not merely caption vaguely, it HALLUCINATES WHOLE OBJECTS — and everything downstream
+// (the name, the tags, the placement) is then built on a fabrication. That is a large part of why the
+// AI feels "gimmicky". The model at the top of this list is the one to run.
+//
+// llama3.2-vision is deliberately last: it returns HTTP 500 on this hardware (an 11B vision model is
+// simply too big alongside anything else), so "capable on paper" is not the same as "works".
+const VISION_QUALITY = [
+  'qwen2.5vl',          // grounded; reads on-screen text; best descriptions by a wide margin
+  'minicpm-v',          // strong fine detail
+  'gemma3',             // modern multimodal
+  // ---- anything we have never heard of sorts HERE (VISION_UNKNOWN_RANK) ----
+  'llava-phi3',         // llava family — see below
+  'llava-llama3',       // MEASURED HALLUCINATING on real footage. Worse than an unknown model.
+  'llava',
+  'bakllava',
+  'moondream',
+  'granite3.2-vision',  // tuned for documents, not footage
+  'llama3.2-vision',    // returns HTTP 500 on this hardware — "capable on paper" is not "works"
+];
+// An unknown model sorts BELOW everything we've measured as good, and ABOVE the llava family.
+//
+// That placement is deliberate. A model we've never heard of is a coin toss; llava is a KNOWN
+// hallucinator — it described a pickup truck as "a person riding a motorcycle" on Jake's own footage.
+// Ranking the unknown below a measured failure would be assuming the worst of the new and the best of
+// the broken.
+const VISION_UNKNOWN_RANK = 3;
+function visionRankOf(name) {
+  const n = String(name || '').toLowerCase();
+  const i = VISION_QUALITY.findIndex((p) => n === p || n.startsWith(`${p}:`));
+  if (i < 0) return VISION_UNKNOWN_RANK + 0.5;                     // unknown → just below the good ones
+  return i < VISION_UNKNOWN_RANK ? i : i + 1;                      // leave a slot for the unknowns
+}
+
 const AI_MODEL_CATALOG = [
   { name: 'qwen2.5vl:7b', params: '7B', size: '6.0 GB', desc: 'Qwen2.5-VL — best-in-class at reading the actual action & detail in a frame. Best descriptions (recommended).', rec: true },
   { name: 'minicpm-v', params: '8B', size: '5.5 GB', desc: 'MiniCPM-V — excellent fine detail and on-screen text.', rec: true },
@@ -4677,7 +4899,12 @@ ipcMain.handle('ai:reflect', async (evt, payload) => {
     return `${i + 1}. SAW: "${String(s.observation).slice(0, 320)}"${ctx} -> NAMED: "${name}"${extra ? ` [${extra}]` : ''}`;
   }).join('\n');
   const existing = (ai.memories || []).map((m) => m.text).filter(Boolean).slice(0, 40);
-  const prompt = `A system looked at these video clips (what it SAW across the frames) and the names it produced:\n${lines}\n\nWork BACKWARDS: what GENERAL, reusable naming rules or preferences explain these choices and would help name SIMILAR future footage the same way? Focus on DURABLE patterns — how to describe an action, what a recurring subject/place should be called, shot-type conventions, how recognized people are used — NOT facts about these specific clips. Do NOT repeat anything already covered by these existing rules:\n- ${existing.join('\n- ') || '(none yet)'}\nReturn 0-4 genuinely NEW rules (or none). STRICT JSON only: {"memories":[{"rule":"<= 14 words","example":"short illustration or empty"}]}`;
+  // The samples are clips the USER corrected (the renderer filters to `_userNamed` — see
+  // reflectFromClips). The prompt used to say "a system … produced these names" and ask what rules
+  // explained *its own* choices, which is how the memory list filled up with the AI's own habits
+  // dressed as the user's preferences. These are the user's names. Say so — it changes what the
+  // model looks for entirely.
+  const prompt = `Here are video clips: what was SEEN in the frames, and the name THE USER chose for each. The user's name is the ground truth — where it differs from what was seen, that difference IS the preference.\n${lines}\n\nWork BACKWARDS from THE USER'S choices: what GENERAL, reusable naming rules would let you name similar future footage the way THE USER would have? Focus on DURABLE patterns — how they describe an action, what they call a recurring subject or place, their shot-type conventions, how they use people's names — NOT facts about these specific clips. Do NOT repeat anything already covered by these existing rules:\n- ${existing.join('\n- ') || '(none yet)'}\nReturn 0-4 genuinely NEW rules (or none — none is a perfectly good answer). STRICT JSON only: {"memories":[{"rule":"<= 14 words","example":"short illustration or empty"}]}`;
   try {
     const o = parseJsonLoose(await ollamaGenerate(model, prompt, { format: 'json', temperature: 0.3, timeout: 120000, think: false }));
     const rules = aiExtractRules(o && o.memories ? o.memories : o).slice(0, 4);
@@ -4834,6 +5061,55 @@ async function maybeAutoConsolidate() {
   _autoConsolidating = false;
 }
 
+
+// Is the user on a measurably worse vision model than one they already have installed?
+//
+// This is not a nag about a model they might download — it is "you own a better one and the app is
+// not using it". Jake's config pointed at llava-llama3 while qwen2.5vl:7b sat installed on the same
+// machine, and llava was inventing motorcycles and shop signs that were not in the footage. Every
+// name, tag and placement downstream was then built on a fabrication.
+ipcMain.handle('ai:visionAdvice', async () => {
+  const ai = config.ai || {};
+  const current = ai.model || '';
+  let installed = [];
+  try { installed = await ollamaListModels(); } catch { return { ok: true, advice: null }; }
+
+  const vision = [];
+  for (const n of installed) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await ollamaModelVision(n)) vision.push(n);
+  }
+  if (!vision.length) return { ok: true, advice: null };
+  vision.sort((a, b) => visionRankOf(a) - visionRankOf(b));
+
+  const best = vision[0];
+  if (!current) return { ok: true, advice: { kind: 'unset', best, installed: vision } };
+  if (best === current || visionRankOf(best) >= visionRankOf(current)) return { ok: true, advice: null };
+
+  return {
+    ok: true,
+    advice: {
+      kind: 'upgrade',
+      current,
+      best,
+      installed: vision,
+      // Say WHY, concretely. "A better model exists" is ignorable; "yours invented a motorcycle" is not.
+      why: /^llava/i.test(current)
+        ? `${current} invents things that aren't in the footage — on your own clips it described a pickup truck as "a person riding a motorcycle". ${best} read the text off a monitor in the same frames.`
+        : `${best} is measurably more accurate at describing what is actually in a frame than ${current}.`,
+    },
+  };
+});
+
+// Switch to it. Kept separate from the advice so nothing is changed behind the user's back.
+ipcMain.handle('ai:useVisionModel', (_e, name) => {
+  const n = String(name || '').trim();
+  if (!n) return { ok: false, error: 'No model' };
+  config.ai = config.ai || {};
+  config.ai.model = n;
+  saveConfig();
+  return { ok: true, model: n };
+});
 // ---------------------------------------------------------------------------
 // People / face recognition store (fully local). Each person keeps a few face
 // DESCRIPTORS (128-float embeddings produced in the renderer by face-api.js).
@@ -6647,3 +6923,993 @@ app.on('before-quit', () => {
   globalShortcut.unregisterAll();
   endExifTool();
 });
+// ---------------------------------------------------------------------------
+// AI TOOLS — deterministic functions the model CHOOSES BETWEEN.
+//
+// The old design asked a 7B model to hold a folder tree, a memory blob, a rules list, a confidence
+// rubric and a hand-written worked example in its head, and then emit one correct JSON object. It
+// was doing the reasoning, the retrieval, the arithmetic AND the serialisation, and a 7B model gets
+// at least one of those wrong nearly every time. That is where the variability came from.
+//
+// Here, the model does exactly one thing: pick a tool. Everything else is ORDINARY CODE that runs
+// the same way every time —
+//   • searching the projects tree                 → real fs + real ledger, scored deterministically
+//   • reading what is actually inside a project   → real files on disk
+//   • slugging a name, versioning it, validating  → the same functions the rest of the app uses
+//   • building the destination path               → code, not a model
+// so the model's answer is a CHOICE from a list, not a computation. A choice is something a small
+// local model is genuinely good at. And because the tools enforce their own schema, a malformed
+// answer is impossible rather than merely unlikely.
+//
+// Learning still feeds in — but as tool RESULTS (your style examples, your known subjects, where you
+// filed this before) rather than as 300 lines of English rules crammed into the prompt.
+// ---------------------------------------------------------------------------
+
+const AI_TOOLS = {};
+
+/**
+ * @param terminal  A tool that ENDS the loop — it is the decision, not a lookup. Everything else
+ *                  feeds its result back and the model chooses again.
+ * @param requires  Tool names that MUST have been called first. Enforced by the loop, in code.
+ *
+ * `requires` exists because of a real result from a real model. Given a clip it couldn't identify
+ * ("a close-up of an unidentifiable grey object"), qwen3:8b did NOT ask — it invented a project
+ * called "Client - Grey Object" and justified it confidently. A model will always rather act than
+ * admit it doesn't know, and no amount of "only create a project as a last resort" in a prompt
+ * reliably stops that. So the protocol is enforced by the loop instead: you cannot create a project
+ * you never looked for. Structure beats instruction.
+ */
+function defineTool(name, { description, parameters, terminal = false, requires = [], requiresAny = [], run }) {
+  AI_TOOLS[name] = { name, description, parameters, terminal, requires, requiresAny, run };
+}
+
+// Ollama/OpenAI-style function schemas for the tools named.
+//
+// `enums` narrows a parameter to the values that actually exist for THIS user — their real subjects,
+// their real projects. A schema-level enum is enforced by the runtime, so the model cannot invent a
+// value at all; it is the difference between "please reuse an existing subject" (advice a 7B model
+// ignores) and "there is no other option" (a fact).
+function toolSchemas(names, enums = {}) {
+  return (names || [])
+    .map((n) => AI_TOOLS[n])
+    .filter(Boolean)
+    .map((t) => {
+      let params = t.parameters;
+      const forTool = enums[t.name];
+      if (forTool) {
+        params = JSON.parse(JSON.stringify(params));
+        for (const [param, values] of Object.entries(forTool)) {
+          if (params.properties && params.properties[param] && Array.isArray(values) && values.length) {
+            params.properties[param].enum = values;
+          }
+        }
+      }
+      return { type: 'function', function: { name: t.name, description: t.description, parameters: params } };
+    });
+}
+
+/**
+ * The agent loop: ask → run the chosen tool → feed the result back → ask again, until the model
+ * calls a terminal tool.
+ *
+ * Three deliberate properties:
+ *  • NO TOOL CALL is a real answer, not an error to be parsed around. A model given tools that
+ *    replies in prose is telling you it doesn't know — the old parseJsonLoose could never express
+ *    that, because it always returned an object.
+ *  • A HALLUCINATED TOOL NAME is corrected in-band (we tell it what actually exists and let it try
+ *    again) rather than crashing the run.
+ *  • MAX STEPS is a hard stop. A local model that keeps searching and never decides must not spin.
+ */
+async function runToolLoop({ model, system, user, tools, ctx = {}, enums = {}, maxSteps = 6, temperature = 0.1, timeout = 120000 }) {
+  const schemas = toolSchemas(tools, enums);
+  const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
+  const trace = [];
+
+  for (let step = 0; step < maxSteps; step += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await ollamaChat(model, messages, { tools: schemas, temperature, timeout });
+
+    if (!r.toolCalls.length) {
+      return { ok: false, reason: 'no_tool_call', content: r.content, trace };
+    }
+
+    const call = r.toolCalls[0];
+    const tool = AI_TOOLS[call.name];
+    const assistantTurn = { role: 'assistant', content: '', tool_calls: [{ function: { name: call.name, arguments: call.args } }] };
+
+    if (!tool || !tools.includes(call.name)) {
+      messages.push(assistantTurn);
+      messages.push({ role: 'tool', content: `There is no tool called "${call.name}". Available: ${tools.join(', ')}. Call one of those.` });
+      trace.push({ tool: call.name, args: call.args, error: 'unknown tool' });
+      continue;
+    }
+
+    // PROTOCOL, enforced in code. A model that skips straight to "create a project" for footage it
+    // never searched for is guessing, and it will do that confidently every time (observed: qwen3:8b
+    // invented "Client - Grey Object" for a clip it could not identify). Refuse and tell it why —
+    // it then searches, and either finds the right home or asks.
+    const ran = (n) => trace.some((t) => t.tool === n && !t.error);
+    const missing = (tool.requires || []).filter((req) => !ran(req));
+    const anyList = tool.requiresAny || [];
+    const anyUnmet = anyList.length > 0 && !anyList.some(ran);
+    if (missing.length || anyUnmet) {
+      const need = missing.length ? missing.join(' and ') : anyList.join(' or ');
+      messages.push(assistantTurn);
+      messages.push({ role: 'tool', content: `You must call ${need} before ${call.name}. Do that first — and if nothing suitable comes back, ask_user rather than inventing something.` });
+      trace.push({ tool: call.name, args: call.args, error: `requires ${need}` });
+      continue;
+    }
+
+    let result;
+    // eslint-disable-next-line no-await-in-loop
+    try { result = await tool.run(call.args || {}, ctx); }
+    catch (e) { result = { error: (e && e.message) || String(e) }; }
+    trace.push({ tool: call.name, args: call.args, result });
+
+    if (tool.terminal) return { ok: !(result && result.error), tool: call.name, args: call.args, result, trace };
+
+    messages.push(assistantTurn);
+    // Cap what we feed back: a huge tool result just re-creates the giant-prompt problem.
+    messages.push({ role: 'tool', content: JSON.stringify(result).slice(0, 3000) });
+  }
+  return { ok: false, reason: 'max_steps', trace };
+}
+
+// --- shared helpers ---------------------------------------------------------------------
+
+const aiWords = (s) => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+
+// The same slug the renderer names every clip with (src/mod/01-core.js). `slug()` itself lives only
+// in the renderer, and main has only `slugFolder` (which additionally guards Windows reserved names,
+// wrong for a name FRAGMENT). Keeping the format identical is the point: the model supplies meaning,
+// this supplies the form, and the form is then the same whether a human or a tool produced it.
+function aiSlug(s) {
+  return String(s || '').trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// Does a query word match a project word? NOT exact equality.
+//
+// This was exact-match, and a live run against the real qwen3:8b showed exactly why that is fatal:
+// footage described as "two people SKINNING up a snowy ridge, ALPINE" scored ZERO against a project
+// called "Alps 2026" whose subjects are "skiing, ski touring" — because "alpine" != "alps" and
+// "skinning" != "skiing". The search found nothing, so the model dutifully created a new project
+// called "Alpine Skinning Ridge". The model was not being stupid; the TOOL was, and the model could
+// only be as good as what the tool told it.
+//
+// A shared prefix is enough here. This is a SEARCH — it returns candidates for the model to choose
+// between, so a loose match that surfaces the right project costs nothing, while a strict one that
+// hides it costs a wrongly-created project. Prefer recall.
+function aiTokenMatch(a, b) {
+  if (a === b) return true;
+  const short = a.length <= b.length ? a : b;
+  const long = a.length <= b.length ? b : a;
+
+  // A TRUE PREFIX is a match even for a short word: mow/mowing, ski/skiing, garden/gardening. The
+  // user types "mow" one day and "mowing" the next; re-asking over a suffix is exactly the "it
+  // forgot" feeling this is meant to eliminate.
+  if (short.length >= 3 && long.startsWith(short)) return true;
+
+  // Otherwise both words must be substantial and share their first THREE characters. Three, not
+  // four: the two cases that actually broke a live run both share exactly three —
+  //   alpine / alps      -> "alp"
+  //   skinning / skiing  -> "ski"
+  // A 4-char threshold would have left the bug exactly where it was. This number is measured against
+  // the words that really failed, not picked because it looked safe.
+  if (a.length < 4 || b.length < 4) return false;          // no 3-letter noise (cat/car stays a miss)
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+  return i >= 3;
+}
+
+// Slug, then keep only the first N words. The filename has to stay usable.
+function aiCapWords(s, n) {
+  return aiSlug(s).split('-').filter(Boolean).slice(0, n).join('-');
+}
+
+// How well does a candidate match a query? Weighted so a matched PERSON or DATE counts for more than
+// a generic word — the same intuition the deterministic ledger matcher already uses, in one place.
+function aiScore(queryTokens, cand) {
+  const q = queryTokens;
+  const hit = (field, weight) => {
+    let n = 0;
+    for (const t of aiWords(field)) if (q.some((qt) => aiTokenMatch(qt, t))) n += weight;
+    return n;
+  };
+  let s = 0;
+  s += hit(cand.name, 2);
+  s += hit((cand.subjects || []).join(' '), 2);
+  s += hit((cand.people || []).join(' '), 3);
+  s += hit((cand.locations || []).join(' '), 2);
+  s += hit(cand.rel, 1);
+  for (const d of (cand.dates || [])) if (q.includes(d)) s += 3;
+  return s;
+}
+
+// --- PROJECT PLACEMENT tools ------------------------------------------------------------
+//
+// The old placement prompt handed the model up to 80 bare FOLDER NAME strings and told it "PAST
+// FILING MEMORY WINS" — about a ledger that is only written after this app files something, so for
+// anyone with an existing library it was an instruction about an empty list. The model was never
+// shown what is actually INSIDE any project. It was being asked to group things it could not see.
+
+defineTool('search_projects', {
+  description: 'Search the user\'s existing projects. Returns real projects with what is actually in them (how many clips, which subjects, which people, when they were last filed). ALWAYS search before deciding — an existing project almost always fits.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'What the footage is about — subject, people, place, date. e.g. "mowing the back garden, summer"' },
+    },
+    required: ['query'],
+  },
+  run: async ({ query }, ctx) => {
+    const q = aiWords(query);
+    const cands = [];
+
+    // 1. Projects we have actually filed into before — these carry real content.
+    for (const p of (config.projectLedger || [])) {
+      cands.push({
+        path: p.rel,
+        name: p.name,
+        clips: p.clips || 0,
+        subjects: (p.subjects || []).slice(0, 6),
+        people: (p.people || []).slice(0, 6),
+        locations: (p.locations || []).slice(0, 4),
+        dates: (p.dates || []).slice(-4),
+        last_filed: p.lastSeen ? new Date(p.lastSeen).toISOString().slice(0, 10) : '',
+        _score: aiScore(q, { name: p.name, rel: p.rel, subjects: p.subjects, people: p.people, locations: p.locations, dates: p.dates }),
+      });
+    }
+
+    // 2. Folders that exist on disk but we have never filed into (an existing library!). The ledger
+    //    knows nothing about these, which is exactly the case the old prompt was blind to.
+    const known = new Set(cands.map((c) => c.path));
+    for (const rel of (ctx.folders || [])) {
+      if (known.has(rel)) continue;
+      const name = rel.split('/').pop();
+      cands.push({
+        path: rel, name, clips: null, subjects: [], people: [], locations: [], dates: [], last_filed: '',
+        _score: aiScore(q, { name, rel }),
+      });
+    }
+
+    const hits = cands.filter((c) => c._score > 0).sort((a, b) => b._score - a._score).slice(0, 8);
+    if (!hits.length) {
+      // A zero-match search is where a model invents a project. Give it the retry FIRST — a different
+      // query (the place, a person, a broader word) very often finds the right home — and make asking
+      // the next option after that. Creating is last.
+      return {
+        matches: [],
+        note: 'Nothing matched THAT query. Search again with different words first — try the place, a person in it, or a broader term. If a second search still finds nothing and you cannot confidently say what this footage is, call ask_user. Only create a project when you are sure it genuinely belongs somewhere new.',
+      };
+    }
+    return { matches: hits.map(({ _score, ...rest }) => rest) };
+  },
+});
+
+defineTool('inspect_project', {
+  description: 'Look INSIDE a project: its subfolders and the clips actually filed there. Use this when you are unsure whether footage belongs in a project you found.',
+  parameters: {
+    type: 'object',
+    properties: { path: { type: 'string', description: 'Project path exactly as returned by search_projects' } },
+    required: ['path'],
+  },
+  run: async ({ path: rel }, ctx) => {
+    const root = String(ctx.root || '').replace(/[\\/]+$/, '');
+    if (!root) return { error: 'No projects root is set.' };
+    const clean = String(rel || '').replace(/^[\\/]+|[\\/]+$/g, '');
+    if (!clean || clean.includes('..')) return { error: 'Invalid path.' };
+
+    const abs = path.join(root, ...clean.split('/'));
+    let entries = [];
+    try { entries = await fsp.readdir(abs, { withFileTypes: true }); }
+    catch { return { error: `"${clean}" does not exist on disk.` }; }
+
+    const subfolders = entries.filter((e) => e.isDirectory()).map((e) => e.name).slice(0, 20);
+    const clips = entries.filter((e) => e.isFile() && VIDEO_EXTS.has(path.extname(e.name).toLowerCase()))
+      .map((e) => e.name).slice(0, 15);
+
+    const led = (config.projectLedger || []).find((p) => p.rel === clean);
+    return {
+      path: clean,
+      subfolders,
+      clips_here: clips,
+      total_clips_filed: led ? (led.clips || 0) : null,
+      subjects_filed_here: led ? (led.subjects || []).slice(0, 8) : [],
+      people_filed_here: led ? (led.people || []).slice(0, 8) : [],
+      summary: led ? (led.summary || '') : '',
+    };
+  },
+});
+
+defineTool('place_in_project', {
+  description: 'FILE this footage into an existing project. This is the decision — prefer it whenever a project reasonably fits.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Project path exactly as returned by search_projects or inspect_project' },
+      by_day: { type: 'boolean', description: 'true to put the clips in a dated subfolder inside the project (use when the project already has per-day subfolders)' },
+    },
+    required: ['path'],
+  },
+  terminal: true,
+  // A path the model neither FOUND nor was TOLD is a path it made up. Either is enough: a remembered
+  // decision is the user's own answer, and re-searching for something they already told us would be
+  // exactly the busywork this whole design exists to remove.
+  requiresAny: ['search_projects', 'recall_decision'],
+  run: async ({ path: rel, by_day }, ctx) => {
+    const clean = String(rel || '').replace(/^[\\/]+|[\\/]+$/g, '');
+    if (!clean || clean.includes('..')) return { error: 'Invalid path.' };
+    // The model chose the project; the PATH is built by code, from the clip's own date. It never has
+    // to construct a path string, so it can never construct a wrong one.
+    const dest = (by_day && ctx.date) ? `${clean}/${ctx.date}` : clean;
+    return { action: 'place', path: dest };
+  },
+});
+
+defineTool('create_project', {
+  description: 'Create a NEW project. ONLY after search_projects came back with nothing suitable. If you cannot tell what the footage even IS, call ask_user instead — never invent a project for footage you do not understand.',
+  parameters: {
+    type: 'object',
+    properties: {
+      parent: { type: 'string', description: 'Existing category/folder to create it under, e.g. "2026/2026 - Personal". Use "" for the top level.' },
+      name: { type: 'string', description: 'Short project name, in the user\'s existing naming style' },
+      why: { type: 'string', description: 'One line: why nothing existing fits' },
+    },
+    required: ['name'],
+  },
+  terminal: true,
+  requires: ['search_projects'],   // you cannot create what you never looked for — see defineTool
+  run: async ({ parent, name, why }) => {
+    // slugFolder is the SAME function the rest of the app files with — reserved Windows names,
+    // illegal characters and length are handled here, once, not hoped for in a prompt.
+    const leaf = slugFolder(name);
+    if (!leaf) return { error: 'That name is empty once cleaned up. Give a real name.' };
+    const parts = String(parent || '').split('/').map((s) => slugFolder(s)).filter(Boolean);
+    return { action: 'create', path: [...parts, leaf].join('/'), why: String(why || '') };
+  },
+});
+
+defineTool('ask_user', {
+  description: 'Ask the user. Use this whenever you are not confident: the footage is unrecognisable, or two projects fit equally well. Asking is ALWAYS better than guessing — a wrong new project is far more annoying to the user than a question. Only asking without having searched first is bad.',
+  parameters: {
+    type: 'object',
+    properties: {
+      question: { type: 'string', description: 'One short, specific question' },
+      options: { type: 'array', items: { type: 'string' }, description: '2-4 concrete answers to choose from' },
+    },
+    required: ['question'],
+  },
+  terminal: true,
+  run: async ({ question, options }) => ({
+    action: 'ask',
+    question: String(question || '').slice(0, 200),
+    options: (Array.isArray(options) ? options : []).map((o) => String(o).slice(0, 60)).slice(0, 4),
+  }),
+});
+
+// --- NAMING tools -----------------------------------------------------------------------
+//
+// Vision models mostly cannot call tools, so this is deliberately split: the VISION model looks and
+// produces an observation (no decisions), and the TOOL model turns that observation into a name by
+// calling set_clip_name. The learning arrives as tool RESULTS the model can ask for, instead of as a
+// wall of English rules stapled to the front of every prompt.
+
+defineTool('get_naming_style', {
+  description: 'Get real examples of how the user names their own footage, plus the subjects they already use. Call this FIRST — matching their existing style matters more than being descriptive.',
+  parameters: { type: 'object', properties: {} },
+  run: async (_args, ctx) => {
+    const ai = config.ai || {};
+    return {
+      examples: (ai.styleExamples || []).slice(0, 12),
+      known_subjects: (ctx.subjects || []).slice(0, 30),
+      preferences: selectMemories(ai.memories, ctx.clipText || '', 12).map((m) => m.text),
+    };
+  },
+});
+
+// The subject is CONSTRAINED, not suggested.
+//
+// Measured on Jake's real archive and his real models: with a good vision model the naming loop still
+// produced `car-door`, `computertime` and `skateboarding` as SUBJECTS — because a vision model
+// describes OBJECTS, while his subjects are kinds of SHOOT (`vlog`, `pov`, `lawn-mowing`,
+// `calisthenics`). Asking nicely in a description does not fix that; his archive already contains
+// `lawn-mowing` (68 clips) AND `lawnmowing` (15) as separate subjects, which is precisely this bug
+// having already happened to him.
+//
+// So when we know his subjects, the schema is an ENUM. Ollama enforces enums in tool schemas, so an
+// invented subject becomes IMPOSSIBLE rather than merely discouraged — and a genuinely new subject
+// has to go through propose_new_subject, which is a deliberate, visible act. Structure beats
+// instruction, again.
+defineTool('set_clip_name', {
+  description: 'Name the clip using one of the user\'s EXISTING subjects. The subject is the KIND OF SHOOT (e.g. vlog, pov, lawn-mowing) — not the objects in frame. Put what is actually happening in the description. If truly none of the existing subjects fit, call propose_new_subject instead.',
+  parameters: {
+    type: 'object',
+    properties: {
+      subject: { type: 'string', description: 'One of the user\'s existing subjects — the KIND of shoot, not what is in frame.' },
+      description: { type: 'string', description: 'What is HAPPENING — concrete and specific. This is where the detail goes.' },
+      shot_type: { type: 'string', description: 'e.g. wide, close-up, handheld, static, pan, follow. "" if unclear.' },
+      tags: { type: 'array', items: { type: 'string' }, description: '3-8 short lowercase keywords visible in the footage' },
+    },
+    required: ['subject', 'description'],
+  },
+  terminal: true,
+  run: async ({ subject, description, shot_type, tags }) => {
+    // Slugging, casing and LENGTH are done HERE, by code. The model supplies meaning; the format is
+    // not its problem, so the format can never be wrong.
+    const subj = aiSlug(String(subject || ''));
+    if (!subj) return { error: 'subject came back empty. Give the actual subject of the footage.' };
+    return {
+      action: 'name',
+      subject: subj,
+      // Measured against Jake's real archive: his descriptions are 1-7 words
+      // ("josiah-cleanroom-timelapse", "headcam-getting-into-truck-and-checking-trailer", "josiah").
+      // A model handed a rich observation writes 20+ ("a-young-boy-moving-through-his-cluttered-
+      // bedroom-standing-near-the-bed-sitting-on-the-floor-and-standing-again"), which makes an
+      // unusable filename. Asking for brevity in a prompt is unreliable; capping it here is not.
+      description: aiCapWords(description, 8),
+      shotType: aiSlug(String(shot_type || '')),
+      tags: (Array.isArray(tags) ? tags : []).map((t) => String(t).toLowerCase().trim()).filter(Boolean).slice(0, 8),
+    };
+  },
+});
+
+defineTool('propose_new_subject', {
+  description: 'Only if NONE of the user\'s existing subjects fit this kind of shoot. This is rare — a near-duplicate subject ("lawnmowing" next to "lawn-mowing") permanently fragments their archive, which has already happened to them. Say why nothing existing fits.',
+  parameters: {
+    type: 'object',
+    properties: {
+      subject: { type: 'string', description: 'The new subject — the KIND of shoot, 1-3 words' },
+      why: { type: 'string', description: 'Why none of the existing subjects fit' },
+      description: { type: 'string', description: 'What is happening in this clip' },
+    },
+    required: ['subject', 'why', 'description'],
+  },
+  terminal: true,
+  run: async ({ subject, why, description }, ctx) => {
+    const subj = aiSlug(subject || '');
+    if (!subj) return { error: 'That subject is empty once cleaned up.' };
+
+    // Last-line guard, in CODE. Even with an enum on set_clip_name, the model can route around it by
+    // coming here — so anything that is merely a rewording of an existing subject is REFUSED and sent
+    // back. This is the check that would have stopped "lawnmowing" ever being created alongside
+    // "lawn-mowing", which is a real, permanent split in Jake's archive today.
+    const known = (ctx.subjects || []).map((x) => aiSlug(x)).filter(Boolean);
+    const clash = known.find((k) => aiTokenMatch(k, subj) || k.replace(/-/g, '') === subj.replace(/-/g, ''));
+    if (clash) {
+      return { error: `"${subj}" is the same subject as the existing "${clash}". Call set_clip_name with subject "${clash}" instead — a near-duplicate permanently splits the archive.` };
+    }
+    return { action: 'name', subject: subj, description: aiCapWords(description, 8), shotType: '', tags: [], newSubject: true, why: String(why || '') };
+  },
+});
+
+// --- LEDGER BACKFILL --------------------------------------------------------------------
+//
+// The ledger is only written AFTER this app files a clip (`ledger:record`). So for anyone with an
+// existing library — say 200 projects filed by hand over years — it is completely empty, and the old
+// placement prompt cheerfully instructed the model that "PAST FILING MEMORY WINS" about a list with
+// nothing in it. The model was reduced to guessing from bare folder names.
+//
+// This reads what is ALREADY on disk and builds the memory that should have been there: for each
+// project folder, the clips in it, and the subjects/dates/people their filenames encode. It is
+// idempotent (a project already in the ledger is only enriched, never duplicated) and it is pure
+// reading — nothing is moved, renamed or written to the user's tree.
+async function backfillLedgerFromTree(root, onProgress) {
+  const base = String(root || config.projectsRoot || defaultProjectsRoot()).replace(/[\\/]+$/, '');
+  if (!base) return { ok: false, error: 'No projects root set' };
+  try { await fsp.access(base); } catch { return { ok: false, error: `Folder not found: ${base}` }; }
+
+  const tree = await readProjectTree(base, 4);
+  const rels = [];
+  const walk = (nodes, prefix) => {
+    for (const n of nodes) {
+      const rel = prefix ? `${prefix}/${n.name}` : n.name;
+      rels.push(rel);
+      if (n.children && n.children.length) walk(n.children, rel);
+    }
+  };
+  walk(tree, '');
+
+  if (!Array.isArray(config.projectLedger)) config.projectLedger = [];
+  let learned = 0; let scanned = 0;
+
+  for (const rel of rels) {
+    scanned += 1;
+    if (onProgress && scanned % 10 === 0) { try { onProgress(scanned, rels.length, rel); } catch { /* ignore */ } }
+
+    const abs = path.join(base, ...rel.split('/'));
+    // eslint-disable-next-line no-await-in-loop
+    const clips = await listVideosShallow(abs);
+    if (!clips.length) continue;   // a container folder, not a project
+
+    // What do the filenames actually say? parseNamedClip understands this app's own naming scheme,
+    // and returns nothing for a file that doesn't follow it — which is fine, the clip count alone is
+    // still real information.
+    const subjects = new Set(); const dates = new Set(); const samples = [];
+    for (const c of clips) {
+      const meta = parseNamedClip(c.name);
+      if (meta && meta.subject) subjects.add(meta.subject);
+      if (meta && meta.date) dates.add(meta.date);
+      if (samples.length < 6) samples.push(c.name);
+    }
+
+    const key = rel;
+    let rec = (config.projectLedger || []).find((p) => p.rel === key);
+    if (!rec) {
+      const segs = key.split('/');
+      rec = {
+        id: newMemId(), rel: key, name: segs[segs.length - 1],
+        category: segs.slice(0, Math.min(2, segs.length)).join('/'),
+        dates: [], subjects: [], locations: [], people: [], samples: [],
+        clips: 0, summary: '', summaryClips: 0,
+        firstSeen: Date.now(), lastSeen: Date.now(), backfilled: true,
+      };
+      config.projectLedger.push(rec);
+      learned += 1;
+    }
+    // ENRICH, never clobber: a project we have really filed into knows more than a filename parse.
+    rec.clips = Math.max(rec.clips || 0, clips.length);
+    rec.subjects = [...new Set([...(rec.subjects || []), ...subjects])].slice(0, 24);
+    rec.dates = [...new Set([...(rec.dates || []), ...dates])].sort().slice(-24);
+    rec.samples = [...new Set([...(rec.samples || []), ...samples])].slice(0, 8);
+  }
+
+  saveConfig();
+  return { ok: true, projects: (config.projectLedger || []).length, learned, scanned: rels.length };
+}
+
+ipcMain.handle('ai:backfillLedger', async (evt, root) => {
+  const send = (n, total, rel) => { try { evt.sender.send('ai:pull-progress', { status: `Reading ${rel}`, percent: Math.round((n / Math.max(1, total)) * 100) }); } catch { /* ignore */ } };
+  try { return await backfillLedgerFromTree(root, send); }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
+// --- the two things the model is actually FOR --------------------------------------------
+
+// Where does this footage belong? One tool loop per SUBJECT GROUP, not per clip.
+//
+// Grouping the clips by subject is deterministic — it needs no model at all — so we do it in code and
+// ask the model exactly one question per group. A card of 309 clips is usually ~15 subjects, so this
+// is ~15 decisions instead of 309, and every clip in a group is guaranteed to land together (the old
+// per-clip approach could scatter the same shoot across three projects).
+ipcMain.handle('ai:placeGroup', async (_evt, payload) => {
+  const model = await aiToolModel();
+  if (!model) {
+    return { ok: false, error: 'No tool-capable reasoning model. Install one (e.g. `ollama pull qwen3:8b`) — a vision model cannot do this.' };
+  }
+  const g = payload || {};
+
+  // ASK ONCE, THEN KNOW. If the user has already told us where this kind of footage goes, that is the
+  // answer — no model call, no prompt, no variability, no latency. The model is only ever consulted
+  // about things it has genuinely never seen, which is the only place a model belongs.
+  const known = recallPlacement({ subject: g.subject, people: g.people, location: g.location });
+  if (known && known.confidence === 'exact') {
+    return { ok: true, action: 'place', path: (g.date && known.path.endsWith(g.date)) ? known.path : known.path, recalled: true, told_before: known.told_before, trace: [] };
+  }
+
+  const root = String(config.projectsRoot || defaultProjectsRoot()).replace(/[\\/]+$/, '');
+
+  // Every folder that exists on disk — so a project we have never filed into is still findable.
+  const folders = [];
+  try {
+    const walk = (nodes, prefix) => {
+      for (const n of nodes) {
+        const rel = prefix ? `${prefix}/${n.name}` : n.name;
+        folders.push(rel);
+        if (n.children && n.children.length) walk(n.children, rel);
+      }
+    };
+    walk(await readProjectTree(root, 4), '');
+  } catch { /* no tree → the model can still create */ }
+
+  const people = (g.people || []).filter(Boolean);
+  const user = [
+    `Footage to file: ${g.count || 1} clip${(g.count || 1) !== 1 ? 's' : ''}.`,
+    `Subject: ${g.subject || '(unnamed)'}`,
+    g.description ? `Description: ${g.description}` : '',
+    g.observation ? `What the camera saw: ${g.observation}` : '',
+    people.length ? `People in it: ${people.join(', ')}` : '',
+    g.location ? `Location: ${g.location}` : '',
+    g.date ? `Date: ${g.date}` : '',
+  ].filter(Boolean).join('\n');
+
+  const system = [
+    'You file a videographer\'s footage into their existing project tree.',
+    'FIRST call recall_decision — if the user has already told you where this kind of footage goes, just use that. Never ask a question you have already been given the answer to.',
+    'Otherwise search_projects. An existing project almost always fits — creating a new project for footage that belongs in an old one is the worst mistake you can make.',
+    'If a search finds nothing, search AGAIN with different words (the place, a person, a broader term) before concluding anything.',
+    'Then call exactly one of: place_in_project, create_project, or ask_user.',
+    'Do not explain yourself. Choose a tool.',
+  ].join(' ');
+
+  const r = await runToolLoop({
+    model, system, user,
+    tools: ['recall_decision', 'search_projects', 'inspect_project', 'place_in_project', 'create_project', 'ask_user'],
+    ctx: { root, folders, date: g.date || '', location: g.location || '' },
+    maxSteps: 7,
+  });
+
+  // A model that answers in prose, or never decides, is telling us it doesn't know. Don't invent a
+  // destination for it — surface it as a question, which is the honest outcome and the one Jake can
+  // actually act on.
+  if (!r.ok) {
+    return {
+      ok: true,
+      action: 'ask',
+      question: `Where should "${g.subject || 'these clips'}" go?`,
+      options: [],
+      reason: r.reason,
+      trace: r.trace,
+    };
+  }
+  return { ok: true, ...r.result, trace: r.trace };
+});
+
+// Name one clip from what the vision model SAW. The vision model looks; this one decides.
+ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
+  const model = await aiToolModel();
+  if (!model) return { ok: false, error: 'No tool-capable reasoning model installed.' };
+  const p = payload || {};
+  if (!p.observation) return { ok: false, error: 'No observation to name from.' };
+
+  const user = [
+    `What the camera saw: ${p.observation}`,
+    p.context ? `The user's note about this shoot: ${p.context}` : '',
+    (p.people || []).length ? `Recognised people in it: ${(p.people || []).join(', ')}` : '',
+  ].filter(Boolean).join('\n');
+
+  const system = [
+    "You name a videographer's clips.",
+    'First call get_naming_style to see how THEY name things and which subjects they already use.',
+    'The SUBJECT is the kind of SHOOT (vlog, pov, lawn-mowing…), NOT the objects in frame. Everything you can see goes in the DESCRIPTION.',
+    'Then call set_clip_name with one of their existing subjects. Only if genuinely none of them fit, call propose_new_subject.',
+    'Do not explain — call the tools.',
+  ].join(' ');
+
+  // The user's REAL subjects become a schema-level enum, so an invented subject is impossible rather
+  // than discouraged. A genuinely new one must go through propose_new_subject, which refuses a
+  // near-duplicate outright.
+  const subjects = (p.subjects || []).map((x) => aiSlug(x)).filter(Boolean);
+  const r = await runToolLoop({
+    model, system, user,
+    tools: ['get_naming_style', 'set_clip_name', 'propose_new_subject'],
+    ctx: { subjects, clipText: `${p.observation} ${p.context || ''}` },
+    enums: subjects.length ? { set_clip_name: { subject: subjects } } : {},
+    maxSteps: 5,
+  });
+  if (!r.ok) return { ok: false, error: r.reason === 'no_tool_call' ? 'The model answered in prose instead of naming the clip.' : 'The model never settled on a name.', trace: r.trace };
+  return { ok: true, ...r.result, trace: r.trace };
+});
+
+// --- PLACEMENT MEMORY — ask once, then never again --------------------------------------
+//
+// Jake: "It should be able to figure this out, or it only ever asks it once and then it knows."
+//
+// That is the whole point, and nothing in the app did it. You'd confirm "these mowing clips go in
+// Garden Reno", the clips would be filed, and the DECISION would evaporate — so next month it asked
+// again. Worse, when it couldn't identify footage it invented a project rather than ask, because a
+// question it would only have to ask once still felt expensive to it.
+//
+// So: every answer becomes a rule. And a remembered answer does not go to the model AT ALL — it is a
+// dictionary lookup, which is instant, free, and has exactly zero variability. The model is then only
+// ever consulted about things it has genuinely never seen, which is the only place a model belongs.
+function placementMemory() {
+  if (!Array.isArray(config.placementMemory)) config.placementMemory = [];
+  return config.placementMemory;
+}
+
+// Remember where the user filed this kind of footage. Called when they CONFIRM a placement — their
+// confirmation is the ground truth, not the model's suggestion.
+function rememberPlacement({ subject, people, location, path }) {
+  const subj = aiSlug(subject || '');
+  const dest = String(path || '').trim();
+  if (!subj || !dest) return null;
+
+  const mem = placementMemory();
+  const ppl = (Array.isArray(people) ? people : []).map((p) => String(p).toLowerCase()).sort();
+  const loc = aiSlug(location || '');
+
+  // Same subject + same people → the same decision. Update it rather than piling up near-duplicates,
+  // so a changed mind overwrites cleanly instead of leaving two contradictory rules to fight.
+  const existing = mem.find((m) => m.subject === subj && JSON.stringify(m.people || []) === JSON.stringify(ppl));
+  if (existing) {
+    existing.path = dest;
+    existing.location = loc || existing.location;
+    existing.count = (existing.count || 0) + 1;
+    existing.ts = Date.now();
+  } else {
+    mem.push({ subject: subj, people: ppl, location: loc, path: dest, count: 1, ts: Date.now() });
+  }
+  saveConfig();
+  return { ok: true, remembered: subj, path: dest };
+}
+
+// Have we been told this before? Deterministic — no model, no prompt, no variability.
+//
+// Returns a confidence so the caller can decide whether to act silently or still show the user.
+// EXACT is "you told me this exact thing"; LIKELY is a strong lexical match on the subject (the same
+// prefix matcher that fixed the alpine/alps miss).
+function recallPlacement({ subject, people, location }) {
+  const subj = aiSlug(subject || '');
+  if (!subj) return null;
+  const mem = placementMemory();
+  if (!mem.length) return null;
+
+  const ppl = (Array.isArray(people) ? people : []).map((p) => String(p).toLowerCase());
+  const loc = aiSlug(location || '');
+
+  let best = null; let bestScore = 0;
+  for (const m of mem) {
+    let score = 0;
+    if (m.subject === subj) score += 10;
+    else if (aiTokenMatch(m.subject, subj)) score += 6;
+    else continue;                                    // a different subject is a different decision
+
+    const overlap = (m.people || []).filter((p) => ppl.includes(p)).length;
+    score += overlap * 2;
+    if (loc && m.location && aiTokenMatch(m.location, loc)) score += 2;
+    score += Math.min(3, m.count || 1);               // a decision you've confirmed repeatedly is stronger
+
+    if (score > bestScore) { bestScore = score; best = m; }
+  }
+  if (!best) return null;
+  return {
+    path: best.path,
+    confidence: best.subject === subj ? 'exact' : 'likely',
+    told_before: best.count || 1,
+    score: bestScore,
+  };
+}
+
+// The model gets it as a tool too — so even for footage it must reason about, "where did we put this
+// last time?" is a question it can just ask.
+defineTool('recall_decision', {
+  description: 'Check whether the user has ALREADY told you where this kind of footage goes. Call this FIRST — if they have, use it. Never ask a question you have already been given the answer to.',
+  parameters: {
+    type: 'object',
+    properties: {
+      subject: { type: 'string' },
+      people: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['subject'],
+  },
+  run: async ({ subject, people }, ctx) => {
+    const hit = recallPlacement({ subject, people, location: ctx.location || '' });
+    if (!hit) return { known: false, note: 'The user has not told you where this kind of footage goes. Search for a project.' };
+    return { known: true, path: hit.path, confidence: hit.confidence, times_filed_here: hit.told_before };
+  },
+});
+
+// The renderer calls this when the user CONFIRMS a card. This is the moment the app learns.
+ipcMain.handle('ai:rememberPlacement', (_e, payload) => {
+  try { return rememberPlacement(payload || {}) || { ok: false }; }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
+// And this is asked BEFORE the model, so a known answer costs nothing.
+ipcMain.handle('ai:recallPlacement', (_e, payload) => {
+  try { return recallPlacement(payload || {}) || { known: false }; }
+  catch { return { known: false }; }
+});
+
+// --- BOOTSTRAP: learn from the library the user ALREADY has ------------------------------
+//
+// Jake has 310 correctly-named clips sitting in his Compressed folder, and the app's
+// `ai.styleExamples` and `ai.subjects` were BOTH EMPTY. The single best source of truth about how he
+// names things — hundreds of examples he wrote himself — was on disk, unread, while the AI invented
+// subjects like `car-door` and `skateboarding` for want of knowing that `pov` and `vlog` existed.
+//
+// This reads it. Not a model in sight: it parses the filenames he already wrote.
+//
+// It also surfaces the fragmentation he already has (`lawn-mowing` 68 clips AND `lawnmowing` 15) so
+// he can merge them — because until he does, BOTH are "existing subjects" and the enum will happily
+// keep offering the wrong one.
+function learnFromLibrary(dirs) {
+  const roots = (Array.isArray(dirs) ? dirs : [dirs]).filter(Boolean);
+  const subjectCount = new Map();
+  const pairs = [];        // "subject / description" — real few-shot examples
+  let scanned = 0; let parsed = 0;
+
+  for (const dir of roots) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      if (!e.isFile()) continue;
+      const ext = path.extname(e.name).toLowerCase();
+      if (!VIDEO_EXTS.has(ext) && !IMAGE_EXTS.has(ext)) continue;
+      scanned += 1;
+      const meta = parseNamedClip(e.name);
+      if (!meta || !meta.subject) continue;      // a raw GH016805.mp4 teaches nothing
+      parsed += 1;
+
+      const subj = aiSlug(meta.subject);
+      if (!subj) continue;
+      subjectCount.set(subj, (subjectCount.get(subj) || 0) + 1);
+      if (meta.description) pairs.push(`${subj} / ${aiSlug(meta.description)}`);
+    }
+  }
+
+  // Subjects he ACTUALLY uses, commonest first. A subject used once is probably a typo (his archive
+  // has a `vloghead-owenpack-josiahpack-insidehouse` — clearly a mistake), so require it twice.
+  const subjects = [...subjectCount.entries()]
+    .filter(([, n]) => n >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .map(([s]) => s);
+
+  // Near-duplicates that are ALREADY splitting the archive (his has `lawn-mowing` 67 and `lawnmowing`
+  // 15 — one subject, two folders, forever).
+  //
+  // Reporting them is not enough. If BOTH stay in the enum the model will keep offering the minority
+  // spelling and the split gets worse every run. So the enum gets only the CANONICAL spelling — the
+  // one he uses most — which stops the bleeding immediately. The existing files keep their names:
+  // renaming 15 of his clips is a destructive act and his call, not a side effect of learning.
+  const duplicates = [];
+  const collapsed = new Set();
+  for (let i = 0; i < subjects.length; i += 1) {
+    for (let j = i + 1; j < subjects.length; j += 1) {
+      const a = subjects[i]; const b = subjects[j];
+      if (collapsed.has(b)) continue;
+      if (a.replace(/-/g, '') === b.replace(/-/g, '') || aiTokenMatch(a, b)) {
+        // `subjects` is sorted commonest-first, so `a` is always the dominant spelling.
+        duplicates.push({ keep: a, merge: b, keepCount: subjectCount.get(a), mergeCount: subjectCount.get(b) });
+        collapsed.add(b);
+      }
+    }
+  }
+  const canonical = subjects.filter((s) => !collapsed.has(s));
+
+  // Spread the examples across subjects rather than taking the first 60 (which, on his archive, would
+  // be 60 clips of `vlog` and teach the model nothing about `pov` or `calisthenics`).
+  const bySubject = new Map();
+  for (const p of pairs) {
+    const s = p.split(' / ')[0];
+    if (!bySubject.has(s)) bySubject.set(s, []);
+    bySubject.get(s).push(p);
+  }
+  const examples = [];
+  for (let round = 0; round < 12 && examples.length < 60; round += 1) {
+    for (const s of canonical) {   // never show the model a duplicate spelling as a good example
+      const list = bySubject.get(s);
+      if (list && list[round]) examples.push(list[round]);
+      if (examples.length >= 60) break;
+    }
+  }
+
+  return {
+    ok: true,
+    scanned,
+    parsed,
+    subjects: canonical,        // what the model may choose from — one spelling per subject
+    allSubjects: subjects,      // everything seen, including the duplicates
+    counts: Object.fromEntries(subjectCount),
+    examples,
+    duplicates,                 // for the user to act on: "you have both, want to merge?"
+  };
+}
+
+// Read the library and SAVE what it learned: the subjects become the enum the model must choose from,
+// and the examples become real few-shot pairs. Both were empty; both were sitting on disk.
+ipcMain.handle('ai:learnFromLibrary', (_e, dirs) => {
+  try {
+    const targets = (Array.isArray(dirs) && dirs.length)
+      ? dirs
+      : [config.finalizeSource, config.intakeFolder, config.projectsRoot].filter(Boolean);
+    const r = learnFromLibrary(targets);
+    if (!r.parsed) {
+      return { ok: false, error: 'No clips there follow your naming scheme yet — name a few by hand first and I can learn from them.' };
+    }
+    config.ai = config.ai || {};
+    config.ai.styleExamples = r.examples;
+    // Merge with any subjects already known, rather than replacing — a subject you use but haven't
+    // filed yet is still a subject.
+    const existing = Array.isArray(config.subjects) ? config.subjects : [];
+    config.subjects = [...new Set([...r.subjects, ...existing.map((x) => aiSlug(x)).filter(Boolean)])];
+    saveConfig();
+    return r;
+  } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
+// --- AI HEALTH — the things that were silently wrong ------------------------------------
+//
+// Jake's real config, verbatim:
+//   ai.model      = 'llava-llama3'   (measured: hallucinates whole objects)
+//   ai.textModel  = ''               (so EVERY text task ran on the vision model, which cannot
+//                                     call tools at all)
+//   styleExamples = 0                (while 310 correctly-named clips sat on disk, unread)
+//   projectsRoot  = ''               (there is NOWHERE to file to — which is the real reason
+//                                     "organize sucks", and the app never said so)
+//
+// Not one of those was surfaced anywhere. The app just quietly did its worst and looked stupid. Each
+// of them is detectable, and each has a one-click fix — so say so, and fix it.
+ipcMain.handle('ai:health', async () => {
+  const ai = config.ai || {};
+  const problems = [];
+
+  // 1. A reasoning model that can actually call tools.
+  const toolModel = await aiToolModel();          // this also auto-picks and persists one if it can
+  if (!toolModel) {
+    problems.push({
+      id: 'no-tool-model',
+      severity: 'high',
+      title: 'No reasoning model',
+      detail: 'Naming and filing need a model that can call tools. A vision model cannot — it just writes prose, which is why the results have been erratic.',
+      fix: 'pull',
+      fixLabel: 'Get qwen3:8b',
+      arg: 'qwen3:8b',
+    });
+  }
+
+  // 2. A vision model that actually sees what's there.
+  let advice = null;
+  try { advice = (await visionAdviceInner()) || null; } catch { advice = null; }
+  if (advice && advice.kind === 'upgrade') {
+    problems.push({
+      id: 'weak-vision',
+      severity: 'high',
+      title: `Switch to ${advice.best}`,
+      detail: advice.why,
+      fix: 'useVision',
+      fixLabel: `Use ${advice.best}`,
+      arg: advice.best,
+    });
+  }
+
+  // 3. It has never read the names you already wrote.
+  const styles = (ai.styleExamples || []).length;
+  const libs = [config.finalizeSource, config.intakeFolder].filter(Boolean);
+  if (!styles && libs.length) {
+    problems.push({
+      id: 'no-style',
+      severity: 'medium',
+      title: "It hasn't learned your naming style",
+      detail: 'Your Compressed folder is full of clips you named yourself. That is the best possible example of how you want things named, and the AI has never read it.',
+      fix: 'learn',
+      fixLabel: 'Learn from my clips',
+      arg: libs,
+    });
+  }
+
+  // 4. Nowhere to file to.
+  if (!config.projectsRoot) {
+    problems.push({
+      id: 'no-projects-root',
+      severity: 'high',
+      title: 'No Projects folder set',
+      detail: 'Organize files clips into a Projects tree — and you have not got one. That is why organizing has never worked: there is nowhere for anything to go.',
+      fix: 'pickProjects',
+      fixLabel: 'Choose a folder',
+      arg: '',
+    });
+  }
+
+  return { ok: true, problems, toolModel, visionModel: ai.model || '' };
+});
+
+// Same logic as the ai:visionAdvice handler, callable internally (an ipcMain handler cannot be
+// invoked from within the main process).
+async function visionAdviceInner() {
+  const ai = config.ai || {};
+  const current = ai.model || '';
+  let installed = [];
+  try { installed = await ollamaListModels(); } catch { return null; }
+  const vision = [];
+  for (const n of installed) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await ollamaModelVision(n)) vision.push(n);
+  }
+  if (!vision.length) return null;
+  vision.sort((a, b) => visionRankOf(a) - visionRankOf(b));
+  const best = vision[0];
+  if (!current) return { kind: 'unset', best, installed: vision };
+  if (best === current || visionRankOf(best) >= visionRankOf(current)) return null;
+  return {
+    kind: 'upgrade',
+    current,
+    best,
+    installed: vision,
+    why: /^llava/i.test(current)
+      ? `${current} invents things that aren't in your footage — on your own clips it called a pickup truck "a person riding a motorcycle". ${best} read the text off a monitor in the same frames.`
+      : `${best} is measurably more accurate at describing what is actually in a frame than ${current}.`,
+  };
+}

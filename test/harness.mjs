@@ -80,6 +80,12 @@ export function loadMain({ userData } = {}) {
     __dirname: ROOT, __filename: join(ROOT, 'main.js'),
     process, console, Buffer, URL, TextEncoder, TextDecoder,
     setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, queueMicrotask,
+    // The Ollama layer talks over HTTP with the global fetch. Without these in the context the whole
+    // AI subsystem threw ReferenceError the moment a test touched it — which is why none of it was
+    // ever tested. A test can swap in its own transport with:
+    //     app.get('globalThis').fetch = async (url, init) => ({ ok: true, json: async () => ({…}) })
+    // …so the model layer is testable with no Ollama and no GPU.
+    fetch, AbortSignal,
   });
 
   // The store/config dir is derived from APPDATA at load time (main-mod/01-core.js:69),

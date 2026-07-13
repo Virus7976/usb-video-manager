@@ -535,10 +535,65 @@ async function ollamaGenerate(model, prompt, opts = {}) {
   // Strip any stray <think>…</think> reasoning so callers get clean text/JSON.
   return String(j.response || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
-// The model used for TEXT-ONLY tasks (distilling rules, consolidating memories,
-// refining, importing, and the reasoning passes of multi-pass). Falls back to the
-// vision model when no dedicated reasoning model is set.
-function aiTextModel() { return (config.ai && config.ai.textModel) || (config.ai && config.ai.model) || ''; }
+// The model used for TEXT-ONLY tasks (distilling rules, consolidating memories, refining, importing,
+// project placement, and the reasoning passes of multi-pass).
+//
+// It used to fall back to the VISION model, and `textModel` defaults to '' — so out of the box every
+// single text task in the app ran on qwen2.5vl:7b, a vision model that is weak at instruction-
+// following, weak at JSON, and **cannot call tools at all**. That one line is most of why the AI
+// feels gimmicky: it was being asked to do reasoning work on a model chosen for looking at pictures.
+// (The multi-pass path even knew something was wrong and papered over it — ai:improve sends the
+// contact sheet on a *text* task because "many vision models fail or stall on a TEXT-ONLY generate".)
+//
+// No silent fallback now. Call sites that genuinely can degrade to the vision model still say so
+// explicitly (`aiTextModel() || ai.model`); the ones guarded by `if (aiTextModel())` now correctly
+// skip rather than running a text task on a vision model and calling the mush "learning".
+function aiTextModel() { return (config.ai && config.ai.textModel) || ''; }
+
+// The model for TOOL-CALLING work. Returns '' when we haven't got one — never a vision model, which
+// would just return prose and break every downstream assumption.
+//
+// If the user hasn't chosen a reasoning model, pick one for them: they almost certainly have a
+// tool-capable model installed already (qwen3, llama3.1/3.2…) and simply never opened the picker,
+// whose placeholder literally reads "(use vision model)".
+// NOT memoized. A cached promise here outlives config changes and model installs: pick once, and the
+// app would keep returning that answer even after the user chose a different reasoning model or
+// pulled a new one. The success path persists its choice to config.ai.textModel, so the `chosen`
+// branch short-circuits on every later call anyway — the only thing that re-probes is the case where
+// there genuinely isn't a tool-capable model, which is rare and worth re-checking.
+async function aiToolModel() {
+  const chosen = (config.ai && config.ai.textModel) || '';
+  if (chosen) return (await ollamaModelTools(chosen)) ? chosen : '';
+  return autoPickToolModel();
+}
+
+// Preference order among what's actually installed. These are the reasoning models the app already
+// offers in its own catalogue, and all three support tools.
+const TOOL_MODEL_PREFERENCE = ['qwen3:8b', 'qwen3:4b', 'llama3.1:8b', 'llama3.2', 'mistral-nemo'];
+async function autoPickToolModel() {
+  let installed = [];
+  try { installed = await ollamaListModels(); } catch { return ''; }
+  const names = installed.map((m) => (typeof m === 'string' ? m : (m && m.name) || '')).filter(Boolean);
+  // Preferred names first, then anything else Ollama reports as tool-capable.
+  const ordered = [
+    ...TOOL_MODEL_PREFERENCE.filter((p) => names.some((n) => n === p || n.startsWith(`${p}:`))).map((p) => names.find((n) => n === p || n.startsWith(`${p}:`))),
+    ...names,
+  ];
+  const seen = new Set();
+  for (const n of ordered) {
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    // eslint-disable-next-line no-await-in-loop
+    if (await ollamaModelTools(n)) {
+      config.ai = config.ai || {};
+      config.ai.textModel = n;                 // remember it — don't re-probe every launch
+      try { saveConfig(); } catch { /* non-fatal */ }
+      console.log(`[ai] no reasoning model was set — auto-selected the tool-capable "${n}"`);
+      return n;
+    }
+  }
+  return '';
+}
 
 // True when an Ollama error means the chosen model can't actually run on this
 // machine/version (not a transient timeout): the runner crashed loading it
@@ -552,6 +607,17 @@ function isModelLoadError(err) {
   if (status === 500 && /terminated|unknown model architecture|error loading model|failed to load|cannot (allocate|load)|out of memory|mllama|requires more system memory/.test(s)) return true;
   return false;
 }
+// Every model Ollama has installed, by name. /api/tags was being re-fetched and re-parsed in four
+// separate places; this is the one that owns it.
+async function ollamaListModels() {
+  try {
+    const res = await ollamaFetch('/api/tags', {}, 6000);
+    if (!res.ok) return [];
+    const j = await res.json();
+    return (j.models || []).map((m) => m && m.name).filter(Boolean);
+  } catch { return []; }
+}
+
 // Installed models that can take images, best→worst-ish, excluding `exclude`.
 async function listVisionModels(exclude) {
   try {
@@ -561,6 +627,11 @@ async function listVisionModels(exclude) {
     const names = (j.models || []).map((m) => m && m.name).filter(Boolean);
     const out = [];
     for (const n of names) { if (n === exclude) continue; if (await ollamaModelVision(n)) out.push(n); }
+    // BEST FIRST. This list is what the app falls back to when a model fails to load, and it used to
+    // be in whatever order Ollama happened to return — so a broken qwen2.5vl could silently demote the
+    // user to llava, which hallucinates whole objects (measured; see VISION_QUALITY). A fallback
+    // should degrade as little as possible, not arbitrarily.
+    out.sort((a, b) => visionRankOf(a) - visionRankOf(b));
     return out;
   } catch { return []; }
 }
@@ -618,19 +689,95 @@ function aiFieldStr(v) {
 // Best-effort check of whether a model can take images (newer Ollama reports
 // `capabilities: ["vision", …]` from /api/show; otherwise fall back to the name).
 async function ollamaModelVision(name) {
+  const caps = await ollamaCapabilities(name);
+  if (caps) return caps.includes('vision');
+  return /llava|vision|qwen.*vl|minicpm-v|moondream|bakllava/i.test(name);
+}
+
+// Capabilities straight from Ollama (`["completion","tools","vision","thinking"]`). Cached — this is
+// asked once per clip otherwise, and /api/show is not free. Returns null when we genuinely can't
+// tell, so callers can fall back to a name heuristic rather than assuming "no".
+const _capCache = new Map();
+async function ollamaCapabilities(name) {
+  const key = String(name || '');
+  if (!key) return null;
+  if (_capCache.has(key)) return _capCache.get(key);
+  let caps = null;
   try {
     const res = await ollamaFetch('/api/show', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: name })
+      body: JSON.stringify({ model: key })
     }, 5000);
     if (res.ok) {
       const j = await res.json();
-      if (Array.isArray(j.capabilities)) return j.capabilities.includes('vision');
-      const fams = (j.details && j.details.families) || [];
-      if (fams.some((f) => /clip|mllama|vision|qwen.*vl|gemma3/i.test(f))) return true;
+      if (Array.isArray(j.capabilities)) caps = j.capabilities;
+      else {
+        const fams = (j.details && j.details.families) || [];
+        if (fams.some((f) => /clip|mllama|vision|qwen.*vl|gemma3/i.test(f))) caps = ['completion', 'vision'];
+      }
     }
-  } catch { /* fall through to name heuristic */ }
-  return /llava|vision|qwen.*vl|minicpm-v|moondream|bakllava/i.test(name);
+  } catch { /* unreachable / old Ollama → null */ }
+  _capCache.set(key, caps);
+  return caps;
+}
+
+// Can this model CALL TOOLS? This is the whole basis of the naming/filing redesign: instead of
+// asking a model to reason its way to a JSON blob inside a giant instruction prompt, we hand it a
+// small set of tools and it just picks one. Ollama reports `tools` in capabilities for models that
+// support it (qwen3, llama3.1/3.2, mistral-nemo…). Vision models mostly do NOT — which is exactly
+// why perception and decision want to be different calls.
+async function ollamaModelTools(name) {
+  const caps = await ollamaCapabilities(name);
+  if (caps) return caps.includes('tools');
+  return false;   // never GUESS a model into tool mode — a model that can't will just return prose
+}
+
+/**
+ * One Ollama /api/chat call, with tools.
+ *
+ * The existing ollamaGenerate() hits /api/generate with `format:'json'` and a giant instruction
+ * prompt describing the exact JSON shape, then parses whatever comes back with a lenient parser.
+ * That makes the model do all the work: hold a schema in its head, reason about the task, AND
+ * serialise correctly — and a 7B model gets one of those three wrong constantly.
+ *
+ * /api/chat with `tools` inverts it. The tool schema is enforced by the runtime, so the model's only
+ * job is to CHOOSE. Returns { content, toolCalls: [{name, args}] } — toolCalls is [] when the model
+ * chose to answer in prose instead, which is itself a signal (usually "I don't know").
+ */
+async function ollamaChat(model, messages, opts = {}) {
+  const body = { model, messages, stream: false };
+  if (opts.tools && opts.tools.length) body.tools = opts.tools;
+  if (opts.format) body.format = opts.format;
+  // Thinking OFF by default: it slows a local 7-8B model down enormously and, for tool selection,
+  // buys nothing — the choice is the answer. (Ollama ignores `think` on models without it.)
+  body.think = opts.think === undefined ? false : !!opts.think;
+  body.options = { temperature: isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 0.2 };
+  const res = await ollamaFetch('/api/chat', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+  }, opts.timeout || 180000);
+  if (!res.ok) {
+    let detail = '';
+    try { const b = await res.json(); detail = (b && b.error && (b.error.message || b.error)) || ''; }
+    catch { try { detail = await res.text(); } catch { /* ignore */ } }
+    detail = String(detail || '').replace(/\s+/g, ' ').trim();
+    const e = new Error(`Ollama HTTP ${res.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+    e.status = res.status; e.detail = detail; e.model = model;
+    throw e;
+  }
+  const j = await res.json();
+  const msg = (j && j.message) || {};
+  const raw = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+  const toolCalls = raw.map((t) => {
+    const fn = (t && t.function) || {};
+    let args = fn.arguments;
+    // Ollama normally hands back a parsed object, but some models emit a JSON *string*. Take both.
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+    return { name: String(fn.name || ''), args: (args && typeof args === 'object') ? args : {} };
+  }).filter((t) => t.name);
+  return {
+    content: String(msg.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim(),
+    toolCalls,
+  };
 }
 
 const AI_DEFAULT_GUIDANCE = "You are tagging one video clip for a videographer's archive. The image is a contact-sheet GRID of frames sampled across the clip in time order (left-to-right, top-to-bottom). They are all from the SAME clip. COMPARE the frames to judge CAMERA MOTION (static / handheld / moving — panning or following) and whether it stays one continuous shot or cuts between shots, then identify the main subject, the action, and the type of shot.";

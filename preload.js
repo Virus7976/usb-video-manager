@@ -190,6 +190,23 @@ contextBridge.exposeInMainWorld('api', {
   ledgerMatchDates: (payload) => ipcRenderer.invoke('ledger:matchDates', Array.isArray(payload) ? { dates: payload } : (payload || {})),
   ledgerSummarize: (rel) => ipcRenderer.invoke('ledger:summarize', { rel }),
   aiSuggestProjects: (payload) => ipcRenderer.invoke('ai:suggestProjects', payload),
+  // TOOL-BASED AI. The model chooses a tool; the tool does the work deterministically.
+  // ai:placeGroup answers "where does this shoot go?" by SEARCHING the real tree and READING what's
+  // actually inside a project — instead of guessing from a list of folder names in a giant prompt.
+  aiPlaceGroup: (group) => ipcRenderer.invoke('ai:placeGroup', group),
+  aiNameFromObservation: (payload) => ipcRenderer.invoke('ai:nameFromObservation', payload),
+  // Teach the ledger what's ALREADY in the Projects tree — it was only ever written after this app
+  // filed something, so an existing library was invisible to the AI.
+  aiBackfillLedger: (root) => ipcRenderer.invoke('ai:backfillLedger', root),
+  // ASK ONCE, THEN KNOW. Confirming a placement teaches it permanently; recall answers next time with
+  // no model call at all.
+  aiRememberPlacement: (p) => ipcRenderer.invoke('ai:rememberPlacement', p),
+  aiRecallPlacement: (p) => ipcRenderer.invoke('ai:recallPlacement', p),
+  // AI health: the four things that were silently wrong in the real config.
+  aiHealth: () => ipcRenderer.invoke('ai:health'),
+  aiVisionAdvice: () => ipcRenderer.invoke('ai:visionAdvice'),
+  aiUseVisionModel: (name) => ipcRenderer.invoke('ai:useVisionModel', name),
+  aiLearnFromLibrary: (dirs) => ipcRenderer.invoke('ai:learnFromLibrary', dirs),
   aiBatchQuestions: (payload) => ipcRenderer.invoke('ai:batchQuestions', payload),
   aiAnswerSubjects: (payload) => ipcRenderer.invoke('ai:answerSubjects', payload),
 

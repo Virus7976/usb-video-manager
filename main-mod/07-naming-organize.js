@@ -311,11 +311,39 @@ function aiNamingSpec(ai, opts) {
   if (subjHint) rules.push(`Prefer these known subjects when they genuinely fit: [${subjHint}].`);
   const rulesText = rules.map((r) => `- ${r}`).join('\n');
   const exs = (Array.isArray(ai.styleExamples) ? ai.styleExamples : []).slice(0, 12);
-  const mems = (Array.isArray(ai.memories) ? ai.memories : []).map((m) => (m && m.text ? (m.example ? `${m.text} (e.g. ${m.example})` : m.text) : '')).filter(Boolean);
+  // `exs` was capped at 12; `mems` was capped at NOTHING. The store holds up to 300 memories, so a
+  // well-used install injected ~18 KB of English rules into EVERY clip's prompt, on a 7B model. A
+  // 7B model does not follow 300 rules — it drowns in them, and the ones that matter get buried.
+  const mems = selectMemories(ai.memories, (opts && opts.clipText) || '', 24)
+    .map((m) => (m.example ? `${m.text} (e.g. ${m.example})` : m.text));
   let styleBlock = '';
   if (exs.length) styleBlock += `\nMatch this user's own naming style. Real examples (subject / description):\n${exs.join('\n')}`;
   if (mems.length) styleBlock += `\nFollow these learned preferences from the user:\n- ${mems.join('\n- ')}`;
   return { fieldSpec, rulesText, styleBlock, detectShot, wantCat };
+}
+
+// Which of the user's learned preferences are worth spending prompt budget on for THIS clip?
+//
+// Not a pure relevance filter, deliberately. A rule like "always lowercase with hyphens" is global —
+// it has zero lexical overlap with any clip, and a naive relevance ranker would drop exactly the
+// style rules that matter most. So: keep everything while it fits, and only once we're over budget
+// rank by relevance to this clip, falling back to recency (a newer correction reflects what the user
+// wants NOW). The chosen set is emitted in its original order, so the prompt stays stable between
+// clips and the model isn't re-anchored by reshuffling.
+function selectMemories(memories, clipText, cap = 24) {
+  const mems = (Array.isArray(memories) ? memories : []).filter((m) => m && m.text);
+  if (mems.length <= cap) return mems;
+
+  const words = (s) => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+  const clipWords = new Set(words(clipText));
+  const score = (m) => words(`${m.text} ${m.example || ''}`).reduce((n, t) => n + (clipWords.has(t) ? 1 : 0), 0);
+
+  return mems
+    .map((m, i) => ({ m, i, s: score(m) }))
+    .sort((a, b) => (b.s - a.s) || (b.i - a.i))   // relevant first, then newest
+    .slice(0, cap)
+    .sort((a, b) => a.i - b.i)                    // …but emit in the original order
+    .map((x) => x.m);
 }
 
 // Perceive ONE clip (vision only) → a free-text observation. Used by the batch
@@ -369,7 +397,10 @@ ipcMain.handle('ai:suggest', async (evt, payload) => {
   };
 
   const guidance = (ai.prompt && ai.prompt.trim()) || AI_DEFAULT_GUIDANCE;
-  const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects, categories, hasPeople });
+  // Relevance context for selectMemories: what this clip is actually ABOUT. With no precomputed
+  // observation we still have the user's shoot context and the recognised people.
+  const clipText = [precomputed, (payload && payload.context) || '', ((payload && payload.people) || []).join(' ')].filter(Boolean).join(' ');
+  const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects, categories, hasPeople, clipText });
 
   const finish = (out) => ({ ok: true, ...normalizeNaming(out, payload && payload.people) });
   const errMsg = (err) => (/aborted|timeout/i.test(err.message || '') ? 'Timed out — the model may still be loading; try again.' : (err.message || String(err)));
@@ -452,7 +483,8 @@ ipcMain.handle('ai:improve', async (_e, payload) => {
   const peopleBlock = aiPeopleBlock(payload && payload.people);
   const hasPeople = !!(payload && Array.isArray(payload.people) && payload.people.filter(Boolean).length);
   const ctxBlock = aiContextBlock(payload && payload.context);
-  const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects: payload && payload.subjects, categories: payload && payload.categories, hasPeople });
+  const clipText2 = [observation, (payload && payload.context) || '', ((payload && payload.people) || []).join(' ')].filter(Boolean).join(' ');
+  const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects: payload && payload.subjects, categories: payload && payload.categories, hasPeople, clipText: clipText2 });
   const prompt = `You earlier looked at a video clip and recorded this observation of what its frames show:\n"${observation}"${ctxBlock}${peopleBlock}\n\nThe clip's CURRENT name is:\nDRAFT: ${JSON.stringify({ subject: aiFieldStr(draft.subject), description: aiFieldStr(draft.description), shotType: aiFieldStr(draft.shotType), category: aiFieldStr(draft.category) })}\n\nReview the draft AGAINST the observation. Decide where it is wrong, vague, generic, or missing detail, and REWRITE it to be the best, most specific, most useful name possible using ALL the information (the visible action, the setting/objects, recognized people, the shot type). Don't lose anything correct; sharpen everything else. Output corrected STRICT JSON only — no prose: ${fieldSpec}\n${rulesText}${styleBlock}`;
   const sourcePath = (payload && payload.sourcePath) || '';
   // When there's no DEDICATED text model, `reason` is the vision model. Many vision
@@ -528,6 +560,49 @@ ipcMain.handle('ai:pull', async (evt, name) => {
 // In-app model "store": a curated list of current local VISION models (Ollama has
 // no official API to browse its whole library), enriched with install-state and a
 // best-effort live peek at ollama.com for anything newer. Download uses ai:pull.
+// VISION MODEL QUALITY, best → worst. Not a marketing order — measured on real footage.
+//
+// Side by side on the same contact sheets, given a man at a desk with "COME AND SEE" on his monitor
+// and bunk beds behind him:
+//   qwen2.5vl:7b   → "desk, monitor displaying COME AND SEE, headphones, bunk beds"   (read the screen)
+//   llava-llama3   → "a sign that reads Cabinets for Sale"                            (invented)
+// and given a pickup truck with its doors open on a farm:
+//   qwen2.5vl:7b   → "white pickup truck, doors open... farm, barns"
+//   llava-llama3   → "a person riding a motorcycle on a road"                         (invented)
+//
+// llava-* does not merely caption vaguely, it HALLUCINATES WHOLE OBJECTS — and everything downstream
+// (the name, the tags, the placement) is then built on a fabrication. That is a large part of why the
+// AI feels "gimmicky". The model at the top of this list is the one to run.
+//
+// llama3.2-vision is deliberately last: it returns HTTP 500 on this hardware (an 11B vision model is
+// simply too big alongside anything else), so "capable on paper" is not the same as "works".
+const VISION_QUALITY = [
+  'qwen2.5vl',          // grounded; reads on-screen text; best descriptions by a wide margin
+  'minicpm-v',          // strong fine detail
+  'gemma3',             // modern multimodal
+  // ---- anything we have never heard of sorts HERE (VISION_UNKNOWN_RANK) ----
+  'llava-phi3',         // llava family — see below
+  'llava-llama3',       // MEASURED HALLUCINATING on real footage. Worse than an unknown model.
+  'llava',
+  'bakllava',
+  'moondream',
+  'granite3.2-vision',  // tuned for documents, not footage
+  'llama3.2-vision',    // returns HTTP 500 on this hardware — "capable on paper" is not "works"
+];
+// An unknown model sorts BELOW everything we've measured as good, and ABOVE the llava family.
+//
+// That placement is deliberate. A model we've never heard of is a coin toss; llava is a KNOWN
+// hallucinator — it described a pickup truck as "a person riding a motorcycle" on Jake's own footage.
+// Ranking the unknown below a measured failure would be assuming the worst of the new and the best of
+// the broken.
+const VISION_UNKNOWN_RANK = 3;
+function visionRankOf(name) {
+  const n = String(name || '').toLowerCase();
+  const i = VISION_QUALITY.findIndex((p) => n === p || n.startsWith(`${p}:`));
+  if (i < 0) return VISION_UNKNOWN_RANK + 0.5;                     // unknown → just below the good ones
+  return i < VISION_UNKNOWN_RANK ? i : i + 1;                      // leave a slot for the unknowns
+}
+
 const AI_MODEL_CATALOG = [
   { name: 'qwen2.5vl:7b', params: '7B', size: '6.0 GB', desc: 'Qwen2.5-VL — best-in-class at reading the actual action & detail in a frame. Best descriptions (recommended).', rec: true },
   { name: 'minicpm-v', params: '8B', size: '5.5 GB', desc: 'MiniCPM-V — excellent fine detail and on-screen text.', rec: true },
@@ -714,7 +789,12 @@ ipcMain.handle('ai:reflect', async (evt, payload) => {
     return `${i + 1}. SAW: "${String(s.observation).slice(0, 320)}"${ctx} -> NAMED: "${name}"${extra ? ` [${extra}]` : ''}`;
   }).join('\n');
   const existing = (ai.memories || []).map((m) => m.text).filter(Boolean).slice(0, 40);
-  const prompt = `A system looked at these video clips (what it SAW across the frames) and the names it produced:\n${lines}\n\nWork BACKWARDS: what GENERAL, reusable naming rules or preferences explain these choices and would help name SIMILAR future footage the same way? Focus on DURABLE patterns — how to describe an action, what a recurring subject/place should be called, shot-type conventions, how recognized people are used — NOT facts about these specific clips. Do NOT repeat anything already covered by these existing rules:\n- ${existing.join('\n- ') || '(none yet)'}\nReturn 0-4 genuinely NEW rules (or none). STRICT JSON only: {"memories":[{"rule":"<= 14 words","example":"short illustration or empty"}]}`;
+  // The samples are clips the USER corrected (the renderer filters to `_userNamed` — see
+  // reflectFromClips). The prompt used to say "a system … produced these names" and ask what rules
+  // explained *its own* choices, which is how the memory list filled up with the AI's own habits
+  // dressed as the user's preferences. These are the user's names. Say so — it changes what the
+  // model looks for entirely.
+  const prompt = `Here are video clips: what was SEEN in the frames, and the name THE USER chose for each. The user's name is the ground truth — where it differs from what was seen, that difference IS the preference.\n${lines}\n\nWork BACKWARDS from THE USER'S choices: what GENERAL, reusable naming rules would let you name similar future footage the way THE USER would have? Focus on DURABLE patterns — how they describe an action, what they call a recurring subject or place, their shot-type conventions, how they use people's names — NOT facts about these specific clips. Do NOT repeat anything already covered by these existing rules:\n- ${existing.join('\n- ') || '(none yet)'}\nReturn 0-4 genuinely NEW rules (or none — none is a perfectly good answer). STRICT JSON only: {"memories":[{"rule":"<= 14 words","example":"short illustration or empty"}]}`;
   try {
     const o = parseJsonLoose(await ollamaGenerate(model, prompt, { format: 'json', temperature: 0.3, timeout: 120000, think: false }));
     const rules = aiExtractRules(o && o.memories ? o.memories : o).slice(0, 4);
@@ -871,3 +951,52 @@ async function maybeAutoConsolidate() {
   _autoConsolidating = false;
 }
 
+
+// Is the user on a measurably worse vision model than one they already have installed?
+//
+// This is not a nag about a model they might download — it is "you own a better one and the app is
+// not using it". Jake's config pointed at llava-llama3 while qwen2.5vl:7b sat installed on the same
+// machine, and llava was inventing motorcycles and shop signs that were not in the footage. Every
+// name, tag and placement downstream was then built on a fabrication.
+ipcMain.handle('ai:visionAdvice', async () => {
+  const ai = config.ai || {};
+  const current = ai.model || '';
+  let installed = [];
+  try { installed = await ollamaListModels(); } catch { return { ok: true, advice: null }; }
+
+  const vision = [];
+  for (const n of installed) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await ollamaModelVision(n)) vision.push(n);
+  }
+  if (!vision.length) return { ok: true, advice: null };
+  vision.sort((a, b) => visionRankOf(a) - visionRankOf(b));
+
+  const best = vision[0];
+  if (!current) return { ok: true, advice: { kind: 'unset', best, installed: vision } };
+  if (best === current || visionRankOf(best) >= visionRankOf(current)) return { ok: true, advice: null };
+
+  return {
+    ok: true,
+    advice: {
+      kind: 'upgrade',
+      current,
+      best,
+      installed: vision,
+      // Say WHY, concretely. "A better model exists" is ignorable; "yours invented a motorcycle" is not.
+      why: /^llava/i.test(current)
+        ? `${current} invents things that aren't in the footage — on your own clips it described a pickup truck as "a person riding a motorcycle". ${best} read the text off a monitor in the same frames.`
+        : `${best} is measurably more accurate at describing what is actually in a frame than ${current}.`,
+    },
+  };
+});
+
+// Switch to it. Kept separate from the advice so nothing is changed behind the user's back.
+ipcMain.handle('ai:useVisionModel', (_e, name) => {
+  const n = String(name || '').trim();
+  if (!n) return { ok: false, error: 'No model' };
+  config.ai = config.ai || {};
+  config.ai.model = n;
+  saveConfig();
+  return { ok: true, model: n };
+});

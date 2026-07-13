@@ -53,12 +53,19 @@
       <label class="am-toggle">
         <input type="checkbox" id="autoModeChk" />
         <span class="am-slot">
-          <span class="am-title">⚡ Auto mode</span>
+          <!-- A ⚡ emoji rendered as full-colour clip-art next to monochrome line icons. Same 24px /
+               1.7-stroke / currentColor vocabulary as the device + pending-work icons, so it takes
+               the accent colour when the toggle is on instead of being permanently yellow. -->
+          <span class="am-title"><svg class="am-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12z"/></svg>Auto mode</span>
           <span class="am-sub">Pick a device — it pulls, copies &amp; analyzes. You only batch photos. Never deletes.</span>
         </span>
       </label>
       <label class="am-sub-toggle"><input type="checkbox" id="autoFaceChk" checked /> <span>Also scan faces &amp; auto-tag known people (unconfirmed)</span></label>
     </section>
+
+    <!-- AI HEALTH — the things that were silently wrong (weak vision model, no reasoning model,
+         never learned your naming style, nowhere to file to). Only rendered when something IS wrong. -->
+    <div id="aiHealth" class="pending-work ai-health hidden"></div>
 
     <!-- PENDING WORK (footage waiting in Uncompressed / ready to organize) -->
     <section id="pendingWork" class="pending-work hidden"></section>
@@ -339,6 +346,16 @@
       <!-- STEP 2 — ORGANIZE: choose outputs, destination, folder structure, NAS -->
       <div id="finStep2" class="step-panel hidden">
         <div class="fin-scroll">
+          <!-- "Later I go to the output folder and get AI to work out which project each video belongs
+               in — this part I know sucks." This is that part. It groups the clips, searches the real
+               projects on disk, and asks ONE question per group — and once answered, it remembers. -->
+          <div class="fin-place-bar">
+            <div class="fin-place-tx">
+              <strong>Which project does each clip belong to?</strong>
+              <span class="muted small" id="finPlaceSub">Groups your clips, checks what you decided last time, and only asks when it genuinely doesn't know.</span>
+            </div>
+            <button type="button" id="finPlaceBtn" class="btn primary">🤖 Sort into projects…</button>
+          </div>
           <div id="finMapHost" class="fin-map-host"></div>
           <!-- WHAT RUN WILL DO. These four drive finalize:run — and three of them used to sit inside
                the hidden #finLegacyOrg block below, so Run's behaviour was decided by controls the

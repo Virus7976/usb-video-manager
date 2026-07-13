@@ -3521,6 +3521,124 @@ function runContext(clip) { return [aiRunDirection, clip && clip.context].map((s
 // is a schema-level enum, so it cannot invent `car-door` or a second spelling of `lawn-mowing`.
 //
 // Falls back to the old single-call path when there is no tool model — never worse than before.
+// ASK ONCE PER SHOOT — "or it only ever asks it once and then it knows."
+//
+// The one clip the pipeline still got wrong on his real footage: twelve minutes of two men sitting on
+// the grass repairing a mower, which he calls `lawn-mowing`. Nobody mows. The label is not in the
+// pixels and no vision model will ever find it — the subject is what the footage is FOR, not what is
+// on screen.
+//
+// Guessing it is wrong. Asking about it 37 times, once per clip of that shoot, is worse. He shoots in
+// BATCHES (20 of his 28 shoot days are a single subject), so one question settles the whole day — and
+// the answer is remembered forever, so the shoot is never asked about again.
+//
+// Deliberately the same grid as the faces popup ("I love the popup for when it asks me who is who in
+// faces. That's really good.") — same classes, same yes/no, same feel.
+async function askAboutShoots(idxs) {
+  if (!aiToolModelReady || !subjectsCache.length) return;   // nothing to offer as an answer
+
+  // Only the shoots we know NOTHING about. Main filters out any he has answered before or already
+  // named clips from — re-asking a settled shoot is the app forgetting, which is the one thing he
+  // told us never to do.
+  const dates = idxs.map((i) => (state.scannedFiles[i] || {}).date).filter(Boolean);
+  let shoots = [];
+  try {
+    const r = await window.api.aiShootsToAsk(dates);
+    shoots = (r && r.shoots) || [];
+  } catch { return; }                                        // never block a run on this
+  if (!shoots.length) return;
+
+  // One card per shoot, carrying its clips so we can show a real thumbnail and a real count.
+  const groups = shoots.map((date) => {
+    const clips = idxs.map((i) => state.scannedFiles[i]).filter((c) => c && c.date === date);
+    return { date, clips, chosen: '' };
+  }).filter((g) => g.clips.length);
+  if (!groups.length) return;
+
+  await new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML = `<div class="modal face-grid">
+      <div class="fg-head">
+        <div><b>What were you shooting?</b><div class="muted small sh-status"></div></div>
+        <button type="button" class="btn fg-done">Done</button>
+      </div>
+      <div class="face-grid-scroll sh-scroll"></div>
+    </div>`;
+    document.body.appendChild(ov);
+    const scroll = ov.querySelector('.sh-scroll');
+    const status = ov.querySelector('.sh-status');
+
+    const close = () => { ov.remove(); resolve(); };
+    ov.querySelector('.fg-done').addEventListener('click', close);
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+
+    const render = () => {
+      scroll.innerHTML = groups.map((g, i) => {
+        const n = g.clips.length;
+        const seen = `${n} clip${n !== 1 ? 's' : ''} · ${g.date}`;
+        const thumb = g.poster ? `<img src="${escapeAttr(g.poster)}" alt=""/>` : '<span class="face-ph-icon">🎞</span>';
+        if (g.chosen) {
+          return `<div class="face-grid-card-item confirmed" data-i="${i}">
+            <div class="fgc-photo">${thumb}<span class="fgc-badge">✓</span></div>
+            <div class="fgc-name">${escapeHtml(g.chosen)}</div>
+            <div class="fgc-sub muted small">${escapeHtml(seen)} · won't ask again</div>
+            <button class="fgc-undo" data-i="${i}">Undo</button>
+          </div>`;
+        }
+        const chips = subjectsCache.slice(0, 8)
+          .map((sub) => `<button class="fgc-chip" data-i="${i}" data-sub="${escapeAttr(sub)}">${escapeHtml(sub)}</button>`).join('');
+        return `<div class="face-grid-card-item" data-i="${i}">
+          <div class="fgc-photo">${thumb}</div>
+          <div class="fgc-q">What was the <b>${escapeHtml(g.date)}</b> shoot?</div>
+          <div class="fgc-sub muted small">${escapeHtml(seen)}</div>
+          <div class="fgc-chips compact">${chips}</div>
+          <input type="text" class="ai-input fgc-input sh-input" data-i="${i}" placeholder="or type a subject…" autocomplete="off"/>
+        </div>`;
+      }).join('');
+      const left = groups.filter((g) => !g.chosen).length;
+      status.textContent = left
+        ? `${left} shoot${left !== 1 ? 's' : ''} the AI can't work out from the footage. Answer once and it'll never ask again.`
+        : 'All set — the AI will use these for every clip from those days.';
+    };
+
+    // Confirming is the moment it LEARNS. His answer is ground truth, so it is persisted immediately
+    // rather than at the end — closing the window must not throw away what he already told us.
+    const pick = (i, sub) => {
+      const v = slug(String(sub || '').trim());
+      if (!v) return;
+      groups[i].chosen = v;
+      try { window.api.aiRememberShoot({ date: groups[i].date, subject: v }); } catch { /* non-fatal */ }
+      render();
+    };
+
+    scroll.addEventListener('click', (e) => {
+      const t = e.target;
+      const i = Number(t.dataset && t.dataset.i);
+      if (t.classList.contains('fgc-chip')) return pick(i, t.dataset.sub);
+      if (t.classList.contains('fgc-undo')) { groups[i].chosen = ''; render(); return; }
+    });
+    scroll.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !e.target.classList.contains('sh-input')) return;
+      e.preventDefault();
+      pick(Number(e.target.dataset.i), e.target.value);
+    });
+
+    render();
+
+    // Real thumbnails, filled in as they arrive — a grid of film-strip placeholders is much harder to
+    // answer than a grid of actual footage.
+    (async () => {
+      for (const g of groups) {
+        try {
+          const src = g.clips[0] && g.clips[0].sourcePath;
+          if (src) { const poster = await window.api.getPoster(src); if (poster) { g.poster = poster; render(); } }
+        } catch { /* a missing thumbnail is cosmetic */ }
+      }
+    })();
+  });
+}
+
 async function aiNameWithTools(i, opts = {}) {
   const clip = state.scannedFiles[i];
   if (!clip) return null;
@@ -3848,6 +3966,14 @@ async function aiAnalyzeSelected(preset = null) {
     // PHASE 2 — the reasoning model names them all from those observations (it
     // stays loaded for this phase). No swapping vision↔text per clip.
     //
+    // ASK ABOUT ANY SHOOT WE STILL DON'T UNDERSTAND — once, before naming anything from it.
+    //
+    // This sits exactly on the phase boundary on purpose. The vision model is done and the reasoning
+    // model is not loaded yet, so the GPU is EMPTY while he answers: on a 6 GB card, a human thinking
+    // is the one moment we can afford to hold nothing at all. It also means his answer is in hand
+    // before a single clip from that shoot gets named, rather than arriving too late to matter.
+    if (!aiAborted) await askAboutShoots(idxs);
+
     // Evicting the vision model here is the load-bearing line. Ollama holds a model for 5 minutes
     // after its last request, so without this the vision model is STILL in VRAM when the reasoning
     // model loads — the phases were separated in time but not in memory, and the second load OOM'd.

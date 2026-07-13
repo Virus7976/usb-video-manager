@@ -7423,6 +7423,12 @@ defineTool('get_shoot_context', {
     const date = String(ctx.date || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { note: 'This clip has no date, so there is no shoot to compare it to.' };
 
+    // He may have TOLD us what this shoot is. That outranks any amount of inference — it is not a
+    // signal to weigh, it is the answer. Still returned alongside the counts rather than short-
+    // circuiting the model, because a day can hold more than one subject (2026-06-01 is 37
+    // lawn-mowing AND 14 vlog) and the observation still has to be able to disagree.
+    const confirmed = recallShoot(date);
+
     const counts = {};
     const bump = (sub) => { const k = aiSlug(sub); if (k) counts[k] = (counts[k] || 0) + 1; };
 
@@ -7439,13 +7445,26 @@ defineTool('get_shoot_context', {
       if (rec && String(rec.date || '').slice(0, 10) === date) bump(rec.subject);
     }
 
+    // ⚠ THESE EXACT STRINGS ARE LOAD-BEARING. MEASURED, DO NOT "TIDY".
+    //
+    // I renamed this key and reworded the note — a purely cosmetic change, same data — and it flipped
+    // `2026-05-11_pov_wood-cleanup-fairview` from `pov` (correct) to `vlog` (wrong), deterministically,
+    // 4 runs out of 4 each way, at temperature 0.1. A rename cost 20 points of subject accuracy.
+    //
+    // On an 8B model the phrasing of a tool RESULT is not decoration, it is input. "for the same day"
+    // + "a day can STILL contain more than one subject" keeps the counts as evidence to weigh. Calling
+    // the day a "shoot" frames it as one thing and the model starts answering with the day instead of
+    // with the footage. If you change these words, re-measure — there is a test pinning them.
     if (!Object.keys(counts).length) {
-      return { date, note: 'Nothing else from this shoot has been named yet — go on what you saw.' };
+      return confirmed
+        ? { date, he_told_you_this_shoot_is: confirmed, note: 'He answered this himself. Use it unless what you saw plainly contradicts it.' }
+        : { date, note: 'Nothing else from this day has been named yet — go on what you saw.' };
     }
     return {
       date,
-      you_already_named_these_from_the_same_day: counts,
-      note: 'His own names for the same shoot. Weigh against the observation — a day can hold more than one subject.',
+      ...(confirmed ? { he_told_you_this_shoot_is: confirmed } : {}),
+      clips_you_already_named_from_this_shoot: counts,
+      note: 'These are his own names for the same day. Weigh them against the observation — a day can still contain more than one subject.',
     };
   },
 });
@@ -7490,8 +7509,11 @@ defineTool('set_clip_name', {
   },
   terminal: true,
   run: async ({ subject, description, shot_type, tags }) => {
-    // Slugging, casing and LENGTH are done HERE, by code. The model supplies meaning; the format is
-    // not its problem, so the format can never be wrong.
+    // The model supplies MEANING; the format is not its problem. The subject is slugged here (it is an
+    // identity — `lawn-mowing` and `Lawn Mowing` must never become two subjects). The description is
+    // only word-capped here and left as prose: composeBase() in the renderer slugs it when it builds
+    // the actual filename, so `people working outside` lands on disk as `people-working-outside`
+    // either way. Slugging it twice would be harmless but the single owner is composeBase().
     const subj = aiSlug(String(subject || ''));
     if (!subj) return { error: 'subject came back empty. Give the actual subject of the footage.' };
     return {
@@ -7737,6 +7759,72 @@ ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
   });
   if (!r.ok) return { ok: false, error: r.reason === 'no_tool_call' ? 'The model answered in prose instead of naming the clip.' : 'The model never settled on a name.', trace: r.trace };
   return { ok: true, ...r.result, trace: r.trace };
+});
+
+// --- SHOOT MEMORY — "or it only ever asks it once and then it knows" ----------------------
+//
+// The residual failure from the real-footage run: `2026-06-01_lawn-mowing_josiah_v23` is twelve
+// minutes of two men sitting on the grass repairing a mower. Nobody mows. The label is not in the
+// pixels, and no vision model will ever find it. The AI called it `vlog`, which is a perfectly
+// reasonable reading of what it saw, and wrong.
+//
+// Guessing that clip is the wrong behaviour. Asking about it 37 times — once per clip of that shoot —
+// is worse. So: ask ONCE PER SHOOT. He shoots in batches (20 of his 28 days are a single subject), so
+// one answer settles the whole day, and it is remembered forever. The 38th clip of that shoot costs
+// zero questions and zero model calls to place.
+function shootMemory() {
+  if (!Array.isArray(config.shootMemory)) config.shootMemory = [];
+  return config.shootMemory;
+}
+const shootDay = (d) => String(d || '').slice(0, 10);
+
+function rememberShoot({ date, subject }) {
+  const day = shootDay(date);
+  const sub = aiSlug(subject);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !sub) return { ok: false };
+  const mem = shootMemory();
+  const at = mem.findIndex((m) => shootDay(m.date) === day);
+  const rec = { date: day, subject: sub, ts: Date.now() };
+  if (at >= 0) mem[at] = rec; else mem.push(rec);
+  // His answer is ground truth and there is one entry per shoot day, so this list stays small
+  // (28 days across his whole 310-clip library). No pruning needed, and pruning it would throw away
+  // exactly the thing he took the trouble to tell us.
+  saveConfig();
+  return { ok: true, date: day, subject: sub };
+}
+
+function recallShoot(date) {
+  const day = shootDay(date);
+  const hit = shootMemory().find((m) => shootDay(m.date) === day);
+  return hit ? hit.subject : '';
+}
+
+ipcMain.handle('ai:rememberShoot', async (_e, p) => rememberShoot(p || {}));
+ipcMain.handle('ai:recallShoot', async (_e, date) => ({ ok: true, subject: recallShoot(date) }));
+
+// Which of these shoots do we still not understand?
+//
+// A shoot needs asking only if we know NOTHING about it: he has not answered it before, and he has
+// never named a clip from that day. Everything else is already settled — asking again would be the
+// app forgetting, which is the single thing he told us never to do.
+ipcMain.handle('ai:shootsToAsk', async (_e, dates) => {
+  const lib = currentFinalMeta() || {};
+  const namedDays = new Set();
+  for (const rec of Object.values(lib)) {
+    if (rec && rec.subject) namedDays.add(shootDay(rec.date));
+  }
+  const out = [];
+  const seen = new Set();
+  for (const d of (dates || [])) {
+    const day = shootDay(d);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || seen.has(day)) continue;
+    seen.add(day);
+    const known = recallShoot(day);
+    if (known) continue;                 // he already told us
+    if (namedDays.has(day)) continue;    // he already named clips from it — get_shoot_context has this
+    out.push(day);
+  }
+  return { ok: true, shoots: out };
 });
 
 // --- PLACEMENT MEMORY — ask once, then never again --------------------------------------

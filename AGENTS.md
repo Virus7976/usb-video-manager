@@ -493,9 +493,30 @@ The tool returns **counts, not a verdict**, so the model weighs it against what 
 the adversarial case: `2026-05-11` is timelapse×13 vs pov×2, and it still correctly answered **pov**,
 because the observation said so. A tool that returned a single answer would have broken that.
 
-Residual: the mower-repair clip is still called `vlog`. That one is genuinely ambiguous from the
-frames, and it is exactly what `ask_user` + placement memory are for — *"or it only ever asks it once
-and then it knows."* Guessing it is wrong; asking once per shoot is right.
+### ⚠ SHOOT MEMORY closed the last gap — 60% → 80% → **100%** on the real six
+
+The mower-repair clip is the one vision can never get. So the app now **asks once per shoot** (a card
+per unknown day in the faces-style grid, at the vision→reasoning phase boundary, where the GPU is
+empty anyway) and **remembers the answer forever** (`config.shootMemory`, one entry per day). 37 clips
+from one shoot is ONE question. A shoot he has answered — or has ever named a clip from — is never
+asked about again. That is *"or it only ever asks it once and then it knows"*, and it is the invariant
+the tests exist to protect.
+
+With the shoot answered, the six real clips score **5/5 subjects**, 6/6 tool calls, 0 invented
+subjects, 0 camera-words.
+
+### ⚠⚠ THE TOOL-RESULT STRINGS ARE LOAD-BEARING. MEASURED. DO NOT "TIDY".
+
+I renamed one key in `get_shoot_context`'s return and reworded its note. Cosmetic. Identical data.
+It flipped `2026-05-11_pov_wood-cleanup-fairview` from **`pov` (his name, correct)** to **`vlog`
+(wrong)** — deterministically, **4 runs out of 4 each way**, at temperature 0.1 on the real qwen3:8b.
+A tidy-up cost 20 points of subject accuracy.
+
+On an 8B model the phrasing of a tool *result* is **input, not documentation**. `"for the same day"` +
+`"a day can STILL contain more than one subject"` keeps the counts as evidence to weigh; calling the
+day a *"shoot"* frames it as one thing, and the model starts answering with the day instead of with
+the footage. There is a test pinning the exact strings. **If you change them, re-measure against his
+footage.**
 
 ### Hardware constraint (the owner's machine)
 

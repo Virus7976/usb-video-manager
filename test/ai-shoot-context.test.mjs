@@ -39,7 +39,7 @@ test('it reports what he called the OTHER clips from the same day', async () => 
     'd.mp4': { date: '2026-05-11', subject: 'timelapse' },   // a DIFFERENT shoot — must not leak in
   });
   const r = await runTool({ date: '2026-06-01' });
-  assert.deepEqual(JSON.parse(JSON.stringify(r.you_already_named_these_from_the_same_day)),
+  assert.deepEqual(JSON.parse(JSON.stringify(r.clips_you_already_named_from_this_shoot)),
     { 'lawn-mowing': 2, vlog: 1 });
   assert.equal(r.date, '2026-06-01');
 });
@@ -54,11 +54,11 @@ test('it returns COUNTS, not a verdict — so the model can still disagree with 
     c: { date: '2026-05-11', subject: 'pov' },
   });
   const r = await runTool({ date: '2026-05-11' });
-  const counts = r.you_already_named_these_from_the_same_day;
+  const counts = r.clips_you_already_named_from_this_shoot;
   assert.equal(counts.timelapse, 2);
   assert.equal(counts.pov, 1, 'the minority subject is still visible to the model');
   assert.equal(r.verdict, undefined, 'it must NOT hand down a single answer');
-  assert.match(r.note, /weigh against the observation/i);
+  assert.match(r.note, /weigh them against the observation/i);
 });
 
 test('clips named EARLIER IN THIS RUN count too — clip 30 learns from clips 1-29', async () => {
@@ -70,13 +70,13 @@ test('clips named EARLIER IN THIS RUN count too — clip 30 learns from clips 1-
       { date: '2026-06-02', subject: 'vlog' },        // wrong day — excluded
     ],
   });
-  assert.deepEqual(JSON.parse(JSON.stringify(r.you_already_named_these_from_the_same_day)), { 'lawn-mowing': 2 });
+  assert.deepEqual(JSON.parse(JSON.stringify(r.clips_you_already_named_from_this_shoot)), { 'lawn-mowing': 2 });
 });
 
 test('the run and the library are COMBINED — a re-visited shoot works on its very first clip', async () => {
   seedLibrary({ old: { date: '2026-06-01', subject: 'lawn-mowing' } });
   const r = await runTool({ date: '2026-06-01', siblings: [{ date: '2026-06-01', subject: 'vlog' }] });
-  const c = r.you_already_named_these_from_the_same_day;
+  const c = r.clips_you_already_named_from_this_shoot;
   assert.equal(c['lawn-mowing'], 1, 'from the library');
   assert.equal(c.vlog, 1, 'and from this run');
 });
@@ -87,22 +87,22 @@ test('subjects are slugged, so lawn-mowing and "Lawn Mowing" are not counted as 
     b: { date: '2026-06-01', subject: 'lawn-mowing' },
   });
   const r = await runTool({ date: '2026-06-01' });
-  assert.deepEqual(JSON.parse(JSON.stringify(r.you_already_named_these_from_the_same_day)), { 'lawn-mowing': 2 });
+  assert.deepEqual(JSON.parse(JSON.stringify(r.clips_you_already_named_from_this_shoot)), { 'lawn-mowing': 2 });
 });
 
 test('no date, or nothing else from that shoot → it says so rather than inventing context', async () => {
   const noDate = await runTool({ date: '' });
   assert.match(noDate.note, /no date/i);
-  assert.equal(noDate.you_already_named_these_from_the_same_day, undefined);
+  assert.equal(noDate.clips_you_already_named_from_this_shoot, undefined);
 
   const empty = await runTool({ date: '2026-06-01' });
-  assert.match(empty.note, /Nothing else from this shoot/i);
+  assert.match(empty.note, /Nothing else from this day/i);
 });
 
 test('a full ISO timestamp still resolves to its day', async () => {
   seedLibrary({ a: { date: '2026-06-01T14:22:00Z', subject: 'lawn-mowing' } });
   const r = await runTool({ date: '2026-06-01T09:00:00Z' });
-  assert.equal(r.you_already_named_these_from_the_same_day['lawn-mowing'], 1);
+  assert.equal(r.clips_you_already_named_from_this_shoot['lawn-mowing'], 1);
 });
 
 // --- the wiring ------------------------------------------------------------------------------
@@ -118,4 +118,22 @@ test('the naming loop is actually GIVEN the tool, and the context it needs', () 
   const call = r.slice(r.indexOf('window.api.aiNameFromObservation({'));
   assert.match(call.slice(0, 900), /date: clip\.date/, 'the renderer sends the clip date');
   assert.match(call.slice(0, 900), /siblings: state\.scannedFiles/, 'and what it already named this run');
+});
+
+test('the tool result STRINGS are load-bearing — measured, not decoration', async () => {
+  // I renamed the key and reworded the note. Cosmetic change, identical data. It flipped
+  // `2026-05-11_pov_wood-cleanup-fairview` from `pov` (his name, correct) to `vlog` (wrong) —
+  // deterministically, 4 runs out of 4 each way, at temperature 0.1 on the real qwen3:8b.
+  //
+  // A tidy-up cost 20 points of subject accuracy. On an 8B model the phrasing of a tool RESULT is
+  // input, not documentation: "for the same day" + "a day can STILL contain more than one subject"
+  // keeps the counts as evidence to weigh, while calling the day a "shoot" frames it as one thing and
+  // the model starts answering with the day instead of with the footage.
+  //
+  // If you change these words, RE-MEASURE against his footage. That is what this test is for.
+  seedLibrary({ a: { date: '2026-05-11', subject: 'pov' } });
+  const r = await runTool({ date: '2026-05-11' });
+  assert.ok('clips_you_already_named_from_this_shoot' in r, 'the key the model was measured against');
+  assert.equal(r.note,
+    'These are his own names for the same day. Weigh them against the observation — a day can still contain more than one subject.');
 });

@@ -198,7 +198,7 @@ test('phase 2 EVICTS the vision model before the reasoning model loads', () => {
   // Ollama holds a model for 5 minutes after its last request, so without this the vision model is
   // still resident when the 8B loads — and the second load OOMs on exactly the machines we care about.
   const src = read('src/mod/04-tasks-ai.js');
-  const p2 = src.slice(src.indexOf('// PHASE 2'), src.indexOf('// PHASE 2') + 1400);
+  const p2 = src.slice(src.indexOf('// PHASE 2'), src.indexOf('// PHASE 2') + 2600);
   assert.match(p2, /await window\.api\.aiUseOnly\(/, 'phase 2 claims its model exclusively');
   assert.match(p2, /noPerceive: true/, 'and cannot fall back into a vision load mid-phase');
 

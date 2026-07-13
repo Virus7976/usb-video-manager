@@ -123,7 +123,10 @@ test('it reuses the face grid\'s own classes, so it inherits that styling exactl
 test('a confident suggestion is the "Is this Jake?" card; no suggestion is the "Who is this?" card', () => {
   const src = mod('07-organize-map.js');
   const fn = src.slice(src.indexOf('async function showPlacementReview('));
-  assert.match(fn, /File into <b>\$\{escapeHtml\(g\.suggest\.split\('\/'\)\.pop\(\)\)\}<\/b>\?/, 'the suggested state');
+  // The card must say whether it is FILING into a project he already has, or CREATING one out of thin
+  // air. A card that looks identical either way is not a confirmation, it is a rubber stamp.
+  assert.match(fn, /\$\{g\.isNew \? 'Create' : 'File into'\} <b>\$\{escapeHtml\(leaf\)\}<\/b>\?/, 'the suggested state');
+  assert.match(fn, /in \$\{escapeHtml\(parent\)\}/, 'and it shows which category it would land in');
   // Two shoots can now share a subject, so the ask-card must name the SHOOT (date + subject) —
   // otherwise he is looking at two identical "lawn-mowing" cards with no way to tell them apart.
   assert.match(fn, /Where does the <b>\$\{escapeHtml\(shootLabel\)\}<\/b> shoot go\?/, 'the ask state names the shoot');
@@ -189,7 +192,10 @@ test('a confirmed placement is written back as ledgerRel — or the map ignores 
   const fn = src.slice(src.indexOf('async function finPlaceIntoProjects('));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
 
-  assert.match(body, /f\.meta\.ledgerRel = path/, 'the destination map reads ledgerRel, and nothing else');
+  assert.match(body, /f\.meta\.ledgerRel = rel/, 'the destination map reads ledgerRel, and nothing else');
+  // A SUBFOLDER PER SHOOT: `Gourgess Lawns/2026-06-01/…`. A client runs all year; a shoot is a day.
+  // 68 lawn-mowing clips loose in one client folder is not organized, it is a pile with a name.
+  assert.match(body, /const rel = shootFolderFor\(path, day\)/);
   assert.match(body, /window\.api\.saveFinalMeta\(patch\)/, 'and it survives a restart');
   assert.match(body, /renderFinMap\(\)/, 'and the folder map redraws with the new destinations');
 
@@ -210,4 +216,67 @@ test('it refuses gracefully rather than opening an empty grid', () => {
   const body = src.slice(src.indexOf('async function finPlaceIntoProjects('));
   assert.match(body, /if \(!sel\.length\)/, 'nothing ticked');
   assert.match(body, /if \(!aiCfg\.enabled\)/, 'AI switched off entirely');
+});
+
+/** Pull shootFolderFor out of the shipping renderer source and run the real thing. */
+function shootFns() {
+  const src = mod('09-phone-finalize.js');
+  const start = src.indexOf('function shootFolderFor(');
+  let depth = 0; let end = -1;
+  for (let i = src.indexOf('{', src.indexOf(')', start)); i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') { depth -= 1; if (depth === 0) { end = i + 1; break; } }
+  }
+  // eslint-disable-next-line no-new-func
+  return new Function(`${src.slice(start, end)}; return { shootFolderFor };`)();
+}
+
+// --- THE SHAPE HE ASKED FOR (2026-07-13) --------------------------------------------------------
+//
+//   2026 - Client Work\Gourgess Lawns\2026-06-01\2026-06-01_lawn-mowing_josiah_v23.mp4
+//   └ category         └ project       └ SHOOT   └ clip
+//
+// A client runs all year; a shoot is a day. 68 lawn-mowing clips loose in one client folder is not
+// organized, it is a pile with a name.
+
+test('a shoot gets its own dated subfolder inside the project', () => {
+  const { shootFolderFor } = shootFns();
+  assert.equal(shootFolderFor('2026 - Client Work/Gourgess Lawns', '2026-06-01'),
+    '2026 - Client Work/Gourgess Lawns/2026-06-01');
+});
+
+test('…but NOT when the project folder IS the shoot', () => {
+  // He already has several of these: `2026-05-30_vlog_water-park_v1` is a one-off video whose project
+  // folder is named after the shoot. Nesting `2026-05-30/` inside it would be a date folder inside a
+  // folder already named after that date.
+  const { shootFolderFor } = shootFns();
+  assert.equal(shootFolderFor('2026 - Social Media/2026-05-30_vlog_water-park_v1', '2026-05-30'),
+    '2026 - Social Media/2026-05-30_vlog_water-park_v1');
+});
+
+test('a clip with no usable date files into the project itself, rather than an "undefined" folder', () => {
+  const { shootFolderFor } = shootFns();
+  assert.equal(shootFolderFor('2026 - Personal/Facebook', ''), '2026 - Personal/Facebook');
+  assert.equal(shootFolderFor('2026 - Personal/Facebook', 'not-a-date'), '2026 - Personal/Facebook');
+  assert.equal(shootFolderFor('', '2026-06-01'), '', 'and no project means no path at all');
+});
+
+test('a trailing slash on the project path never doubles up', () => {
+  const { shootFns: _x } = {};
+  const { shootFolderFor } = shootFns();
+  assert.equal(shootFolderFor('2026 - Client Work/Charles/', '2026-06-01'),
+    '2026 - Client Work/Charles/2026-06-01');
+});
+
+test('the memory stores the PROJECT, not the dated shoot folder', () => {
+  // Otherwise the next shoot for Gourgess Lawns would recall `Gourgess Lawns/2026-06-01` and file
+  // July's footage into June's folder. The project is the durable fact; the date is per shoot.
+  const src = mod('07-organize-map.js');
+  const fn = src.slice(src.indexOf('async function showPlacementReview('));
+  assert.match(fn, /aiRememberPlacement\(\{ date: g\.date, subject: g\.subject, people: g\.people, location: g\.location, path: p \}\)/,
+    'the remembered path is what he picked — the project — with the shoot recorded separately');
+
+  const fin = mod('09-phone-finalize.js');
+  const place = fin.slice(fin.indexOf('async function finPlaceIntoProjects('));
+  assert.match(place, /shootFolderFor\(path, day\)/, 'and the date folder is added at FILING time');
 });

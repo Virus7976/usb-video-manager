@@ -464,8 +464,11 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     // organizeMove said "in-place" and Run reported "0 moved" while looking like it had worked.
     // Falling back to subdirParts keeps the old behaviour for any caller that sends no plan.
     const relRaw = (typeof it.rel === 'string') ? it.rel.trim() : '';
+    // NOT slugFolder. `rel` is a path the user (or the AI, choosing from his real tree) picked —
+    // "2026 - Client Work/Gourgess Lawns". Slugging it files into `2026-client-work/gourgess-lawns`,
+    // a brand-new folder beside his real one, forking his project tree a little more on every run.
     const parts = relRaw
-      ? relRaw.split(/[\\/]+/).map((s) => slugFolder(s)).filter(Boolean)
+      ? relRaw.split(/[\\/]+/).map((x) => safeFolderName(x)).filter(Boolean)
       : subdirParts(levels, meta);
     // Under a plan, a clip the user never placed has NO destination. Falling through to
     // subdirParts here would hand it an empty path — i.e. dump it in the ROOT of the Projects
@@ -498,7 +501,10 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       emit(i, it.name, 'moving');
       try {
         const before = curPath;   // capture origin BEFORE reassigning, for undo
-        const r = await organizeMove(curPath, path.join(dest, ...parts), it.name, { copy: copyMode });
+        // resolveFolderPath asks the disk what each folder is REALLY called, so `2026 - client work`
+        // lands in his existing `2026 - Client Work` instead of creating a second one beside it.
+        const targetDir = await resolveFolderPath(dest, parts);
+        const r = await organizeMove(curPath, targetDir, it.name, { copy: copyMode });
         if (r.action === 'moved' || r.action === 'copied') {
           summary.moved += 1;
           undoable.push({ from: before, to: r.path, copied: r.action === 'copied' });

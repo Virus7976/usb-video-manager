@@ -176,6 +176,54 @@ function slugFolder(s) {
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   return WIN_RESERVED_NAMES.has(out) ? `${out}-folder` : out;
 }
+
+// A FOLDER NAME IS NOT A SLUG. His projects are real folders with real names:
+//
+//   C:\Users\jakeg\Videos\02 - Projects\2026\2026 - Client Work\Gourgess Lawns
+//
+// slugFolder() would turn that into `2026-client-work/gourgess-lawns` — a BRAND NEW folder, created
+// right next to the real one, holding the new footage while all his actual edits sit in the other.
+// It silently FORKS his project tree, and every subsequent run makes the split worse. Filing a clip
+// into a folder that merely resembles the one he picked is not organizing.
+//
+// So: keep the name he (or the AI, choosing from his real tree) actually chose. Sanitize only what
+// Windows genuinely forbids — never case, never spaces.
+function safeFolderName(s) {
+  let out = String(s || '')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')   // illegal on NTFS
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '');                        // Windows cannot end a name with a dot or space
+  if (!out) return '';
+  // `!!!` is a perfectly legal Windows folder name and a completely useless project name. If there is
+  // not one letter or digit in it, it is punctuation, not a name — refuse rather than create it.
+  // (\p{L}/\p{N}, not [a-z0-9]: a name in any script is still a name.)
+  if (!/[\p{L}\p{N}]/u.test(out)) return '';
+  if (WIN_RESERVED_NAMES.has(out.toLowerCase())) out = `${out}-folder`;
+  return out;
+}
+
+// Reuse the folder that is ALREADY THERE, whatever case it is in.
+//
+// The AI answers with `2026 - Client Work`; he might type `2026 - client work`; the folder on disk is
+// `2026 - Client Work`. On Windows those are all one folder — but path.join() would happily create a
+// second one on a case-sensitive volume or a network share, and the name shown in his file browser
+// would be whichever we wrote first. Ask the disk what the folder is really called.
+async function resolveFolderPath(root, parts) {
+  let cur = root;
+  for (const raw of (parts || [])) {
+    const want = safeFolderName(raw);
+    if (!want) continue;
+    let actual = want;
+    try {
+      const entries = await fsp.readdir(cur, { withFileTypes: true });
+      const hit = entries.find((e) => e.isDirectory() && e.name.toLowerCase() === want.toLowerCase());
+      if (hit) actual = hit.name;                  // his spelling wins over ours, always
+    } catch { /* the folder does not exist yet — we are about to create it */ }
+    cur = path.join(cur, actual);
+  }
+  return cur;
+}
 function metaLevelValue(level, meta) {
   if (level === 'category') return meta.category;
   if (level === 'project') return meta.project;
@@ -189,7 +237,9 @@ function metaLevelValue(level, meta) {
 // into the category folder. If every level is empty the file isn't moved into a
 // subfolder at all. Still deterministic, so re-running stays idempotent.
 function subdirParts(levels, meta) {
-  return (levels || []).map((lvl) => slugFolder(metaLevelValue(lvl, meta))).filter(Boolean);
+  // safeFolderName, not slugFolder: `meta.category` is a phrase HE typed ("Client Work"), and a
+  // folder called `client-work` is a different folder from the one he already has.
+  return (levels || []).map((lvl) => safeFolderName(metaLevelValue(lvl, meta))).filter(Boolean);
 }
 // De-duplicated, trimmed list of human-readable strings (for keywords).
 function uniqStrings(arr) {

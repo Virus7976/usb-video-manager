@@ -1775,12 +1775,15 @@ async function showPlacementReview(clips, opts = {}) {
 
         // A confident suggestion → the "Is this Jake?" state. No suggestion → the "Who is this?" state.
         if (g.suggest) {
-          return `<div class="face-grid-card-item suggested" data-i="${i}">
+          const leaf = g.suggest.split('/').pop();
+          const parent = g.suggest.split('/').slice(0, -1).join(' / ');
+          return `<div class="face-grid-card-item suggested${g.isNew ? ' is-new' : ''}" data-i="${i}">
             <div class="fgc-photo">${thumb}</div>
-            <div class="fgc-q">File into <b>${escapeHtml(g.suggest.split('/').pop())}</b>?</div>
+            <div class="fgc-q">${g.isNew ? 'Create' : 'File into'} <b>${escapeHtml(leaf)}</b>?</div>
+            ${parent ? `<div class="fgc-sub muted small fgc-parent">in ${escapeHtml(parent)}</div>` : ''}
             <div class="fgc-sub muted small">${seen}${g.why ? ` · ${escapeHtml(g.why)}` : ''}</div>
-            <div class="fgc-btns"><button class="fgc-yes pr-yes" data-i="${i}">✓ Yes</button><button class="fgc-no pr-no" data-i="${i}">✗ Somewhere else</button></div>
-            <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="or type a project name…" autocomplete="off"/>
+            <div class="fgc-btns"><button class="fgc-yes pr-yes" data-i="${i}">✓ ${g.isNew ? 'Create it' : 'Yes'}</button><button class="fgc-no pr-no" data-i="${i}">✗ Somewhere else</button></div>
+            <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="${g.isNew ? 'or rename it…' : 'or type a project name…'}" autocomplete="off"/>
             ${chips ? `<div class="fgc-chips compact">${chips}</div>` : ''}
           </div>`;
         }
@@ -1882,7 +1885,11 @@ async function showPlacementReview(clips, opts = {}) {
           g.why = r.why || '';
         } else if (r.action === 'place' || r.action === 'create') {
           g.suggest = r.path;
-          g.why = r.action === 'create' ? 'new project' : '';
+          // "AI proposes a folder, you confirm" — so SAY it is a new folder, and say why nothing
+          // existing fitted. A card that looks identical whether it files into a project he has had
+          // for a year or creates one out of thin air is not a confirmation, it is a rubber stamp.
+          g.isNew = r.action === 'create';
+          g.why = r.action === 'create' ? (r.why || "nothing you have fits this") : '';
           g.options = (r.trace || [])
             .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
             .flatMap((t) => t.result.matches.map((m) => m.path))

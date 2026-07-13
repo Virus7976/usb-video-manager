@@ -48,15 +48,17 @@ test('Run files clips exactly where the MAP put them', async () => {
     organizeDest: dest,
     options: { organize: true, embed: false, csv: false, nas: false },
     items: [
-      { ...a, rel: 'Client/Alps-2026/2026-07-12' },
-      { ...b, rel: 'Personal/Skiing' },
+      { ...a, rel: '2026 - Client Work/Gourgess Lawns/2026-07-12' },
+      { ...b, rel: '2026 - Personal/Skiing' },
     ],
   });
 
   assert.equal(summary.ok, true, JSON.stringify(summary.errors));
   assert.equal(summary.moved, 2, 'both clips filed — this is the "0 moved" bug, dead');
-  assert.equal(existsSync(join(dest, 'client', 'alps-2026', '2026-07-12', 'a.mp4')), true, 'a.mp4 landed in its planned folder');
-  assert.equal(existsSync(join(dest, 'personal', 'skiing', 'b.mp4')), true, 'b.mp4 landed in its planned folder');
+  // His REAL folder names, verbatim — not `2026-client-work/gourgess-lawns`, which would be a brand
+  // new folder sitting beside the one holding all his actual edits.
+  assert.equal(existsSync(join(dest, '2026 - Client Work', 'Gourgess Lawns', '2026-07-12', 'a.mp4')), true, 'a.mp4 landed in his real folder');
+  assert.equal(existsSync(join(dest, '2026 - Personal', 'Skiing', 'b.mp4')), true, 'b.mp4 landed in his real folder');
 
   // FILING COPIES, IT DOES NOT MOVE. His archive lives on L: (2.3 TB free); he files into projects on
   // C: (31 GB free, against a 73 GB archive). The project folder is a WORKING copy he can clear out
@@ -73,10 +75,10 @@ test('…and MOVE is still available for anyone who wants the folder to empty as
     dir: join(dir, 'compressed'),
     organizeDest: dest,
     options: { organize: true, embed: false, csv: false, nas: false, copy: false },
-    items: [{ ...a, rel: 'Client/Alps-2026' }],
+    items: [{ ...a, rel: '2026 - Client Work/Gourgess Lawns' }],
   });
   assert.equal(summary.ok, true, JSON.stringify(summary.errors));
-  assert.equal(existsSync(join(dest, 'client', 'alps-2026', 'mv.mp4')), true, 'it landed');
+  assert.equal(existsSync(join(dest, '2026 - Client Work', 'Gourgess Lawns', 'mv.mp4')), true, 'it landed');
   assert.equal(existsSync(a.sourcePath), false, 'and the source is gone — an explicit move');
 });
 
@@ -90,7 +92,7 @@ test('the copy is VERIFIED, byte for byte, not just written', async () => {
     options: { organize: true, embed: false, csv: false, nas: false },
     items: [{ ...a, rel: 'Client/X' }],
   });
-  const landed = join(dest, 'client', 'x', 'verify.mp4');
+  const landed = join(dest, 'Client', 'X', 'verify.mp4');
   assert.deepEqual(readFileSync(landed), readFileSync(a.sourcePath), 'byte-for-byte identical');
 
   // …and organizeMove routes BOTH modes through the one staged+verified writer, so a copy can never
@@ -232,7 +234,7 @@ test('a run that DOES fit is not blocked by the guard', async () => {
       items: [{ ...a, rel: 'Client/Y' }],
     });
     assert.equal(summary.ok, true, JSON.stringify(summary.errors));
-    assert.equal(existsSync(join(dest, 'client', 'y', 'small.mp4')), true);
+    assert.equal(existsSync(join(dest, 'Client', 'Y', 'small.mp4')), true);
   } finally { fsp.statfs = orig; }
 });
 
@@ -271,4 +273,62 @@ test('the Organize screen shows what is coming back, and whether it fits', () =>
   const boot = readFileSync(join(ROOT, 'src', 'mod', '10-boot.js'), 'utf8');
   assert.match(boot, /\$\('finKeepSource'\)\.addEventListener\('change', \(\) => \{ renderFinMap\(\); \}\)/,
     'and it recomputes when he switches copy/move');
+});
+
+// --- IT MUST FILE INTO THE FOLDER HE ALREADY HAS ------------------------------------------------
+//
+// His tree: C:\Users\jakeg\Videos\02 - Projects\2026\{2026 - Client Work\Gourgess Lawns, ...}
+//
+// The old code ran every folder name through slugFolder(). "2026 - Client Work/Gourgess Lawns" became
+// "2026-client-work/gourgess-lawns" — a BRAND NEW folder, created right beside the real one, holding
+// the new footage while every edit he has ever made sits in the other. Silently forking his project
+// tree, a little more on every single run. Filing a clip into a folder that merely RESEMBLES the one
+// he picked is not organizing.
+
+test('an EXISTING folder is reused, whatever case the plan asks for', async () => {
+  const dest = projects();
+  mkdirSync(join(dest, '2026 - Client Work', 'Gourgess Lawns'), { recursive: true });
+  const a = clip('reuse.mp4');
+
+  // The AI answered in lower case; the folder on disk is Title Case. On Windows these are ONE folder,
+  // and his file browser must keep showing the name HE gave it.
+  await app.invoke('finalize:run', {
+    dir: join(dir, 'compressed'),
+    organizeDest: dest,
+    options: { organize: true, embed: false, csv: false, nas: false },
+    items: [{ ...a, rel: '2026 - client work/gourgess lawns' }],
+  });
+
+  assert.equal(existsSync(join(dest, '2026 - Client Work', 'Gourgess Lawns', 'reuse.mp4')), true,
+    'it landed in the folder he already had');
+  assert.equal(existsSync(join(dest, '2026 - client work')), false,
+    'AND IT DID NOT FORK HIS TREE with a second, lower-case folder');
+});
+
+test('a genuinely new project folder is created with the name as given, not slugged', async () => {
+  const dest = projects();
+  const a = clip('newproj.mp4');
+  await app.invoke('finalize:run', {
+    dir: join(dir, 'compressed'),
+    organizeDest: dest,
+    options: { organize: true, embed: false, csv: false, nas: false },
+    items: [{ ...a, rel: '2026 - Client Work/Charles Wedding' }],
+  });
+  assert.equal(existsSync(join(dest, '2026 - Client Work', 'Charles Wedding', 'newproj.mp4')), true,
+    'a new folder keeps its capitals and spaces, so it sits beside his others without looking foreign');
+});
+
+test('a plan can never escape the Projects root', async () => {
+  // rel comes from a model and from a text box. Neither gets to write outside the tree.
+  const dest = projects();
+  const a = clip('escape.mp4');
+  await app.invoke('finalize:run', {
+    dir: join(dir, 'compressed'),
+    organizeDest: dest,
+    options: { organize: true, embed: false, csv: false, nas: false },
+    items: [{ ...a, rel: '../../../Windows/System32' }],
+  });
+  assert.equal(existsSync(join(dest, '..', '..', '..', 'Windows')), false, 'no traversal');
+  // '..' sanitizes to nothing, so the clip has no destination and is left alone rather than dumped.
+  assert.equal(existsSync(a.sourcePath), true);
 });

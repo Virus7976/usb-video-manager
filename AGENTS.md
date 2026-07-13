@@ -655,6 +655,49 @@ The numbers that shape every decision here:
 The batch unit is the SHOOT (`date|subject`) — see the placement section. That is what "recognize in
 batches where stuff goes, not per clip" means.
 
+### ⚠⚠ ORGANIZE — HIS REAL TREE, AND THE THREE BUGS THAT MADE IT "SUCK"
+
+His tree, read off C: on 2026-07-13:
+
+```
+C:\Users\jakeg\Videos\02 - Projects\2026\
+  2026 - Client Work\    Charles · Gourgess Lawns
+  2026 - Personal\       Course Content · Facebook · 2026-06-11_vlog_footage-from-gopros_v1
+  2026 - Social Media\   Calisthetics Journey · 2026-05-30_vlog_water-park_v1
+```
+
+His decisions (2026-07-13): **a dated subfolder per shoot** inside the project · **the AI proposes a
+new project folder and he confirms** · **the category is learned from where things already went**.
+
+Target shape: `2026 - Client Work\Gourgess Lawns\2026-06-01\<clip>.mp4`
+
+**1. It was slugging his folder names.** `slugFolder()` turned `2026 - Client Work/Gourgess Lawns` into
+`2026-client-work/gourgess-lawns` — a **brand-new folder created beside the real one**, holding the new
+footage while every edit he has ever made sat in the other. It **silently forked his project tree**, a
+little more on every run. Now `safeFolderName()` (sanitize only what Windows forbids — never case,
+never spaces) + `resolveFolderPath()` (ask the disk what the folder is *really* called, so
+`2026 - client work` lands in his existing `2026 - Client Work`).
+
+**2. `create_project` could invent a CATEGORY.** A new *project* is a reasonable thing to invent; a new
+*category* is not. A model answering `Client Work` (dropping the year — exactly the near-miss an 8B
+model makes) would have created a second category beside the real one and split his tree in half. The
+parent must now be a folder he actually has, and the created path uses **his** spelling.
+
+**3. A dated folder was matching every shoot forever.** MEASURED, real qwen3, his real tree: a wedding
+for a NEW client was filed into `2026 - Personal/2026-06-11_vlog_footage-from-gopros_v1` — **3 runs out
+of 3**. Because he names one-off project folders exactly like clips, the folder name contains the
+subject word `vlog`, so *every* vlog shoot matches it lexically, forever. The search returned it as a
+hit and the model trusts hits. **It was never a hit; it was a word collision — better prompting could
+not have fixed it, because the TOOL was handing the model a wrong answer and calling it a match.**
+
+The rule his tree encodes: **dateless folder = an ongoing project (new shoots welcome); dated folder =
+the home of THAT shoot, and no other.** → `folderIsOtherShoot()`.
+
+**Result on his real tree, 3/3 each:** `lawn-mowing → Client Work\Gourgess Lawns` ·
+`calisthenics → Social Media\Calisthetics Journey` (bridging his own `Calisthetics` typo, via
+`aiTokenMatch`'s 3-char prefix — a substring search can never connect `calisthenics` to
+`Calisthetics`) · a wedding for a new client → **ask_user**, instead of a wrong folder.
+
 ### Hardware constraint (the owner's machine)
 
 `qwen3:8b` (tools), `llama3.2-vision` (tools+vision, **but returns HTTP 500 on this machine — broken**),

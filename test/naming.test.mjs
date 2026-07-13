@@ -147,9 +147,25 @@ test('metaLevelValue: maps level name to the meta field', () => {
   assert.equal(call('metaLevelValue', 'nope', meta), '');
 });
 
-test('subdirParts: slugs each level, skips empties, keeps order', () => {
-  const meta = { category: 'Sport', project: '', subject: 'Trail Run' };
-  assert.deepEqual(plain(call('subdirParts', ['category', 'project', 'subject'], meta)), ['sport', 'trail-run']);
+test('subdirParts: KEEPS his folder names, skips empties, keeps order', () => {
+  // A folder name is not a slug. His projects are `2026 - Client Work` and `Gourgess Lawns` — real
+  // folders with capitals and spaces. Slugging them to `2026-client-work/gourgess-lawns` creates a
+  // BRAND NEW folder beside the real one and forks his project tree a little more on every run.
+  const meta = { category: 'Client Work', project: '', subject: 'Gourgess Lawns' };
+  assert.deepEqual(plain(call('subdirParts', ['category', 'project', 'subject'], meta)),
+    ['Client Work', 'Gourgess Lawns']);
+});
+
+test('safeFolderName: sanitizes what Windows forbids, and nothing else', () => {
+  const f = (x) => call('safeFolderName', x);
+  assert.equal(f('2026 - Client Work'), '2026 - Client Work', 'capitals and spaces are his, not ours');
+  assert.equal(f('Josiah: the film'), 'Josiah- the film', 'a colon is illegal on NTFS');
+  assert.equal(f('a/b\\c'), 'a-b-c', 'separators can never smuggle in a subfolder');
+  assert.equal(f('trailing dot.'), 'trailing dot', 'Windows cannot end a name with a dot…');
+  assert.equal(f('trailing space  '), 'trailing space', '…or a space');
+  assert.equal(f('  lots   of   space '), 'lots of space');
+  assert.equal(f('..'), '', 'and traversal is still neutralized');
+  assert.equal(f('CON'), 'CON-folder', 'reserved device names still get out of the way');
 });
 
 test('subdirParts: a ".." level is neutralized to nothing (no traversal escapes)', () => {

@@ -1869,6 +1869,23 @@ $('finMatchedOnly').addEventListener('change', (e) => {
 // Now: group the clips → check what you already decided (no model call at all if we know) → ask the
 // model, which must SEARCH the real Projects tree before it may place or invent anything → show one
 // card per group, exactly like the faces popup → your answer is remembered forever.
+// `<project>/<YYYY-MM-DD>` — a folder per shoot inside the project.
+//
+// A client (Gourgess Lawns) runs all year; a shoot is a single day. 68 lawn-mowing clips loose in one
+// folder is not organized, it is a pile with a name.
+//
+// The exception, and he already has several of these: a project folder that IS a shoot —
+// `2026-05-30_vlog_water-park_v1`. Nesting `2026-05-30/` inside that would be a date folder inside a
+// folder already named after the date. If the project already carries the day, leave it alone.
+function shootFolderFor(projectPath, day) {
+  const p = String(projectPath || '').replace(/[\\/]+$/, '');
+  if (!p) return '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return p;      // no usable date — file into the project itself
+  const leaf = p.split(/[\\/]/).pop() || '';
+  if (leaf.includes(day)) return p;                     // the project IS this shoot
+  return `${p}/${day}`;
+}
+
 async function finPlaceIntoProjects() {
   const sel = (finSelected().length ? finSelected() : finMatched());
   if (!sel.length) { showToast('Nothing ticked to file'); return; }
@@ -1907,11 +1924,15 @@ async function finPlaceIntoProjects() {
   const patch = {};
   let n = 0;
   for (const { clips: gClips, path } of placed) {
+    // A SUBFOLDER PER SHOOT. His call: `Gourgess Lawns/2026-06-01/…`, not 68 lawn-mowing clips loose
+    // in one client folder. A client runs all year; a shoot is a day.
+    const day = String((gClips[0] && gClips[0].date) || '').slice(0, 10);
+    const rel = shootFolderFor(path, day);
     for (const c of gClips) {
       const f = c._ref;
       if (!f) continue;
       f.meta = f.meta || {};
-      f.meta.ledgerRel = path;
+      f.meta.ledgerRel = rel;
       patch[f.name] = { ...f.meta };
       n += 1;
     }

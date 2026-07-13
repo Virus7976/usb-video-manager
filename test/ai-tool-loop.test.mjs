@@ -195,8 +195,10 @@ test('inspect_project cannot read outside the projects root', async () => {
 });
 
 test('create_project cannot produce a Windows-unopenable folder', async () => {
-  // slugFolder is the app's OWN folder-naming primitive — reserved device names, illegal characters
-  // and length are handled once, by code, not hoped for in a prompt.
+  // safeFolderName is the app's OWN folder-naming primitive — reserved device names and illegal
+  // characters are handled once, by code, not hoped for in a prompt. It preserves case and spaces
+  // (his tree is `2026 - Client Work / Gourgess Lawns`), so a proposed project sits in there looking
+  // like his own work rather than like it came from a different program.
   const create = app.get('AI_TOOLS').create_project;
   const r = await create.run({ parent: '2026', name: 'CON' }, {});
   assert.equal(r.error, undefined);
@@ -204,7 +206,11 @@ test('create_project cannot produce a Windows-unopenable folder', async () => {
   assert.match(r.path, /^2026\//);
 
   const empty = await create.run({ parent: '', name: '!!!' }, {});
-  assert.ok(empty.error, 'a name that slugs to nothing is rejected, not silently created as ""');
+  assert.ok(empty.error, 'punctuation is not a name — rejected, not silently created as "!!!"');
+
+  // …but a real name keeps its shape. `charles-wedding` in a tree of Title-Case folders looks foreign.
+  const real = await create.run({ parent: '2026 - Client Work', name: 'Charles Wedding' }, {});
+  assert.equal(real.path, '2026 - Client Work/Charles Wedding', 'his capitals and spaces survive');
 });
 
 test('set_clip_name slugs deterministically — the model supplies meaning, code supplies form', async () => {
@@ -349,4 +355,24 @@ test('placement REFUSES to run on a vision model instead of producing mush', asy
   const r = await app.invoke('ai:placeGroup', { subject: 'mowing' });
   assert.equal(r.ok, false);
   assert.match(r.error, /tool-capable|vision model cannot/i);
+});
+
+test('create_project may invent a PROJECT, never a CATEGORY', async () => {
+  // A new project is a reasonable thing to invent. A new category is not. His are `2026 - Client Work`,
+  // `2026 - Personal`, `2026 - Social Media` — and a model that answers `Client Work` (dropping the
+  // year, which is exactly the kind of near-miss an 8B model makes) would have us create a SECOND
+  // category folder beside the real one and split his project tree in half. Creating a project is
+  // allowed; creating the shelf it sits on is not.
+  const create = app.get('AI_TOOLS').create_project;
+  const ctx = { folders: ['2026 - Client Work', '2026 - Client Work/Gourgess Lawns', '2026 - Personal'] };
+
+  const bad = await create.run({ parent: 'Client Work', name: 'Charles Wedding' }, ctx);
+  assert.ok(bad.error, 'a category he does not have is refused');
+  assert.match(bad.error, /not a folder he has/);
+  assert.match(bad.error, /2026 - Client Work/, 'and it is told what he DOES have');
+
+  const good = await create.run({ parent: '2026 - client work', name: 'Charles Wedding' }, ctx);
+  assert.equal(good.error, undefined);
+  assert.equal(good.path, '2026 - Client Work/Charles Wedding',
+    'the right category, in HIS spelling — not the one the model happened to type');
 });

@@ -185,6 +185,30 @@ function aiCapWords(s, n) {
 
 // How well does a candidate match a query? Weighted so a matched PERSON or DATE counts for more than
 // a generic word — the same intuition the deterministic ledger matcher already uses, in one place.
+// A DATED FOLDER IS THE HOME OF THAT SHOOT — AND NO OTHER.
+//
+// Some of his project folders ARE shoots: `2026-05-30_vlog_water-park_v1`, `2026-06-11_vlog_footage-
+// from-gopros_v1`. He names them exactly like clips. Which means the folder name contains the SUBJECT
+// word `vlog` — so every vlog shoot he ever films matches it lexically, forever.
+//
+// Measured on his real tree with the real qwen3: a wedding for a NEW client got filed into
+// `2026 - Personal/2026-06-11_vlog_footage-from-gopros_v1`, three runs out of three. The search
+// returned it as a hit, and the model trusts hits. It was never a hit; it was a word collision.
+//
+// The rule his tree actually encodes:
+//   dateless folder  (`Gourgess Lawns`, `Calisthetics Journey`) → an ONGOING project. New shoots welcome.
+//   dated folder     (`2026-05-30_vlog_water-park_v1`)          → the home of THAT shoot, and no other.
+//
+// So a candidate carrying a date that is not this shoot's date is not a candidate. Better prompting
+// would not have fixed this — the tool was handing the model a wrong answer and calling it a match.
+const DATE_IN_NAME = /(\d{4}-\d{2}-\d{2})/;
+function folderIsOtherShoot(rel, shootDate) {
+  const m = DATE_IN_NAME.exec(String(rel || '').split('/').pop() || '');
+  if (!m) return false;                                   // no date → an ongoing project
+  const day = String(shootDate || '').slice(0, 10);
+  return m[1] !== day;                                    // dated, and not OUR shoot
+}
+
 function aiScore(queryTokens, cand) {
   const q = queryTokens;
   const hit = (field, weight) => {
@@ -249,7 +273,10 @@ defineTool('search_projects', {
       });
     }
 
-    const hits = cands.filter((c) => c._score > 0).sort((a, b) => b._score - a._score).slice(0, 8);
+    const hits = cands
+      .filter((c) => c._score > 0)
+      .filter((c) => !folderIsOtherShoot(c.path, ctx.date))   // someone else's shoot is not a home for ours
+      .sort((a, b) => b._score - a._score).slice(0, 8);
     if (!hits.length) {
       // A zero-match search is where a model invents a project. Give it the retry FIRST — a different
       // query (the place, a person, a broader word) very often finds the right home — and make asking
@@ -336,12 +363,37 @@ defineTool('create_project', {
   },
   terminal: true,
   requires: ['search_projects'],   // you cannot create what you never looked for — see defineTool
-  run: async ({ parent, name, why }) => {
-    // slugFolder is the SAME function the rest of the app files with — reserved Windows names,
-    // illegal characters and length are handled here, once, not hoped for in a prompt.
-    const leaf = slugFolder(name);
+  run: async ({ parent, name, why }, ctx) => {
+    // safeFolderName, NOT slugFolder — the same function the rest of the app files with. His tree is
+    // `2026 - Client Work / Gourgess Lawns`: Title Case, spaces. A proposed `charles-wedding` would sit
+    // in there looking like it came from a different program, and slugging the PARENT would create
+    // `2026-client-work` beside the real folder and fork the tree. Windows-illegal characters and
+    // reserved names are handled here, once, not hoped for in a prompt.
+    const leaf = safeFolderName(name);
     if (!leaf) return { error: 'That name is empty once cleaned up. Give a real name.' };
-    const parts = String(parent || '').split('/').map((s) => slugFolder(s)).filter(Boolean);
+
+    const parts = String(parent || '').split('/').map((x) => safeFolderName(x)).filter(Boolean);
+
+    // THE PARENT MUST BE A CATEGORY HE ACTUALLY HAS.
+    //
+    // A new PROJECT is a reasonable thing to invent. A new CATEGORY is not — his are `2026 - Client
+    // Work`, `2026 - Personal`, `2026 - Social Media`, and a model that answers `Client Work` (dropping
+    // the year) would have us create a second category folder beside the real one and split his tree in
+    // half. Creating a project is allowed; creating the shelf it sits on is not.
+    const known = (ctx.folders || []).map((f) => String(f.path || f));
+    // Enforce against what we actually KNOW, never against ignorance. If we could not read the tree at
+    // all, refusing every parent would block the one path he has left.
+    if (parts.length && known.length) {
+      const want = parts.join('/').toLowerCase();
+      const hit = known.find((k) => k.toLowerCase() === want);
+      if (!hit) {
+        const top = [...new Set(known.map((k) => k.split('/')[0]))].slice(0, 12);
+        return {
+          error: `"${parts.join('/')}" is not a folder he has. Put the new project inside one of these: ${top.join(', ')}.`,
+        };
+      }
+      return { action: 'create', path: `${hit}/${leaf}`, why: String(why || '') };   // HIS spelling
+    }
     return { action: 'create', path: [...parts, leaf].join('/'), why: String(why || '') };
   },
 });

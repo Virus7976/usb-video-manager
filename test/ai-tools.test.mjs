@@ -8,7 +8,12 @@
 // reason its way to a JSON blob inside a 3,000-character prompt.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadMain } from './harness.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 let app; let calls;
 
@@ -126,4 +131,61 @@ test('an Ollama error surfaces its real reason, not a bare HTTP code', async () 
     /out of memory/,
     'the actual cause — this is exactly what a GPU that already has a vision model loaded says',
   );
+});
+
+// --- A DATED FOLDER IS THE HOME OF THAT SHOOT, AND NO OTHER -------------------------------------
+//
+// MEASURED ON HIS REAL TREE, with the real qwen3:8b. Some of his project folders ARE shoots — he names
+// them exactly like clips: `2026-05-30_vlog_water-park_v1`, `2026-06-11_vlog_footage-from-gopros_v1`.
+// Which means the folder name contains the SUBJECT word `vlog`, so every vlog shoot he ever films
+// matches it lexically, forever.
+//
+// A wedding for a NEW client got filed into `2026 - Personal/2026-06-11_vlog_footage-from-gopros_v1`
+// — three runs out of three. The search returned it as a hit and the model trusts hits. It was never
+// a hit; it was a word collision. Better prompting could not fix that: the TOOL was handing the model
+// a wrong answer and calling it a match.
+//
+// The rule his tree actually encodes:
+//   dateless (`Gourgess Lawns`, `Calisthetics Journey`) → an ONGOING project; new shoots welcome
+//   dated    (`2026-05-30_vlog_water-park_v1`)          → the home of THAT shoot, and no other
+//
+// With this in, the same three cases go 3/3: lawn-mowing → Gourgess Lawns, calisthenics →
+// Calisthetics Journey, and the wedding → ask_user instead of a wrong folder.
+
+test('an ongoing project (no date in its name) accepts new shoots', () => {
+  const f = app.get('folderIsOtherShoot');
+  assert.equal(f('2026 - Client Work/Gourgess Lawns', '2026-07-20'), false);
+  assert.equal(f('2026 - Social Media/Calisthetics Journey', '2026-07-20'), false);
+});
+
+test("a folder named after ANOTHER shoot is not a home for this one", () => {
+  const f = app.get('folderIsOtherShoot');
+  assert.equal(f('2026 - Social Media/2026-05-30_vlog_water-park_v1', '2026-07-22'), true);
+  assert.equal(f('2026 - Personal/2026-06-11_vlog_footage-from-gopros_v1', '2026-07-22'), true);
+});
+
+test("…but a folder named after THIS shoot obviously is", () => {
+  // Re-running organize on a shoot already filed must land in the same place, not refuse it.
+  const f = app.get('folderIsOtherShoot');
+  assert.equal(f('2026 - Social Media/2026-05-30_vlog_water-park_v1', '2026-05-30'), false);
+});
+
+test('the date is only read from the LEAF, not from a dated parent', () => {
+  // `2026 - Client Work` contains no date, but a parent like `Archive/2024-01-01/Gourgess Lawns` must
+  // not disqualify an ongoing project because of its ancestor.
+  const f = app.get('folderIsOtherShoot');
+  assert.equal(f('2024-01-01 Archive/Gourgess Lawns', '2026-07-20'), false);
+});
+
+test('with no shoot date at all, nothing is excluded — we do not filter on ignorance', () => {
+  const f = app.get('folderIsOtherShoot');
+  assert.equal(f('2026 - Social Media/2026-05-30_vlog_water-park_v1', ''), true,
+    'a dated folder still is not a general-purpose home');
+  assert.equal(f('2026 - Client Work/Gourgess Lawns', ''), false, 'and an ongoing project still is');
+});
+
+test('search_projects actually applies it', () => {
+  const src = readFileSync(join(ROOT, 'main-mod', '10-ai-tools.js'), 'utf8');
+  const fn = src.slice(src.indexOf("defineTool('search_projects'"));
+  assert.match(fn.slice(0, 3000), /\.filter\(\(c\) => !folderIsOtherShoot\(c\.path, ctx\.date\)\)/);
 });

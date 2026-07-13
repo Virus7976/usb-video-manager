@@ -8807,12 +8807,15 @@ async function showPlacementReview(clips, opts = {}) {
 
         // A confident suggestion → the "Is this Jake?" state. No suggestion → the "Who is this?" state.
         if (g.suggest) {
-          return `<div class="face-grid-card-item suggested" data-i="${i}">
+          const leaf = g.suggest.split('/').pop();
+          const parent = g.suggest.split('/').slice(0, -1).join(' / ');
+          return `<div class="face-grid-card-item suggested${g.isNew ? ' is-new' : ''}" data-i="${i}">
             <div class="fgc-photo">${thumb}</div>
-            <div class="fgc-q">File into <b>${escapeHtml(g.suggest.split('/').pop())}</b>?</div>
+            <div class="fgc-q">${g.isNew ? 'Create' : 'File into'} <b>${escapeHtml(leaf)}</b>?</div>
+            ${parent ? `<div class="fgc-sub muted small fgc-parent">in ${escapeHtml(parent)}</div>` : ''}
             <div class="fgc-sub muted small">${seen}${g.why ? ` · ${escapeHtml(g.why)}` : ''}</div>
-            <div class="fgc-btns"><button class="fgc-yes pr-yes" data-i="${i}">✓ Yes</button><button class="fgc-no pr-no" data-i="${i}">✗ Somewhere else</button></div>
-            <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="or type a project name…" autocomplete="off"/>
+            <div class="fgc-btns"><button class="fgc-yes pr-yes" data-i="${i}">✓ ${g.isNew ? 'Create it' : 'Yes'}</button><button class="fgc-no pr-no" data-i="${i}">✗ Somewhere else</button></div>
+            <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="${g.isNew ? 'or rename it…' : 'or type a project name…'}" autocomplete="off"/>
             ${chips ? `<div class="fgc-chips compact">${chips}</div>` : ''}
           </div>`;
         }
@@ -8914,7 +8917,11 @@ async function showPlacementReview(clips, opts = {}) {
           g.why = r.why || '';
         } else if (r.action === 'place' || r.action === 'create') {
           g.suggest = r.path;
-          g.why = r.action === 'create' ? 'new project' : '';
+          // "AI proposes a folder, you confirm" — so SAY it is a new folder, and say why nothing
+          // existing fitted. A card that looks identical whether it files into a project he has had
+          // for a year or creates one out of thin air is not a confirmation, it is a rubber stamp.
+          g.isNew = r.action === 'create';
+          g.why = r.action === 'create' ? (r.why || "nothing you have fits this") : '';
           g.options = (r.trace || [])
             .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
             .flatMap((t) => t.result.matches.map((m) => m.path))
@@ -12297,6 +12304,23 @@ $('finMatchedOnly').addEventListener('change', (e) => {
 // Now: group the clips → check what you already decided (no model call at all if we know) → ask the
 // model, which must SEARCH the real Projects tree before it may place or invent anything → show one
 // card per group, exactly like the faces popup → your answer is remembered forever.
+// `<project>/<YYYY-MM-DD>` — a folder per shoot inside the project.
+//
+// A client (Gourgess Lawns) runs all year; a shoot is a single day. 68 lawn-mowing clips loose in one
+// folder is not organized, it is a pile with a name.
+//
+// The exception, and he already has several of these: a project folder that IS a shoot —
+// `2026-05-30_vlog_water-park_v1`. Nesting `2026-05-30/` inside that would be a date folder inside a
+// folder already named after the date. If the project already carries the day, leave it alone.
+function shootFolderFor(projectPath, day) {
+  const p = String(projectPath || '').replace(/[\\/]+$/, '');
+  if (!p) return '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return p;      // no usable date — file into the project itself
+  const leaf = p.split(/[\\/]/).pop() || '';
+  if (leaf.includes(day)) return p;                     // the project IS this shoot
+  return `${p}/${day}`;
+}
+
 async function finPlaceIntoProjects() {
   const sel = (finSelected().length ? finSelected() : finMatched());
   if (!sel.length) { showToast('Nothing ticked to file'); return; }
@@ -12335,11 +12359,15 @@ async function finPlaceIntoProjects() {
   const patch = {};
   let n = 0;
   for (const { clips: gClips, path } of placed) {
+    // A SUBFOLDER PER SHOOT. His call: `Gourgess Lawns/2026-06-01/…`, not 68 lawn-mowing clips loose
+    // in one client folder. A client runs all year; a shoot is a day.
+    const day = String((gClips[0] && gClips[0].date) || '').slice(0, 10);
+    const rel = shootFolderFor(path, day);
     for (const c of gClips) {
       const f = c._ref;
       if (!f) continue;
       f.meta = f.meta || {};
-      f.meta.ledgerRel = path;
+      f.meta.ledgerRel = rel;
       patch[f.name] = { ...f.meta };
       n += 1;
     }

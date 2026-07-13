@@ -52,17 +52,41 @@ test('confirming a placement is REMEMBERED', async () => {
   assert.equal(mem[0].path, '2026/Personal/Garden Reno');
 });
 
-test('…and next time it is RECALLED, with no model call at all', async () => {
+test('…and the SAME SHOOT is RECALLED next time, with no model call at all', async () => {
   const wasCalled = forbidModel();
-  await app.invoke('ai:rememberPlacement', { subject: 'mowing', people: [], path: '2026/Personal/Garden Reno' });
+  await app.invoke('ai:rememberPlacement', { date: '2026-06-01', subject: 'mowing', people: [], path: '2026/Personal/Garden Reno' });
 
-  const r = await app.invoke('ai:placeGroup', { subject: 'mowing', people: [], count: 12 });
+  const r = await app.invoke('ai:placeGroup', { date: '2026-06-01', subject: 'mowing', people: [], count: 12 });
 
   assert.equal(wasCalled(), false, 'the model was never asked — this is the whole point');
   assert.equal(r.ok, true);
   assert.equal(r.action, 'place');
   assert.equal(r.path, '2026/Personal/Garden Reno');
   assert.equal(r.recalled, true);
+});
+
+test('a NEW shoot with a familiar subject is never silently filed into the old project', async () => {
+  // THE SILENT MIS-FILE. Recall used to match on SUBJECT alone and report `confidence: 'exact'`, and
+  // the grid auto-files an exact recall with no card and no question. So: he files his 2026-06-01
+  // lawn-mowing shoot into Josiah's project. A month later he mows a DIFFERENT property. Subject
+  // matches → "exact" → the new shoot lands in Josiah's project. He is never asked, and never told.
+  //
+  // "Ask once and then it knows" means never re-asking about the SAME shoot. It does not mean
+  // answering a question he was never asked.
+  await app.invoke('ai:rememberPlacement', { date: '2026-06-01', subject: 'mowing', people: [], path: '2026/Clients/Josiah' });
+
+  const r = await app.invoke('ai:recallPlacement', { date: '2026-07-20', subject: 'mowing', people: [] });
+  assert.equal(r.confidence, 'likely', 'a different shoot is a SUGGESTION, never an exact answer');
+  assert.equal(r.path, '2026/Clients/Josiah', 'the old project is still offered — one click to accept');
+  assert.equal(r.from_shoot, '2026-06-01', 'and it says WHICH shoot that came from');
+});
+
+test('a legacy record with no date can never be "exact" — the safe direction', async () => {
+  // Records written before placement was shoot-aware carry no date, so we cannot know which shoot they
+  // were about. Worst case he is asked once more; the alternative is silently mis-filing.
+  app.get('config').placementMemory = [{ subject: 'mowing', people: [], path: '2026/Old', count: 1, ts: 1 }];
+  const r = await app.invoke('ai:recallPlacement', { date: '2026-06-01', subject: 'mowing', people: [] });
+  assert.equal(r.confidence, 'likely');
 });
 
 test('a DIFFERENT subject is still a real question — it does not over-generalise', async () => {
@@ -182,8 +206,35 @@ test('a zero-match search steers to RETRY then ASK — not to inventing a projec
 test('confirming a card in the review grid TEACHES it', () => {
   const src = readFileSync(join(ROOT, 'src', 'mod', '07-organize-map.js'), 'utf8');
   const fn = src.slice(src.indexOf('async function showPlacementReview('));
-  assert.match(fn, /window\.api\.aiRememberPlacement\(\{ subject: g\.subject, people: g\.people, location: g\.location, path: p \}\)/,
-    'the user\'s confirmation is the ground truth, and it is what gets remembered');
+  assert.match(fn, /aiRememberPlacement\(\{ date: g\.date, subject: g\.subject, people: g\.people, location: g\.location, path: p \}\)/,
+    'his confirmation is the ground truth — and it is remembered against the SHOOT, not just the subject');
   assert.match(fn, /window\.api\.aiRecallPlacement/, 'and recall is checked BEFORE the model');
   assert.match(fn, /you filed this here before/, 'a recalled card says why it is already answered');
+});
+
+test('a different shoot NEVER reaches the model — measured: it assumes, 4 runs out of 4', async () => {
+  // MEASURED ON THE REAL qwen3:8b. Handed a `likely` recall from an earlier shoot, with a note
+  // spelling out "this may be a new job that happens to look the same; if you cannot tell, ask_user,
+  // do not assume", it called place_in_project into the OLD project — 4 runs out of 4. It never once
+  // asked. The prompt asked; the model placed.
+  //
+  // Which is this codebase's whole lesson restated: the prompt asks, the CODE decides. So the code
+  // decides. A familiar subject on a new shoot comes back as action:'suggest' — a one-click yes/no
+  // card naming the shoot the project came from — and the model is never consulted at all.
+  const wasCalled = forbidModel();
+  await app.invoke('ai:rememberPlacement', { date: '2026-06-01', subject: 'mowing', people: [], path: '2026/Clients/Josiah' });
+
+  const r = await app.invoke('ai:placeGroup', { date: '2026-07-20', subject: 'mowing', people: [], count: 14 });
+
+  assert.equal(wasCalled(), false, 'the model is NOT given the chance to assume');
+  assert.equal(r.action, 'suggest', 'it is his call, not the model\'s');
+  assert.equal(r.path, '2026/Clients/Josiah', 'the old project is offered — one click');
+  assert.match(r.why, /2026-06-01/, 'and the card says which shoot that came from');
+});
+
+test('the review grid turns action:suggest into a card, not a silent file', () => {
+  const src = readFileSync(join(ROOT, 'src', 'mod', '07-organize-map.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function showPlacementReview('));
+  assert.match(fn, /r\.action === 'suggest'/, 'the grid handles it explicitly');
+  assert.match(fn, /g\.suggest = r\.path;\n\s+g\.why = r\.why \|\| '';/, 'as a suggestion, with its reason');
 });

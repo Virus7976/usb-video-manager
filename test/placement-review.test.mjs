@@ -41,11 +41,9 @@ const groupFns = () => loadFns('src/mod/07-organize-map.js', {
 
 // --- grouping is DETERMINISTIC — no model involved ------------------------------------------
 
-test('clips are grouped by subject, so one shoot is ONE decision', () => {
-  // The point of grouping: a card of 309 clips is usually ~15 subjects. That's ~15 questions instead
-  // of 309, and every clip in a shoot is GUARANTEED to land together. Per-clip placement could
-  // scatter one shoot across three projects — which is exactly what "it has no idea how to group
-  // projects" looks like from the outside.
+test('a group is a SHOOT, not a subject — one decision per shoot', () => {
+  // The point of grouping: 309 clips is ~15 shoots. That's ~15 questions instead of 309, and every
+  // clip in a shoot is GUARANTEED to land together.
   const { groupClipsForPlacement } = groupFns();
   const clips = [
     { subject: 'mowing', description: 'ride-on', date: '2026-06-01' },
@@ -54,9 +52,30 @@ test('clips are grouped by subject, so one shoot is ONE decision', () => {
     { subject: 'turf', description: 'laying', date: '2026-06-01' },
   ];
   const groups = groupClipsForPlacement(clips);
-  assert.equal(groups.length, 2, 'two subjects → two decisions, not four');
-  const mow = groups.find((g) => g.key === 'mowing');
+  assert.equal(groups.length, 2, 'two subjects on one day → two decisions, not four');
+  const mow = groups.find((g) => g.key === '2026-06-01|mowing');
   assert.equal(mow.clips.length, 3, 'case-insensitive — "Mowing" and "mowing" are one shoot');
+});
+
+test('the SAME subject on DIFFERENT days is two shoots, and two questions', () => {
+  // The bug this replaces: grouping by subject alone meant every lawn-mowing clip he has ever shot —
+  // June 1st at Josiah's, June 12th at another property, May 16th — collapsed into ONE card and was
+  // filed into ONE project. Two different jobs, one answer, no way to tell them apart.
+  const { groupClipsForPlacement } = groupFns();
+  const groups = groupClipsForPlacement([
+    { subject: 'lawn-mowing', date: '2026-06-01' },
+    { subject: 'lawn-mowing', date: '2026-06-01' },
+    { subject: 'lawn-mowing', date: '2026-06-12' },   // a DIFFERENT job
+  ]);
+  assert.equal(groups.length, 2, 'two shoots → two questions');
+  assert.equal(groups.find((g) => g.date === '2026-06-01').clips.length, 2);
+  assert.equal(groups.find((g) => g.date === '2026-06-12').clips.length, 1);
+});
+
+test('a group carries its OWN shoot date, not whatever the first clip happened to have', () => {
+  const { groupClipsForPlacement } = groupFns();
+  const groups = groupClipsForPlacement([{ subject: 'mowing', date: '2026-06-12T09:00:00Z' }]);
+  assert.equal(groups[0].date, '2026-06-12', 'an ISO timestamp resolves to its day');
 });
 
 test('no clip is ever lost — every clip lands in exactly one group', () => {
@@ -69,7 +88,7 @@ test('no clip is ever lost — every clip lands in exactly one group', () => {
   const groups = groupClipsForPlacement(clips);
   const total = groups.reduce((n, g) => n + g.clips.length, 0);
   assert.equal(total, clips.length, `${total} of ${clips.length} clips survived grouping`);
-  const unnamed = groups.find((g) => g.key === '_unnamed');
+  const unnamed = groups.find((g) => g.key.endsWith('|_unnamed'));
   assert.equal(unnamed.clips.length, 3, 'unnamed clips are collected, not discarded');
 });
 
@@ -105,7 +124,10 @@ test('a confident suggestion is the "Is this Jake?" card; no suggestion is the "
   const src = mod('07-organize-map.js');
   const fn = src.slice(src.indexOf('async function showPlacementReview('));
   assert.match(fn, /File into <b>\$\{escapeHtml\(g\.suggest\.split\('\/'\)\.pop\(\)\)\}<\/b>\?/, 'the suggested state');
-  assert.match(fn, /Where does <b>\$\{escapeHtml\(g\.subject \|\| 'this'\)\}<\/b> go\?/, 'the ask state');
+  // Two shoots can now share a subject, so the ask-card must name the SHOOT (date + subject) —
+  // otherwise he is looking at two identical "lawn-mowing" cards with no way to tell them apart.
+  assert.match(fn, /Where does the <b>\$\{escapeHtml\(shootLabel\)\}<\/b> shoot go\?/, 'the ask state names the shoot');
+  assert.match(fn, /const shootLabel = \[g\.date, g\.subject \|\| 'this'\]/);
   assert.match(fn, /fgc-chips compact/, 'both states offer tap-chips of what you already have');
 });
 

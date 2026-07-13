@@ -518,6 +518,34 @@ day a *"shoot"* frames it as one thing, and the model starts answering with the 
 the footage. There is a test pinning the exact strings. **If you change them, re-measure against his
 footage.**
 
+### ⚠ PLACEMENT IS PER-SHOOT — and the silent mis-file it fixes
+
+`recallPlacement` used to match on **subject alone** and return `confidence: 'exact'`, and the review
+grid **auto-files an exact recall with no card and no question**. So: he files his 2026-06-01
+lawn-mowing shoot into `Clients/Josiah`. A month later he mows a different property. Subject matches →
+"exact" → **the new shoot is silently filed into Josiah's project.** Never asked, never told. That is
+what *"later I go to the output folder and get AI to work out which project each video belongs in —
+this part I know sucks"* actually looked like from the inside.
+
+Same root cause as naming: it treated a **subject** as if it were a **shoot**. Now:
+
+- `groupClipsForPlacement` groups by `date|subject`. Two lawn-mowing shoots are two cards, two
+  questions. (It used to collapse every lawn-mowing clip he has ever shot into ONE card → ONE project.)
+- `rememberPlacement` / `recallPlacement` are keyed on the shoot day. **Only the same shoot is
+  `exact`** — the only thing allowed to skip the question. Legacy records carry no date and can never
+  be exact: the worst case is being asked once more, which beats mis-filing.
+- A familiar subject on a **different** shoot is `action: 'suggest'` — a one-click yes/no card naming
+  the shoot the project came from.
+
+**And the model never gets that choice — measured.** Handed a `likely` recall from an earlier shoot,
+*with a note spelling out* "this may be a new job that happens to look the same; if you cannot tell,
+ask_user, do not assume", real qwen3:8b called `place_in_project` into the old project **4 runs out of
+4**. It never once asked. The prompt asked; the model placed. So the code decides.
+
+Where the model IS in charge it is fine — 3/3 it asks when nothing in the tree matches, 3/3 it files
+correctly when an obvious project exists. It is good at *"does a matching project exist?"* and bad at
+*"is this the same job as last time?"*. Keep those separate.
+
 ### Hardware constraint (the owner's machine)
 
 `qwen3:8b` (tools), `llama3.2-vision` (tools+vision, **but returns HTTP 500 on this machine — broken**),

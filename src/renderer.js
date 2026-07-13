@@ -8712,17 +8712,25 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
 // ---------------------------------------------------------------------------
 
 // Group clips deterministically: same subject (and same date, when the project files by day).
+// A group is a SHOOT, not a subject.
+//
+// This grouped by subject alone, so every lawn-mowing clip he has ever shot — June 1st at Josiah's,
+// June 12th somewhere else, May 16th — collapsed into ONE card and was filed into ONE project. Two
+// different jobs, one answer, and no way to tell them apart. Different shoots are different projects,
+// so they are different questions.
 function groupClipsForPlacement(clips) {
   const groups = new Map();
   for (const c of (clips || [])) {
-    const key = slug(c.subject || '') || '_unnamed';
+    const subj = slug(c.subject || '') || '_unnamed';
+    const day = String(c.date || '').slice(0, 10);
+    const key = `${day}|${subj}`;
     if (!groups.has(key)) {
       groups.set(key, {
         key,
         subject: c.subject || '',
         description: c.description || '',
         location: c.location || '',
-        date: c.date || '',
+        date: day,
         observation: c.observation || '',
         people: [],
         clips: [],
@@ -8774,7 +8782,7 @@ async function showPlacementReview(clips, opts = {}) {
           const why = g.recalled ? 'you filed this here before' : (g.suggest ? '' : 'you chose this');
           return `<div class="face-grid-card-item confirmed" data-i="${i}">
             <div class="fgc-photo">${thumb}<span class="fgc-badge">✓</span></div>
-            <div class="fgc-name">${escapeHtml(g.subject || 'unnamed')}</div>
+            <div class="fgc-name">${escapeHtml([g.date, g.subject || 'unnamed'].filter(Boolean).join(' '))}</div>
             <div class="fgc-sub muted small">→ ${escapeHtml(g.chosen)}${why ? ` · ${escapeHtml(why)}` : ''}</div>
             <button class="fgc-undo" data-i="${i}">Undo</button>
           </div>`;
@@ -8802,9 +8810,10 @@ async function showPlacementReview(clips, opts = {}) {
             ${chips ? `<div class="fgc-chips compact">${chips}</div>` : ''}
           </div>`;
         }
+        const shootLabel = [g.date, g.subject || 'this'].filter(Boolean).join(' ');
         return `<div class="face-grid-card-item" data-i="${i}">
           <div class="fgc-photo">${thumb}</div>
-          <div class="fgc-q">Where does <b>${escapeHtml(g.subject || 'this')}</b> go?</div>
+          <div class="fgc-q">Where does the <b>${escapeHtml(shootLabel)}</b> shoot go?</div>
           <div class="fgc-sub muted small">${seen}${g.question ? ` · ${escapeHtml(g.question)}` : ''}</div>
           <input type="text" class="ai-input fgc-input pr-input" data-i="${i}" placeholder="type a project name…" autocomplete="off"/>
           ${chips ? `<div class="fgc-chips compact">${chips}</div>` : ''}
@@ -8826,7 +8835,7 @@ async function showPlacementReview(clips, opts = {}) {
       const g = groups[i];
       g.chosen = p;
       try {
-        window.api.aiRememberPlacement({ subject: g.subject, people: g.people, location: g.location, path: p });
+        window.api.aiRememberPlacement({ date: g.date, subject: g.subject, people: g.people, location: g.location, path: p });
       } catch { /* non-fatal — the clips still file, we just don't learn from it */ }
       render();
     };
@@ -8854,12 +8863,24 @@ async function showPlacementReview(clips, opts = {}) {
         // Already told us? Then it is not a question. No model call, no card to confirm — it is just
         // done, with a note saying why, so the user can still see (and undo) what it did.
         try {
-          const known = await window.api.aiRecallPlacement({ subject: g.subject, people: g.people, location: g.location });
+          const known = await window.api.aiRecallPlacement({
+            date: g.date, subject: g.subject, people: g.people, location: g.location,
+          });
           if (known && known.path && known.confidence === 'exact') {
+            // The SAME shoot, already decided. This is the only case that may skip the question.
             g.chosen = known.path;
             g.recalled = known.told_before || 1;
             render();
             continue;
+          }
+          if (known && known.path && known.confidence === 'likely') {
+            // A different shoot that looks familiar. Offer it — one click — but never file it silently.
+            g.suggest = known.path;
+            g.why = known.from_shoot
+              ? `you filed the ${known.from_shoot} ${g.subject} shoot here`
+              : `you filed ${g.subject} here before`;
+            render();
+            continue;   // a good suggestion he can accept in one click beats a model call
           }
         } catch { /* fall through to asking the model */ }
 
@@ -8880,6 +8901,11 @@ async function showPlacementReview(clips, opts = {}) {
         if (!r || !r.ok) {
           g.question = (r && r.error) || 'the AI could not answer';
           g.options = [];
+        } else if (r.action === 'suggest') {
+          // A familiar subject on a DIFFERENT shoot. The model was never asked — the app decided this
+          // is his call, because handed the choice the model files into the old project every time.
+          g.suggest = r.path;
+          g.why = r.why || '';
         } else if (r.action === 'place' || r.action === 'create') {
           g.suggest = r.path;
           g.why = r.action === 'create' ? 'new project' : '';

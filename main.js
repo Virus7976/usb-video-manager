@@ -7656,12 +7656,38 @@ ipcMain.handle('ai:placeGroup', async (_evt, payload) => {
   }
   const g = payload || {};
 
-  // ASK ONCE, THEN KNOW. If the user has already told us where this kind of footage goes, that is the
-  // answer — no model call, no prompt, no variability, no latency. The model is only ever consulted
-  // about things it has genuinely never seen, which is the only place a model belongs.
-  const known = recallPlacement({ subject: g.subject, people: g.people, location: g.location });
+  // ASK ONCE, THEN KNOW. If he has already told us where THIS SHOOT goes, that is the answer — no
+  // model call, no prompt, no variability, no latency. The model is only ever consulted about footage
+  // he has genuinely never ruled on, which is the only place a model belongs.
+  //
+  // `date` is what makes that safe. Without it, recall matched on subject alone and a NEW lawn-mowing
+  // shoot was silently filed into the project of an OLD one — no card, no question. Only the same
+  // shoot may skip the question; a familiar-looking different shoot falls through to the model (and
+  // the grid offers the old path as a one-click suggestion).
+  const known = recallPlacement({ date: g.date, subject: g.subject, people: g.people, location: g.location });
   if (known && known.confidence === 'exact') {
-    return { ok: true, action: 'place', path: (g.date && known.path.endsWith(g.date)) ? known.path : known.path, recalled: true, told_before: known.told_before, trace: [] };
+    return { ok: true, action: 'place', path: known.path, recalled: true, told_before: known.told_before, trace: [] };
+  }
+
+  // A FAMILIAR SUBJECT ON A DIFFERENT SHOOT IS NOT THE MODEL'S CALL TO MAKE.
+  //
+  // Measured on the real qwen3:8b: handed a `likely` recall from an earlier shoot — with a note
+  // spelling out "this may be a new job that happens to look the same; if you cannot tell, ask_user,
+  // do not assume" — it filed into the old project anyway, 4 runs out of 4. It never once asked.
+  //
+  // Which is the whole lesson of this codebase again: the prompt asks, the code decides. So the code
+  // decides. This comes back as a SUGGESTION — a one-click yes/no card in the review grid, showing
+  // which shoot the project came from — and the model is never consulted. He can accept it in a click,
+  // and a new job never lands in an old job's project without him seeing it.
+  if (known && known.confidence === 'likely') {
+    return {
+      ok: true,
+      action: 'suggest',
+      path: known.path,
+      why: known.from_shoot ? `you filed the ${known.from_shoot} ${aiSlug(g.subject || '')} shoot here` : 'you filed this kind of footage here before',
+      told_before: known.told_before,
+      trace: [],
+    };
   }
 
   const root = String(config.projectsRoot || defaultProjectsRoot()).replace(/[\\/]+$/, '');
@@ -7846,28 +7872,31 @@ function placementMemory() {
 
 // Remember where the user filed this kind of footage. Called when they CONFIRM a placement — their
 // confirmation is the ground truth, not the model's suggestion.
-function rememberPlacement({ subject, people, location, path }) {
+function rememberPlacement({ date, subject, people, location, path }) {
   const subj = aiSlug(subject || '');
   const dest = String(path || '').trim();
   if (!subj || !dest) return null;
+  const day = shootDay(date);
 
   const mem = placementMemory();
   const ppl = (Array.isArray(people) ? people : []).map((p) => String(p).toLowerCase()).sort();
   const loc = aiSlug(location || '');
 
-  // Same subject + same people → the same decision. Update it rather than piling up near-duplicates,
-  // so a changed mind overwrites cleanly instead of leaving two contradictory rules to fight.
-  const existing = mem.find((m) => m.subject === subj && JSON.stringify(m.people || []) === JSON.stringify(ppl));
+  // A decision is about a SHOOT, not a subject. Same day + same subject is the same decision, so it
+  // updates in place; a different day is a different shoot and gets its own record, because that is
+  // the thing we must be able to tell apart later. (See recallPlacement for why that matters.)
+  const existing = mem.find((m) => m.subject === subj && shootDay(m.date) === day
+    && JSON.stringify(m.people || []) === JSON.stringify(ppl));
   if (existing) {
     existing.path = dest;
     existing.location = loc || existing.location;
     existing.count = (existing.count || 0) + 1;
     existing.ts = Date.now();
   } else {
-    mem.push({ subject: subj, people: ppl, location: loc, path: dest, count: 1, ts: Date.now() });
+    mem.push({ date: day, subject: subj, people: ppl, location: loc, path: dest, count: 1, ts: Date.now() });
   }
   saveConfig();
-  return { ok: true, remembered: subj, path: dest };
+  return { ok: true, remembered: subj, date: day, path: dest };
 }
 
 // Have we been told this before? Deterministic — no model, no prompt, no variability.
@@ -7875,14 +7904,34 @@ function rememberPlacement({ subject, people, location, path }) {
 // Returns a confidence so the caller can decide whether to act silently or still show the user.
 // EXACT is "you told me this exact thing"; LIKELY is a strong lexical match on the subject (the same
 // prefix matcher that fixed the alpine/alps miss).
-function recallPlacement({ subject, people, location }) {
+// ONLY THE SAME SHOOT IS "EXACT". Everything else is a suggestion he still gets to see.
+//
+// This used to return `confidence: 'exact'` on a bare SUBJECT match, with no notion of which shoot the
+// clips came from — and the review grid auto-files an exact recall with no card and no question. So:
+// he files his 2026-06-01 lawn-mowing shoot into `Lawn Care/Josiah`. A month later he mows a different
+// property. Subject matches, recall says "exact", and the new shoot is silently filed into Josiah's
+// project. He is never asked, and never told.
+//
+// "Ask once and then it knows" means never re-asking about THE SAME SHOOT. It does not mean answering
+// a question he was never asked. A new shoot with a familiar subject is a SUGGESTION ("you filed the
+// last lawn-mowing shoot here — same project?") — one click to accept, and he can see it.
+function recallPlacement({ date, subject, people, location }) {
   const subj = aiSlug(subject || '');
   if (!subj) return null;
   const mem = placementMemory();
   if (!mem.length) return null;
 
+  const day = shootDay(date);
   const ppl = (Array.isArray(people) ? people : []).map((p) => String(p).toLowerCase());
   const loc = aiSlug(location || '');
+
+  // The same shoot, already decided. This is the only thing that may skip the question.
+  // Records written before placement was shoot-aware carry no date; they can never be exact, which is
+  // the safe direction — the worst case is that he is asked once more.
+  const sameShoot = day && mem.find((m) => m.subject === subj && shootDay(m.date) === day);
+  if (sameShoot) {
+    return { path: sameShoot.path, confidence: 'exact', told_before: sameShoot.count || 1, date: day, score: 99 };
+  }
 
   let best = null; let bestScore = 0;
   for (const m of mem) {
@@ -7899,10 +7948,12 @@ function recallPlacement({ subject, people, location }) {
     if (score > bestScore) { bestScore = score; best = m; }
   }
   if (!best) return null;
+  // A different shoot — never 'exact', however familiar it looks.
   return {
     path: best.path,
-    confidence: best.subject === subj ? 'exact' : 'likely',
+    confidence: 'likely',
     told_before: best.count || 1,
+    from_shoot: shootDay(best.date) || '',
     score: bestScore,
   };
 }
@@ -7920,9 +7971,25 @@ defineTool('recall_decision', {
     required: ['subject'],
   },
   run: async ({ subject, people }, ctx) => {
-    const hit = recallPlacement({ subject, people, location: ctx.location || '' });
+    const hit = recallPlacement({ date: ctx.date || '', subject, people, location: ctx.location || '' });
     if (!hit) return { known: false, note: 'The user has not told you where this kind of footage goes. Search for a project.' };
-    return { known: true, path: hit.path, confidence: hit.confidence, times_filed_here: hit.told_before };
+
+    // If this were the SAME shoot he has already ruled on, we would never have called the model at all
+    // (ai:placeGroup returns that answer directly). So anything the model sees here is a DIFFERENT
+    // shoot that merely looks familiar — say so plainly, or it will treat an old job's project as
+    // settled fact for a new job.
+    if (hit.confidence === 'exact') {
+      return { known: true, path: hit.path, confidence: 'exact', times_filed_here: hit.told_before };
+    }
+    return {
+      known: true,
+      path: hit.path,
+      confidence: 'likely',
+      from_a_different_shoot: hit.from_shoot || 'an earlier one',
+      times_filed_here: hit.told_before,
+      note: 'He filed a DIFFERENT shoot of this kind here. It may be the same ongoing project, or a new '
+        + 'job that happens to look the same. If you cannot tell, ask_user — do not assume.',
+    };
   },
 });
 

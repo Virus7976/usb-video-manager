@@ -514,6 +514,62 @@ undo:
 `ollamaUseOnly` reads Ollama's *real* loaded state — another app, or an `ollama run` in a terminal,
 can load a model behind our back and our own bookkeeping would never know.
 
+### ⚠⚠ THE DESCRIPTION — face recognition belongs IN THE NAME (measured, his models, 2026-07-13)
+
+Owner, on reading the output: *"I don't like those descriptions. It should also be using the face
+recognition."* Both halves were real. Measured end-to-end on the real `qwen3:8b` via the real handler
+(`ai:nameFromObservation`), on the mower-repair clip, **4 runs of 4 at each step**:
+
+```
+two-men-sit-on-a-cut-lawn-beside      ← before
+men-working-on-mower                  ← keyword rules restored
+josiah-repairing-mower                ← face recognition in the name
+```
+
+**1. The description was a truncated SENTENCE.** `set_clip_name`'s description field said only *"What
+is HAPPENING — concrete and specific. This is where the detail goes."* Handed a rich observation the
+model answers with English prose, and the 8-word cap just severed it at a preposition. The rules it
+needed **were not new** — the LEGACY giant prompt already had them (*"2-6 keywords… no articles/filler…
+no sentences"*) and **the tool path had dropped them.** On that one field the redesign was *worse than
+the thing it replaced*. Check the old path before assuming the new one is strictly better.
+
+`aiCapWords` now strips filler at the **EDGES ONLY**. Interior function words stay: his own
+`headcam-getting-into-truck-and-checking-trailer` needs its `into` and its `and`, and a blanket
+stopword strip would **rewrite his style rather than enforce it**.
+
+**2. Face recognition never reached the name — and the gap was NOT in the face code.** It already ran,
+already recognised Josiah, already handed the name to the loop. But **the vision model cannot know that
+man is Josiah**, so nothing in the observation ever says so, and nothing told the reasoning model that a
+recognised name outranks what the camera saw. His archive is `josiah-front-lawn`,
+`liam-mowing-front-lawn`, `josiah` — **the person's name IS the description.** It now goes in the TOOL
+RESULT (`get_naming_style`), not just the system prompt: on an 8B model **a tool result is input; a
+system prompt is a suggestion.** Only when someone was recognised — an empty list invites *"no people
+visible"* into the name.
+
+**3. …which then BROKE THE PROTOCOL, and the fix had to be structural.** The richer `get_naming_style`
+made the model feel it had enough, and it **skipped `get_shoot_context`** — the single biggest naming
+win there is. Measured, 4 runs of 4: the protocol collapsed to two calls. It still got the subject
+right, **by luck** — the word "lawn" happened to be in the observation — and the clips that NEED that
+tool are precisely the ones where it is not. `set_clip_name` now declares
+**`requires: ['get_shoot_context']`** and the loop refuses to name until the shoot has been looked at.
+Asking did not work. Structure does. **Enriching one tool's result can silently starve another — check
+the whole trace after any tool-result change, not just the final answer.**
+
+### ⚠ HOW TO MEASURE AGAINST HIS REAL MODELS (no GPU needed in WSL)
+
+Ollama runs on the **Windows host**, bound to Windows `localhost`, which WSL cannot reach. Windows
+`curl.exe` can: `/mnt/c/Windows/System32/curl.exe`. So load `main.js` in the normal test harness and
+swap ONE thing —
+
+```js
+app.get('globalThis').fetch = async (url, opts) => winFetch(url, opts);   // shells out to curl.exe
+```
+
+— and every call site (`ai:nameFromObservation`, `ai:placeGroup`) runs the **real tool schemas, the real
+`runToolLoop`, the real `styleFewShot`** against the real `qwen3:8b`. Not a re-typed approximation: the
+app's own code. This is how everything above was measured, and it is cheap. Do it before believing a
+prompt change worked.
+
 ### ⚠ get_shoot_context — the biggest naming win, and the least obvious
 
 **Measured end-to-end on his real footage (6 real clips, real GPU, his own filenames as ground truth):

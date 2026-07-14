@@ -537,9 +537,14 @@ defineTool('get_naming_style', {
       // It goes in the TOOL RESULT, not just the system prompt, because on an 8B model a tool result is
       // input and a system prompt is a suggestion — the same lesson get_shoot_context already taught us
       // the hard way. Only when there is someone to name: an empty list invites "no people visible".
+      // ALL of them, not just the first. He shoots his family: two and three people in a shot is the
+      // normal case, and his own names say so (`vloghead-owenpack-josiahpack-insidehouse`). A note that
+      // said "use their NAMES" while the model only ever wrote one was half a feature.
       ...(people.length ? {
         people_recognised_in_this_clip: people,
-        people_note: 'Face recognition identified them — the camera could not. Use their NAMES in the description, exactly as he does (josiah-front-lawn). Never "men", "a boy" or "someone" when you have been told who it is.',
+        people_note: people.length > 1
+          ? `Face recognition identified all ${people.length} of them — the camera could not. Name EVERY one of them in the description, in this order (${people.join(', ')}), exactly as he does (josiah-liam-building-treehouse). Never "men", "two people" or "someone" when you have been told who they are.`
+          : 'Face recognition identified them — the camera could not. Use their NAME in the description, exactly as he does (josiah-front-lawn). Never "a man", "a boy" or "someone" when you have been told who it is.',
       } : {}),
     };
   },

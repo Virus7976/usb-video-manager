@@ -93,6 +93,11 @@ const STORE_FILES = {
   // Unconfirmed face-review clusters (crops + descriptors + state) so the "Review
   // faces" grid — thumbnails and all — survives restarts and never needs re-scanning.
   'ai.facesPending': path.join(STORE_DIR, 'faces-pending.json'),
+  // The GROUP SHOTS: for each clip, the one frame showing the most faces at once, with a box per
+  // face — so a shot with three people is reviewed AS that shot ("click each face and name them")
+  // rather than as three disembodied 144px heads. The frame itself is written out to the faces/
+  // folder like every other crop; only the path + boxes + descriptors live in the JSON.
+  'ai.faceScenes': path.join(STORE_DIR, 'face-scenes.json'),
   // What we have copied off a card, and where it landed. Keyed by the STABLE name__size
   // fingerprint, so it survives a replug, a new drive letter and a restart.
   //
@@ -112,6 +117,7 @@ const STORE_FILES = {
 const STORE_DEFAULT = {
   renameDrafts: () => ({}), finalMeta: () => ({}), renameVersions: () => [], projectLedger: () => [],
   'ai.people': () => [], 'ai.clipObs': () => ({}), 'ai.facesPending': () => [], copiedLog: () => ({}),
+  'ai.faceScenes': () => [],
   aiQueue: () => [],
 };
 const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
@@ -122,7 +128,7 @@ const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip need
 // permanently slower the more the app was used. Nothing on the launch path needs them, so
 // they load on first access via ensureStore(). Every read/write funnels through an accessor
 // (aiPeople / clipObsStore / aiFacesPending), which is what makes deferral safe.
-const LAZY_STORES = new Set(['ai.people', 'ai.clipObs', 'ai.facesPending']);
+const LAZY_STORES = new Set(['ai.people', 'ai.clipObs', 'ai.facesPending', 'ai.faceScenes']);
 const storeLoaded = {};        // key -> its sidecar has been read (or proven absent)
 
 // Per-store equivalent of config_readFailed: the sidecar EXISTS on disk but couldn't be

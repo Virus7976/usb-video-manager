@@ -444,6 +444,84 @@ them**. Three entry points close that:
   supersedes `batchQuestions` (the questions worth asking are the ones the DATA raises, not the ones a
   7B model can think of). `DESCRIPTOR_WORDS` sat between them and is still live — don't take it too.
 
+**⚠ OPEN — the owner's latest asks (2026-07-13), in his words:**
+
+1. ~~"recognize multiple people per frame … use that in the descriptions"~~ **DONE** (both halves —
+   see the group-shot section below; naming now emits `josiah-liam-repairing-mower`, 4 runs of 4).
+2. ~~"if there are more than one unconfirmed it should have a thumbnail with that section of the video
+   and I should be able to click each face and name them"~~ **DONE** — see below, verified in the
+   running app on a real 6-face clip.
+3. **"It should also be writing a lot of what it finds into metadata" — NOT STARTED.** This is the
+   next job. The AI already derives far more than gets written: `observation` (the full vision
+   description), `tags`, `shotType`, `people`, `subject`, `description`, `category`, `location`, plus
+   the shoot/placement decisions. Find out what Finalize actually embeds today (XMP `PersonInImage` +
+   keywords is all the code comments claim) and widen it. **Check before assuming:** read the
+   exiftool write path in `main-mod/08-finalize-feedback.js` and see which of those fields reach the
+   file. Do NOT write metadata into the ARCHIVE originals without asking him — organize COPIES is the
+   established rule (see [[usb-app-filing-back]]).
+
+### ⚠ THE GROUP SHOT — multiple faces per frame, named ON the frame
+
+Owner: *"recognize multiple people per frame … if there are more than one unconfirmed it should have a
+thumbnail with that section of the video and I should be able to click each face and name them. Do this
+smartly because I like the current system just build it smart."*
+
+`detectAllFaces` **already found everyone in a frame.** All the app ever kept was a 144px crop per
+person, so a frame with four people became four disembodied heads and the shot they came from was
+thrown away. Now the best group frame per clip (most faces; size breaks the tie) is kept with a box per
+face, and the review grid shows it as a clickable scene.
+
+**Built on the existing system, not beside it** — that was the instruction, and it is also what keeps
+it correct:
+
+- Clicking a face renders **`cardHTML(cl)` inline** — the very same card, with its suggestion, chips
+  and "Who is this?" input. `wire()` binds it automatically because it queries the whole scroll for
+  `.face-grid-card-item`. **There is not one line of duplicate naming logic.** Don't add any.
+- A face shown on the shot is **removed from the loose grid below** (`onScene`) — one person, one
+  place to name them.
+- A scene face re-links to its cluster **by DESCRIPTOR, never a stored index**: clusters are rebuilt
+  from `faces-pending.json` on every reopen and merged across scans, so any index written down points
+  at a different person next time.
+- The frame is a ~1100px JPEG, so it goes to `faces/` through **the same `saveFaceCrop` path** as every
+  crop; only the `file://` ref + boxes + descriptors live in `face-scenes.json`. **`gcFaceCrops()` must
+  keep them** (`ensureStore('ai.faceScenes')` + `note(s.img)`) — miss that and the GC deletes every
+  frame the first time it runs while the store still points at them.
+
+**Verified in the RUNNING app** (Electron under WSLg, Playwright, a real 6-face clip): 4 boxes on the
+real frame, click → inline card, type a name → box turns green + counter drops, the person lands in
+`people.json` **and the clip is tagged `people:['Josiah']`** — which is what feeds the description.
+
+**Two things left open by that verification:**
+
+- **Reopening under-reports the shot.** `_serializePending` drops `done` clusters, so on reopen the
+  already-named faces cannot re-link and their boxes vanish: the same frame that said *"4 people · 4
+  still to name"* comes back as *"2 people · 2 still to name"*. No data loss — but the count describes
+  live clusters, not the faces in the frame, and the green "already did this one" context is lost.
+- **Only 4 of 6 visible faces were boxed.** NOT caused by this change (the per-person path uses the
+  identical filters), it is the pre-existing detector gate — `minSide = max(64, w*0.055)` and
+  `score < 0.55`, against a frame already downscaled to 1100px. If he complains that someone is
+  missing from a shot, that is where to look, not in the scene code.
+
+### ⚠ HOW TO DRIVE THE REAL APP FROM WSL (no card, no hardware)
+
+The GUI *can* be driven end-to-end here, and it is worth doing — it found both items above.
+
+- Playwright's `_electron.launch({ args: ['.'], executablePath: node_modules/electron/dist/electron })`,
+  with `ELECTRON_RUN_AS_NODE` deleted from the env (VS Code leaks it — see `dev.sh`).
+- Drive detection is Windows-only, so the home screen offers **"Choose drive…"** (`#manualPickBtn` →
+  `drive:pick`, whose own comment says *"fallback / testing without hardware"*). Stub **only**
+  `dialog.showOpenDialog` via `app.evaluate(({dialog}) => …)` and point it at a folder with clips.
+  Then `#startFlowBtn` → the clips list. Faces: **Edit ▸ AI ▸ People & faces… ▸ Scan clips**
+  (`.menu-trigger[data-menu="edit"]`, hover `AI`, then the item).
+- **Gotchas that cost real time:** a full-page `win.screenshot()` HANGS under WSLg — screenshot the
+  ELEMENT (`.face-grid-card`) instead. Attaching a CDP session KILLS the window. `import -window root`
+  does not work under WSLg.
+- **⚠ `XDG_CONFIG_HOME` does NOT isolate the stores.** `STORE_DIR` is
+  `process.env.APPDATA || ~/AppData/Roaming/…` (`main-mod/01-core.js`), so a test run writes into
+  **`~/AppData/Roaming/USB SD Auto-Action/`** for real. Set `APPDATA` to a temp dir if you want
+  isolation. (A verification run has already left a test person "Josiah" + a test clip's faces there;
+  it is the Linux dev store, not his Windows data, but clear it if it gets in the way.)
+
 ### ⚠ LEARNING FROM HIS CORRECTIONS — and why "just append it" would have changed nothing
 
 The few-shot pairs the model is shown (`ai.styleExamples`) could only ever be written by the two BULK

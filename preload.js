@@ -112,6 +112,8 @@ contextBridge.exposeInMainWorld('api', {
   aiLearnNames: (payload) => ipcRenderer.invoke('ai:learnNames', payload),
   aiLearnEdits: (edits) => ipcRenderer.invoke('ai:learnEdits', edits),
   aiRecordStyleCorrection: (pair) => ipcRenderer.invoke('ai:recordStyleCorrection', pair),
+  getFaceScenes: () => ipcRenderer.invoke('faces:getScenes'),
+  saveFaceScenes: (list) => ipcRenderer.invoke('faces:saveScenes', list),
   aiAddMemories: (rules) => ipcRenderer.invoke('ai:addMemories', rules),
   aiReplaceMemories: (rules) => ipcRenderer.invoke('ai:replaceMemories', rules),
   aiConsolidateMemories: () => ipcRenderer.invoke('ai:consolidateMemories'),

@@ -9089,15 +9089,21 @@ function cropFace(src, box) {
 }
 async function detectFacesForClip(clip, onFrame) {
   const ready = await ensureFaceModels();
-  if (!ready.ok) return { ready: false, error: ready.error, faces: [] };
+  if (!ready.ok) return { ready: false, error: ready.error, faces: [], scene: null };
   const fa = ready.fa;
   // faces:frames samples the WHOLE clip (1 frame every faceInterval seconds). We run
   // detection on each frame and merge faces that recur across frames (so one person
   // seen in many frames becomes ONE entry, keeping the biggest/clearest crop).
   const r = await window.api.facesFrames({ sourcePath: clip.sourcePath });
   const frames = (r && r.ok && Array.isArray(r.frames)) ? r.frames : [];
-  if (!frames.length) return { ready: true, faces: [] };
+  if (!frames.length) return { ready: true, faces: [], scene: null };
   const collected = [];   // {descriptor, thumb, area}
+  // THE GROUP SHOT. detectAllFaces already finds everyone in a frame — but all we ever kept was a
+  // 144px crop per person, so a frame with three people became three disembodied heads and the shot
+  // they came from was thrown away. Keep the best one: the frame showing the MOST faces at once
+  // (ties broken by how big they are, i.e. how nameable). One frame per clip — a whole clip's worth
+  // of frames is far too much to hold or persist.
+  let scene = null;
   for (let fi = 0; fi < frames.length; fi += 1) {
     if (faceScanAborted) break;
     if (onFrame) onFrame(fi + 1, frames.length);
@@ -9112,6 +9118,7 @@ async function detectFacesForClip(clip, onFrame) {
     let dets = [];
     // eslint-disable-next-line no-await-in-loop
     try { dets = await fa.detectAllFaces(src.el, new fa.SsdMobilenetv1Options({ minConfidence: 0.5 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; }
+    const inFrame = [];   // everyone visible in THIS frame, together
     for (const d of dets) {
       const box = d.detection.box; const area = box.width * box.height;
       // Skip faces that are too SMALL or low-confidence — their descriptors are noisy
@@ -9120,12 +9127,61 @@ async function detectFacesForClip(clip, onFrame) {
       if (box.width < minSide || box.height < minSide) continue;
       if ((d.detection.score || 0) < 0.55) continue;
       const desc = Array.from(d.descriptor);
+      const thumb = cropFace(src, box);
+      inFrame.push({ descriptor: desc, thumb, area, box: { x: box.x, y: box.y, width: box.width, height: box.height } });
       const existing = collected.find((c) => faceDist(c.descriptor, desc) < 0.45);
-      if (existing) { if (area > existing.area) { existing.thumb = cropFace(src, box); existing.area = area; existing.descriptor = desc; } }
-      else collected.push({ descriptor: desc, thumb: cropFace(src, box), area });
+      if (existing) { if (area > existing.area) { existing.thumb = thumb; existing.area = area; existing.descriptor = desc; } }
+      else collected.push({ descriptor: desc, thumb, area });
+    }
+    // Boxes are in `src` space, so the image we keep must be too — that is the whole reason faceSource
+    // exists. When nothing was scaled, src.el IS the <img> and the original frame already matches; only
+    // an over-large PHOTO gets re-encoded off the scaled canvas.
+    if (inFrame.length >= 2) {
+      const score = inFrame.length * 1e9 + inFrame.reduce((s, f) => s + f.area, 0);
+      if (!scene || score > scene.score) {
+        let sceneImg = frames[fi];
+        if (src.el !== img) { try { sceneImg = src.el.toDataURL('image/jpeg', 0.82); } catch { sceneImg = ''; } }
+        if (sceneImg) {
+          scene = { score, img: sceneImg, w: src.w, h: src.h, faces: inFrame.map((f) => ({ descriptor: f.descriptor, box: f.box })) };
+        }
+      }
     }
   }
-  return { ready: true, faces: collected.map((c) => ({ descriptor: c.descriptor, thumb: c.thumb })) };
+  return {
+    ready: true,
+    faces: collected.map((c) => ({ descriptor: c.descriptor, thumb: c.thumb })),
+    scene: scene ? { img: scene.img, w: scene.w, h: scene.h, faces: scene.faces } : null,
+  };
+}
+
+// --- THE GROUP SHOTS ------------------------------------------------------------------------
+//
+// Owner: "if there are more than one unconfirmed it should have a thumbnail with that section of the
+// video and I should be able to click each face and name them."
+//
+// Held module-level rather than threaded through four call sites (scanFacesForClips, collectClipFaces
+// ×2, and the reopen-a-saved-review path). Cumulative and persisted exactly like the pending clusters
+// are: a scan MERGES into what is already waiting instead of replacing it.
+let faceScenes = [];
+let _scenesLoaded = false;
+async function ensureFaceScenes() {
+  if (_scenesLoaded) return faceScenes;
+  try { faceScenes = (await window.api.getFaceScenes()) || []; } catch { faceScenes = []; }
+  _scenesLoaded = true;
+  return faceScenes;
+}
+// One scene per clip — a second scan of the same clip replaces its old group shot rather than
+// stacking another copy of the same faces next to it.
+async function noteFaceScene(clip, scene) {
+  if (!scene || !Array.isArray(scene.faces) || scene.faces.length < 2) return;
+  await ensureFaceScenes();
+  const key = clipKey(clip);
+  const rec = { clipKey: key, name: clip.name || '', img: scene.img, w: scene.w, h: scene.h, faces: scene.faces };
+  const at = faceScenes.findIndex((s) => s && s.clipKey === key);
+  if (at >= 0) faceScenes[at] = rec; else faceScenes.push(rec);
+}
+function saveFaceScenesNow() {
+  try { return window.api.saveFaceScenes(faceScenes); } catch { return Promise.resolve(); }
 }
 
 // Detect faces in one clip and accumulate them into `clusters` (the shape
@@ -9146,6 +9202,7 @@ async function collectClipFaces(clip, clusters, keys) {
   let fr = null;
   pushActivity(`Scanning ${clip.name} for faces…`, 'face');
   try { fr = await detectFacesForClip({ sourcePath: clip.sourcePath }, (fi, ft) => { if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); }); } catch { return 0; }
+  try { await noteFaceScene(clip, fr && fr.scene); } catch { /* the group shot is a bonus, never a blocker */ }
   const nFaces = (fr && fr.faces || []).length;
   pushActivity(nFaces ? `Detected ${nFaces} face${nFaces !== 1 ? 's' : ''} in ${clip.name}` : `No faces in ${clip.name}`, 'face');
   for (const f of (fr && fr.faces) || []) {
@@ -9349,6 +9406,7 @@ async function scanFacesForClips(clipList, opts = {}) {
   // clustered before the failure is kept: the review grid below is cumulative by design.
   try {
     clusters = await loadPendingFaces();
+    await ensureFaceScenes();   // cumulative, exactly like the clusters — a scan merges, never replaces
     for (const clip of toScan) {
       if (faceScanAborted) break;
       const ci = state.scannedFiles.indexOf(clip);   // the live scan overlay on the card
@@ -9358,6 +9416,9 @@ async function scanFacesForClips(clipList, opts = {}) {
       // eslint-disable-next-line no-await-in-loop
       const res = await detectFacesForClip(clip, (fi, ft) => { setTask('faces', 'Face scan', done + 1, toScan.length, `frame ${fi}/${ft}`, clip.name); if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); });
       markClipAnalyzing(ci, false);
+      // eslint-disable-next-line no-await-in-loop
+      await noteFaceScene(clip, res.scene);   // the frame that shows them TOGETHER — see noteFaceScene
+      if (res.scene) pushActivity(`${res.scene.faces.length} people in one shot — you can name them on the frame`, 'face');
       pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
       // Remember this clip was scanned (even if nothing matched) so we never re-nag,
       // and PERSIST it now so a mid-stream cutoff still remembers what's done.
@@ -9407,6 +9468,7 @@ async function scanFacesForClips(clipList, opts = {}) {
 async function showFaceReviewGrid(clusters, clipList, autoCount) {
   let people = [];
   try { people = await window.api.getPeople(); } catch { people = []; }
+  await ensureFaceScenes();   // the group shots — reopening a saved review must show them too
   return new Promise((resolveGrid) => {
   const names = people.map((p) => p.name);
   // Resolve a cluster's clipKeys back to clips by BOTH the stable fingerprint and the absolute
@@ -9487,22 +9549,92 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     if (!list.length) return '';
     return `<div class="fg-section">${escapeHtml(title)} <span class="fg-count">${list.length}</span></div><div class="face-grid">${list.map(cardHTML).join('')}</div>`;
   }
+
+  // --- THE GROUP SHOT ---------------------------------------------------------------------
+  //
+  // "if there are more than one unconfirmed it should have a thumbnail with that section of the video
+  // and I should be able to click each face and name them."
+  //
+  // A scene face is linked back to its cluster BY DESCRIPTOR, not by a stored index: clusters are
+  // rebuilt from faces-pending.json on every reopen and merged across scans, so any index we wrote
+  // down would silently point at the wrong person the next time round.
+  const clusterOf = (desc) => clusters.findIndex((c) => c && !c.skipped && faceDist(c.descriptor, desc) < 0.5);
+  const unresolved = (ci) => ci >= 0 && clusters[ci] && !clusters[ci].done && !clusters[ci].skipped;
+
+  function liveScenes() {
+    return faceScenes
+      .map((s) => ({ ...s, cis: (s.faces || []).map((f) => clusterOf(f.descriptor)) }))
+      // Two or more faces we can still act on, at least one of them unnamed. Once they are ALL named
+      // the shot has done its job and drops away, leaving the tidy grid he already likes.
+      .filter((s) => s.cis.filter((ci) => ci >= 0).length >= 2 && s.cis.some(unresolved));
+  }
+
+  function sceneCardHTML(s, si) {
+    const boxes = s.faces.map((f, fi) => {
+      const ci = s.cis[fi];
+      if (ci < 0) return '';                       // that face was skipped as "not a person"
+      const cl = clusters[ci];
+      const L = (f.box.x / s.w) * 100; const T = (f.box.y / s.h) * 100;
+      const W = (f.box.width / s.w) * 100; const H = (f.box.height / s.h) * 100;
+      const named = cl.done ? cl.assignedName : '';
+      const cls = ['fsc-box', named ? 'is-named' : 'is-open', s._sel === fi ? 'is-sel' : ''].filter(Boolean).join(' ');
+      const label = named || (cl.suggest && !cl.rejected ? `${cl.suggest.name}?` : '?');
+      return `<button class="${cls}" data-si="${si}" data-fi="${fi}"
+        style="left:${L}%;top:${T}%;width:${W}%;height:${H}%"
+        title="${escapeAttr(named || 'Click to name')}"><span class="fsc-tag">${escapeHtml(label)}</span></button>`;
+    }).join('');
+
+    const left = s.cis.filter(unresolved).length;
+    const sel = (s._sel != null && s.cis[s._sel] >= 0) ? clusters[s.cis[s._sel]] : null;
+    return `<div class="face-scene">
+      <div class="fsc-photo"><img src="${escapeAttr(s.img)}" alt=""/>${boxes}</div>
+      <div class="fsc-bar muted small">${escapeHtml(s.name || 'this shot')} · ${s.cis.filter((ci) => ci >= 0).length} people · ${left ? `${left} still to name — click a face` : 'all named ✓'}</div>
+      ${sel ? `<div class="fsc-pick">${cardHTML(sel)}</div>` : ''}
+    </div>`;
+  }
+
   function render() {
-    const live = clusters.filter((c) => !c.skipped);
+    const scenes = liveScenes();
+    // A face being named ON the group shot must not ALSO sit in the grid below as a loose head — one
+    // person, one place to name them.
+    const onScene = new Set(scenes.flatMap((s) => s.cis).filter((ci) => ci >= 0));
+    const live = clusters.filter((c) => !c.skipped && !onScene.has(c._i));
     const suggested = live.filter((c) => !c.done && c.suggest && !c.rejected);
     const fresh = live.filter((c) => !c.done && (!c.suggest || c.rejected));
     const recognized = live.filter((c) => c.done && c.autoMatched);
     const confirmed = live.filter((c) => c.done && !c.autoMatched);
-    scroll.innerHTML = section('Suggested — confirm or correct', suggested)
+
+    const sceneHTML = scenes.length
+      ? `<div class="fg-section">Who's in this shot? <span class="fg-count">${scenes.length}</span></div>${scenes.map(sceneCardHTML).join('')}`
+      : '';
+    scroll.innerHTML = sceneHTML
+      + section('Suggested — confirm or correct', suggested)
       + section('New faces — who is this?', fresh)
       + section('Recognized automatically — fix any that are wrong', recognized)
       + section('Just confirmed', confirmed);
-    if (!live.length) scroll.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">All faces handled ✓</p>';
+    if (!scenes.length && !live.length) scroll.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">All faces handled ✓</p>';
     wire();
+    wireScenes(scenes);
     schedulePendingSave(clusters);   // persist the review after every change
-    const anySuggested = suggested.length > 0;
+    saveFaceScenesNow();
+    const anySuggested = suggested.length > 0 || scenes.some((s) => s.cis.some((ci) => unresolved(ci) && clusters[ci].suggest && !clusters[ci].rejected));
     const btn = ov.querySelector('.fg-confirm-all');
     if (btn) btn.style.display = anySuggested ? '' : 'none';
+  }
+
+  // Clicking a face selects it; the SAME card he already uses (suggestion, chips, "Who is this?"
+  // input) opens underneath the photo. wire() binds it automatically — it queries the whole scroll for
+  // `.face-grid-card-item`, so there is not one line of duplicate naming logic here.
+  function wireScenes(scenes) {
+    scroll.querySelectorAll('.fsc-box').forEach((b) => {
+      b.addEventListener('click', () => {
+        const s = faceScenes.find((x) => x.clipKey === scenes[Number(b.dataset.si)].clipKey);
+        if (!s) return;
+        const fi = Number(b.dataset.fi);
+        s._sel = (s._sel === fi) ? null : fi;      // click the same face again to close it
+        render();
+      });
+    });
   }
   // Smooth micro-tint over the face before the action lands: blue for accept,
   // red for reject. The action fires mid-flash so it feels instant but soft.

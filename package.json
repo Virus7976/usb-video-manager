@@ -75,5 +75,10 @@
       "createStartMenuShortcut": true,
       "shortcutName": "USB SD Auto-Action"
     }
-  }
+  },
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "keywords": []
 }

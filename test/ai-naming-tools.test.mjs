@@ -218,8 +218,20 @@ test('get_naming_style tells the model WHO face recognition found', async () => 
   const style = app.get('AI_TOOLS').get_naming_style;
   const r = plain(await style.run({}, { subjects: REAL_SUBJECTS, people: ['Josiah'], clipText: '' }));
   assert.deepEqual(r.people_recognised_in_this_clip, ['Josiah']);
-  assert.match(r.people_note, /Use their NAMES in the description/);
-  assert.match(r.people_note, /Never "men", "a boy" or "someone"/);
+  assert.match(r.people_note, /Use their NAME in the description/);
+  assert.match(r.people_note, /Never "a man", "a boy" or "someone"/);
+});
+
+test('⚠ EVERY recognised person is named, not just the first', async () => {
+  // He shoots his family — two and three people in a shot is the normal case, and his own names say
+  // so (`vloghead-owenpack-josiahpack-insidehouse`). A note that said "use their NAMES" while the model
+  // only ever wrote one of them was half a feature.
+  const style = app.get('AI_TOOLS').get_naming_style;
+  const r = plain(await style.run({}, { subjects: REAL_SUBJECTS, people: ['Josiah', 'Liam'], clipText: '' }));
+  assert.deepEqual(r.people_recognised_in_this_clip, ['Josiah', 'Liam']);
+  assert.match(r.people_note, /Name EVERY one of them/);
+  assert.match(r.people_note, /Josiah, Liam/, 'and it names them, in order');
+  assert.match(r.people_note, /Never "men", "two people" or "someone"/);
 });
 
 test('…and says NOTHING when nobody was recognised', async () => {

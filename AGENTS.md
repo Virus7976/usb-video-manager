@@ -438,9 +438,49 @@ them**. Three entry points close that:
   against his real footage: 6/6 tool calls, correct protocol (`get_naming_style` → `get_shoot_context`
   → `set_clip_name`), 0 invented subjects, 0 camera-words, 80% subject match. See the two sections
   above for the numbers and what they cost.
-- **Grow `styleExamples` from every user correction** (`learnFromLibrary` seeds them from the
-  archive, and `recordAiEdit` now marks corrections with `_userNamed`, but the two aren't joined up).
-- Delete the dead `ai:batchQuestions` / `ai:parseRoute` handlers.
+- ~~**Grow `styleExamples` from every user correction.**~~ **DONE** — see the section below.
+- ~~Delete the dead `ai:batchQuestions` / `ai:parseRoute` handlers.~~ **DONE.** Both are gone, with
+  their preload surface. `ai:parseRules` supersedes `parseRoute`; the per-subject loop in the renderer
+  supersedes `batchQuestions` (the questions worth asking are the ones the DATA raises, not the ones a
+  7B model can think of). `DESCRIPTOR_WORDS` sat between them and is still live — don't take it too.
+
+### ⚠ LEARNING FROM HIS CORRECTIONS — and why "just append it" would have changed nothing
+
+The few-shot pairs the model is shown (`ai.styleExamples`) could only ever be written by the two BULK
+MINERS — `learnFromLibrary` / `learnNames` — which read old filenames off disk. When Jake looked at a
+name the AI produced and typed a better one, that pair was distilled into an English rule and then
+**thrown away.** The single cleanest signal in the whole system — him saying *"you wrote X, it is
+actually Y"* — never reached the model as an example. `recordAiEdit` already marked the clip
+`_userNamed`; nothing carried the NAME.
+
+`recordStyleCorrection` / `styleFewShot` (`main-mod/10-ai-tools.js`) close it. Three things hold it up,
+and each one is a trap if you undo it:
+
+1. **A SEPARATE STORE** (`config.ai.styleCorrections`). Corrections must NOT be appended to
+   `styleExamples`: `learnFromLibrary` **assigns over** that array (there is a test pinning *"replaced,
+   not appended"*), so one click of the health card's "learn my style" fix would have silently erased
+   every correction he had ever made. Mined examples are derived data and can be rebuilt from disk at
+   any time. A name he typed once cannot.
+
+2. **CORRECTIONS WIN THE SLICE.** The few-shot is cut to 12; the mined set holds up to 60. **Measured:
+   a correction appended to the end of that list appears at index 60 and is cut — it would have been
+   stored, saved, and never once shown to the model.** They go FIRST, freshest first.
+
+3. **…BUT ONLY HALF OF IT.** If he corrects twelve `vlog` clips in a row, twelve `vlog` examples would
+   crowd out every other subject and the model would forget `pov` and `calisthenics` exist —
+   `learnFromLibrary` deliberately spreads the mined examples ACROSS subjects for exactly that reason.
+   Corrections take at most half the budget; the mined diversity keeps the rest.
+
+**No `CAMERA_WORDS` filter on a correction, deliberately** — and that is the whole reason these are two
+stores and not one. That filter exists because 18% of his archive's descriptions were written by the
+OLD AI and a filename cannot say who typed it. Here it can: **he did, just now, to correct us.**
+Second-guessing his own correction would make the app disagree with the user about what the user
+prefers. `MARKER_SUBJECTS` still applies (`_delete_` is his junk marker, not a name).
+
+Both prompt sites (`get_naming_style` and the legacy giant prompt in `07`) now read through the one
+owner, `styleFewShot()` — two call sites reading `ai.styleExamples` directly is how one of them
+silently stops showing him his own corrections while the other keeps working.
+`test/ai-style-corrections.test.mjs` pins all of it.
 
 ### ⚠ THE SINGLE-GPU RULE — measured, and it constrains every AI design here
 

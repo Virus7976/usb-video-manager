@@ -330,7 +330,9 @@ function loadConfig() {
       multiPass: false,     // 3-pass reasoning (perceive → name → critique) — slower, better, opt-in
       learnFromEdits: true, // silently learn when the user changes an AI-suggested name
       memories: [],         // discrete learned preferences [{id,text,ts}] — injected into prompts
-      styleExamples: [],    // sample "subject / description" pairs learned from the user's own names
+      styleExamples: [],    // sample "subject / description" pairs MINED from the user's own filenames
+      styleCorrections: [], // pairs the user actually CORRECTED — kept apart because mining REPLACES
+                            // styleExamples, and these are the only copy (see recordStyleCorrection)
       feedbackLog: []       // raw feedback entries the user left
     },
     ui: { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false },
@@ -412,6 +414,7 @@ delete config.ai.memory;
 config.ai.memories = config.ai.memories.filter((m) => m && typeof m.text === 'string' && m.text.trim() && m.text.trim() !== '[object Object]');
 if (!Array.isArray(config.ai.feedbackLog)) config.ai.feedbackLog = [];
 if (!Array.isArray(config.ai.styleExamples)) config.ai.styleExamples = [];
+if (!Array.isArray(config.ai.styleCorrections)) config.ai.styleCorrections = [];
 
 // One-time SLIM of accumulated bloat. config.json is loaded at boot and rewritten
 // whole on every trivial save, so oversized append-mostly stores make the app slow to

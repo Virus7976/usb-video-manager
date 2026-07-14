@@ -111,6 +111,7 @@ contextBridge.exposeInMainWorld('api', {
   aiFeedback: (payload) => ipcRenderer.invoke('ai:feedback', payload),
   aiLearnNames: (payload) => ipcRenderer.invoke('ai:learnNames', payload),
   aiLearnEdits: (edits) => ipcRenderer.invoke('ai:learnEdits', edits),
+  aiRecordStyleCorrection: (pair) => ipcRenderer.invoke('ai:recordStyleCorrection', pair),
   aiAddMemories: (rules) => ipcRenderer.invoke('ai:addMemories', rules),
   aiReplaceMemories: (rules) => ipcRenderer.invoke('ai:replaceMemories', rules),
   aiConsolidateMemories: () => ipcRenderer.invoke('ai:consolidateMemories'),
@@ -215,7 +216,6 @@ contextBridge.exposeInMainWorld('api', {
   aiVisionAdvice: () => ipcRenderer.invoke('ai:visionAdvice'),
   aiUseVisionModel: (name) => ipcRenderer.invoke('ai:useVisionModel', name),
   aiLearnFromLibrary: (dirs) => ipcRenderer.invoke('ai:learnFromLibrary', dirs),
-  aiBatchQuestions: (payload) => ipcRenderer.invoke('ai:batchQuestions', payload),
   aiAnswerSubjects: (payload) => ipcRenderer.invoke('ai:answerSubjects', payload),
 
   // People / face recognition (descriptors computed in the renderer via face-api.js)
@@ -242,7 +242,6 @@ contextBridge.exposeInMainWorld('api', {
   // Standing filing rules + plain-English rule parsing + per-clip analysis cache
   getRoutes: () => ipcRenderer.invoke('routes:get'),
   saveRoutes: (list) => ipcRenderer.invoke('routes:save', list),
-  aiParseRoute: (payload) => ipcRenderer.invoke('ai:parseRoute', payload),
   aiParseRules: (payload) => ipcRenderer.invoke('ai:parseRules', payload),
   getClipObs: () => ipcRenderer.invoke('clipObs:get'),
   saveClipObs: (payload) => ipcRenderer.invoke('clipObs:save', payload),

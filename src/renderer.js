@@ -2916,6 +2916,20 @@ function recordAiEdit(clip, field, newVal) {
   clip._userNamed = true;
   aiEdits.push({ field, from, to });
   clip[key] = '';             // record this correction only once
+
+  // …and keep the NAME HE TYPED, not just a rule distilled from it. Until now this correction went
+  // off to the model to be turned into an English rule and the pair itself was dropped — so the
+  // few-shot examples could only ever come from mining old filenames, and the app never actually
+  // showed the model the thing he had just told it. It is one pair, so both fields are read from the
+  // clip (this fires BEFORE the assignment at the call sites — hence `to` for the field in hand).
+  const pair = {
+    subject: field === 'subject' ? to : (clip.subject || ''),
+    description: field === 'description' ? to : (clip.description || ''),
+  };
+  if (pair.subject && pair.description) {
+    // Fire-and-forget: an unreachable main process must never block the user typing a name.
+    Promise.resolve(window.api.aiRecordStyleCorrection(pair)).catch(() => {});
+  }
   maybeFlushEdits();
 }
 function maybeFlushEdits(force) {

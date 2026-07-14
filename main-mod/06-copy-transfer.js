@@ -224,6 +224,12 @@ ipcMain.handle('prefs:set', (_evt, patch) => {
             .filter((m) => m.text)
           : (Array.isArray(prev.memories) ? prev.memories : []),
         styleExamples: Array.isArray(prev.styleExamples) ? prev.styleExamples : [],
+        // Carried from `prev`, never patched from the dialog — the settings screen has no business
+        // editing what the user taught us by correcting a name. The `...prev` spread above would keep
+        // it anyway; naming it here normalises the type and makes the intent explicit, because this is
+        // the ONLY copy of those corrections (styleExamples can always be re-mined from disk; a
+        // correction he typed once cannot). There is a test.
+        styleCorrections: Array.isArray(prev.styleCorrections) ? prev.styleCorrections : [],
         feedbackLog: Array.isArray(prev.feedbackLog) ? prev.feedbackLog : []
       };
     }

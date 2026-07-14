@@ -499,7 +499,7 @@ defineTool('get_naming_style', {
   run: async (_args, ctx) => {
     const ai = config.ai || {};
     return {
-      examples: (ai.styleExamples || []).slice(0, 12),
+      examples: styleFewShot(12),          // his CORRECTIONS first, then the mined archive — see styleFewShot
       known_subjects: (ctx.subjects || []).slice(0, 30),
       preferences: selectMemories(ai.memories, ctx.clipText || '', 12).map((m) => m.text),
     };
@@ -1167,6 +1167,76 @@ ipcMain.handle('ai:learnFromLibrary', (_e, dirs) => {
     saveConfig();
     return r;
   } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
+// --- LEARN FROM WHAT HE ACTUALLY CORRECTS -----------------------------------------------
+//
+// The gap this closes: `styleExamples` was written by exactly two things — learnFromLibrary and
+// learnNames — and BOTH mine the archive in bulk and REPLACE the array. When Jake looked at a name
+// the AI produced and typed a better one, that pair — the single cleanest signal in the entire
+// system, him saying "you wrote X, it is actually Y" — was distilled into an English rule and then
+// THROWN AWAY. The one thing he'd expect "it learns from me" to mean was the one thing not kept.
+//
+// Three things make this work, and each one is a trap if you undo it:
+//
+// 1. A SEPARATE STORE. Corrections must NOT be appended to `styleExamples`: learnFromLibrary
+//    assigns over that array (there is a test pinning "replaced, not appended"), so one click of the
+//    health card would silently wipe every correction he had ever made. Mined examples are derived
+//    data and can be rebuilt from disk at any time; corrections are the ONLY copy of what he told us.
+//
+// 2. CORRECTIONS WIN THE SLICE. The few-shot is cut to 12. The mined set holds up to 60, so a
+//    correction appended to the end would never once reach the model — stored, and still ignored.
+//    They go FIRST.
+//
+// 3. …BUT ONLY HALF OF IT. If he corrects twelve vlog clips in a row, twelve vlog examples would
+//    crowd out every other subject and the model would forget `pov` and `calisthenics` exist —
+//    learnFromLibrary deliberately spreads the mined examples ACROSS subjects for exactly that
+//    reason. So corrections take at most half the budget; the mined diversity keeps the rest.
+const STYLE_CORRECTION_CAP = 40;
+
+function recordStyleCorrection(pair) {
+  const subject = aiSlug((pair && pair.subject) || '');
+  const description = aiSlug((pair && pair.description) || '');
+  if (!subject || !description) return { ok: false };            // half a name teaches half a lesson
+  // `_delete_` is his junk MARKER, not a name. It sails past every other filter (see MARKER_SUBJECTS)
+  // and would land in the few-shot as though `delete` were a thing he films.
+  if (MARKER_SUBJECTS.has(subject) || MARKER_SUBJECTS.has(description)) return { ok: false };
+  //
+  // NOTE: no CAMERA_WORDS filter here, and that is deliberate — it is the whole reason these are two
+  // stores and not one. That filter exists because 18% of the archive's descriptions were written by
+  // the OLD AI and mining filenames cannot tell his words from the machine's. Here authorship is not
+  // in doubt: he typed it, just now, to correct us. Second-guessing his own correction would make the
+  // app disagree with the user about what the user prefers.
+  const ai = config.ai || (config.ai = {});
+  if (!Array.isArray(ai.styleCorrections)) ai.styleCorrections = [];
+  const text = `${subject} / ${description}`;
+  const already = ai.styleCorrections.findIndex((c) => c && c.pair === text);
+  if (already >= 0) ai.styleCorrections.splice(already, 1);      // re-corrected → it is fresh again
+  ai.styleCorrections.push({ pair: text, ts: Date.now() });
+  if (ai.styleCorrections.length > STYLE_CORRECTION_CAP) {
+    ai.styleCorrections = ai.styleCorrections.slice(-STYLE_CORRECTION_CAP);   // newest wins
+  }
+  saveConfig();
+  return { ok: true, pair: text, count: ai.styleCorrections.length };
+}
+
+// THE single owner of the few-shot block. Both prompt sites (get_naming_style, and the legacy
+// giant-prompt path in 07) read through this, so they can never drift apart.
+function styleFewShot(limit) {
+  const ai = config.ai || {};
+  const cap = Math.max(1, Number(limit) || 12);
+  const corrections = (Array.isArray(ai.styleCorrections) ? ai.styleCorrections : [])
+    .slice(-Math.floor(cap / 2))              // most RECENT — his style now beats his style last year
+    .reverse()                                // freshest first: it is the one that must survive the cut
+    .map((c) => c && c.pair)
+    .filter(Boolean);
+  const mined = (Array.isArray(ai.styleExamples) ? ai.styleExamples : []);
+  return [...new Set([...corrections, ...mined])].slice(0, cap);
+}
+
+ipcMain.handle('ai:recordStyleCorrection', (_e, pair) => {
+  try { return recordStyleCorrection(pair || {}); }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 });
 
 // --- AI HEALTH — the things that were silently wrong ------------------------------------

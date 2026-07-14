@@ -332,7 +332,9 @@ function loadConfig() {
       multiPass: false,     // 3-pass reasoning (perceive → name → critique) — slower, better, opt-in
       learnFromEdits: true, // silently learn when the user changes an AI-suggested name
       memories: [],         // discrete learned preferences [{id,text,ts}] — injected into prompts
-      styleExamples: [],    // sample "subject / description" pairs learned from the user's own names
+      styleExamples: [],    // sample "subject / description" pairs MINED from the user's own filenames
+      styleCorrections: [], // pairs the user actually CORRECTED — kept apart because mining REPLACES
+                            // styleExamples, and these are the only copy (see recordStyleCorrection)
       feedbackLog: []       // raw feedback entries the user left
     },
     ui: { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false },
@@ -414,6 +416,7 @@ delete config.ai.memory;
 config.ai.memories = config.ai.memories.filter((m) => m && typeof m.text === 'string' && m.text.trim() && m.text.trim() !== '[object Object]');
 if (!Array.isArray(config.ai.feedbackLog)) config.ai.feedbackLog = [];
 if (!Array.isArray(config.ai.styleExamples)) config.ai.styleExamples = [];
+if (!Array.isArray(config.ai.styleCorrections)) config.ai.styleCorrections = [];
 
 // One-time SLIM of accumulated bloat. config.json is loaded at boot and rewritten
 // whole on every trivial save, so oversized append-mostly stores make the app slow to
@@ -1695,28 +1698,11 @@ function suggestLedgerMemory(clips) {
   return `\nPAST FILING MEMORY (projects you've already filed similar footage into — reuse the EXACT path when a clip matches one):\n${lines}\n`;
 }
 
-// Look at a batch summary and ask the user 2-4 SHORT clarifying questions whose
-// answers most reduce filing ambiguity (is a label a real project or a descriptor?
-// are different days separate projects? which client/category?). Each question may
-// carry a few tap-able suggested answers.
-ipcMain.handle('ai:batchQuestions', async (_e, payload) => {
-  const summary = String((payload && payload.summary) || '').trim();
-  const categories = (payload && payload.categories) || [];
-  const folders = (payload && payload.folders) || [];
-  if (!aiTextModel()) return { ok: false, error: 'No model selected' };
-  const folderList = folders.slice(0, 250).join('\n') || '(none)';
-  const prompt = `A videographer is about to file a batch of video clips. Here is what we know:\n${summary}\n\nTop-level categories: ${categories.join(' | ') || '(none)'}\n\nTheir EXISTING project folders (relative paths):\n${folderList}\n\nAsk ONLY the clarifying questions whose answer would actually CHANGE where a clip gets filed — as few as possible (0 to 6). Skip anything already determinable from the summary, the existing folders, or obvious context: do NOT ask about a subject that clearly matches an existing folder, and do NOT pad to hit a number. A question earns its place only by resolving a REAL filing ambiguity in THIS batch — e.g. whether a label like "vlog"/"timelapse" is a real project or just a descriptor, whether clips on different days are separate projects, who is in them, or which client/project an ambiguous subject belongs to. Merge near-duplicate ambiguities into one question.\nFor "hints" (tap-able suggested answers): when a question is about WHICH client or project something belongs to, the hints MUST be the ACTUAL matching folder NAMES from the list above — never placeholders like "Client A". For yes/no or project-vs-descriptor questions, use the obvious short options. Keep each question under ~14 words.\nReply STRICT JSON only: {"questions":[{"q":"<question>","hints":["<real option>","<real option>"]}]}.`;
-  try {
-    const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.3, timeout: 120000 }));
-    const arr = Array.isArray(o.questions) ? o.questions : (Array.isArray(o) ? o : []);
-    const questions = arr.map((x) => ({
-      q: String((x && (x.q || x.question)) || '').trim(),
-      hints: (Array.isArray(x && x.hints) ? x.hints : []).map((h) => String(h).trim()).filter(Boolean).slice(0, 5)
-    })).filter((x) => x.q).slice(0, 6);
-    if (!questions.length) return { ok: false, error: 'No questions' };
-    return { ok: true, questions };
-  } catch (err) { return { ok: false, error: err.message || String(err) }; }
-});
+// (`ai:batchQuestions` lived here: an LLM that invented clarifying questions to ask before filing.
+// It was DEAD — the renderer replaced it with a plain loop over the real subjects, which is both
+// cheaper and better, because the questions worth asking are the ones the DATA raises, not the ones
+// a 7B model can think of. Placement now asks per-SHOOT and remembers the answer forever, so the
+// question that survives is the one the app cannot answer itself. Deleted rather than left to rot.)
 
 // Analyze the batch's subjects and SUGGEST an answer for each (which folder, or
 // "descriptor" / "delete" / "unsorted") — used to pre-fill the wizard's per-subject
@@ -1778,27 +1764,9 @@ const DESCRIPTOR_WORDS = new Set([
   'establishing', 'drone', 'aerial', 'gimbal', 'handheld'
 ]);
 
-// Parse a plain-English filing instruction into a structured route, using the
-// real folder tree so the destination path matches what already exists.
-ipcMain.handle('ai:parseRoute', async (_e, payload) => {
-  const text = String((payload && payload.text) || '').trim();
-  const folders = (payload && payload.folders) || [];
-  if (!text) return { ok: false, error: 'Nothing to parse' };
-  if (!aiTextModel()) return { ok: false, error: 'No model selected (set one in AI settings)' };
-  const folderList = folders.slice(0, 250).join('\n') || '(no existing folders)';
-  const prompt = `Existing project folders (relative paths):\n${folderList}\n\nThe user is teaching ONE video-filing rule, in plain English:\n"${text}"\n\nDerive EVERY value below from the user's instruction above — do NOT reuse the placeholder text.\n- "name": a short label for this rule.\n- "match": the lowercase subject keywords (and obvious synonyms/typos) that should trigger it.\n- "dest": the destination folder PATH. If the user names a folder that exists in the list above, use that exact path; otherwise build a sensible new path under the right category.\n- "byDay": true only if the user wants each day in its own dated subfolder. When byDay is true, do NOT put a date in "dest" — the app adds the dated subfolder itself.\nReply STRICT JSON only in this exact shape (replace every <…> placeholder): {"name":"<short label>","match":["<keyword>","<synonym>"],"dest":"<folder path>","byDay":<true or false>}.`;
-  try {
-    const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.1, timeout: 120000 }));
-    const route = {
-      name: String(o.name || '').slice(0, 80),
-      match: (Array.isArray(o.match) ? o.match : String(o.match || '').split(',')).map((s) => String(s).trim().toLowerCase()).filter(Boolean),
-      dest: String(o.dest || o.Dest || o.path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/\/\d{4}-\d{2}-\d{2}$/, '').trim(),
-      byDay: !!(o.byDay || o.byday || o.perDay)
-    };
-    if (!route.match.length || !route.dest) return { ok: false, error: 'Could not understand that — try naming the subject and the folder.' };
-    return { ok: true, route };
-  } catch (err) { return { ok: false, error: err.message || String(err) }; }
-});
+// (`ai:parseRoute` lived here: parse ONE plain-English filing rule. Dead — `ai:parseRules` below
+// supersedes it, parsing one or more rules and telling routes apart from descriptors. Two parsers for
+// the same sentence is one too many, and the unused one is the one that drifts.)
 
 // Parse a plain-English instruction into ONE OR MORE rules, telling apart real
 // PROJECT keywords (route → a folder) from DESCRIPTORS (vlog/timelapse/b-roll —
@@ -3502,6 +3470,12 @@ ipcMain.handle('prefs:set', (_evt, patch) => {
             .filter((m) => m.text)
           : (Array.isArray(prev.memories) ? prev.memories : []),
         styleExamples: Array.isArray(prev.styleExamples) ? prev.styleExamples : [],
+        // Carried from `prev`, never patched from the dialog — the settings screen has no business
+        // editing what the user taught us by correcting a name. The `...prev` spread above would keep
+        // it anyway; naming it here normalises the type and makes the intent explicit, because this is
+        // the ONLY copy of those corrections (styleExamples can always be re-mined from disk; a
+        // correction he typed once cannot). There is a test.
+        styleCorrections: Array.isArray(prev.styleCorrections) ? prev.styleCorrections : [],
         feedbackLog: Array.isArray(prev.feedbackLog) ? prev.feedbackLog : []
       };
     }
@@ -4604,7 +4578,7 @@ function aiNamingSpec(ai, opts) {
   if (wantTags) rules.push('tags: 3-8 SHORT lowercase keyword tags for browsing/searching this clip later — concrete things VISIBLE in the footage: objects, setting/place, activity, season/time-of-day, mood. Each tag is 1-2 plain words (e.g. "backyard", "golden hour", "power tools", "winter"). Do NOT just repeat the subject/description words; add the broader searchable concepts. No people names (handled separately).');
   if (subjHint) rules.push(`Prefer these known subjects when they genuinely fit: [${subjHint}].`);
   const rulesText = rules.map((r) => `- ${r}`).join('\n');
-  const exs = (Array.isArray(ai.styleExamples) ? ai.styleExamples : []).slice(0, 12);
+  const exs = styleFewShot(12);   // one owner: his corrections first, then the mined archive
   // `exs` was capped at 12; `mems` was capped at NOTHING. The store holds up to 300 memories, so a
   // well-used install injected ~18 KB of English rules into EVERY clip's prompt, on a 7B model. A
   // 7B model does not follow 300 rules — it drowns in them, and the ones that matter get buried.
@@ -7714,7 +7688,7 @@ defineTool('get_naming_style', {
   run: async (_args, ctx) => {
     const ai = config.ai || {};
     return {
-      examples: (ai.styleExamples || []).slice(0, 12),
+      examples: styleFewShot(12),          // his CORRECTIONS first, then the mined archive — see styleFewShot
       known_subjects: (ctx.subjects || []).slice(0, 30),
       preferences: selectMemories(ai.memories, ctx.clipText || '', 12).map((m) => m.text),
     };
@@ -8382,6 +8356,76 @@ ipcMain.handle('ai:learnFromLibrary', (_e, dirs) => {
     saveConfig();
     return r;
   } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+});
+
+// --- LEARN FROM WHAT HE ACTUALLY CORRECTS -----------------------------------------------
+//
+// The gap this closes: `styleExamples` was written by exactly two things — learnFromLibrary and
+// learnNames — and BOTH mine the archive in bulk and REPLACE the array. When Jake looked at a name
+// the AI produced and typed a better one, that pair — the single cleanest signal in the entire
+// system, him saying "you wrote X, it is actually Y" — was distilled into an English rule and then
+// THROWN AWAY. The one thing he'd expect "it learns from me" to mean was the one thing not kept.
+//
+// Three things make this work, and each one is a trap if you undo it:
+//
+// 1. A SEPARATE STORE. Corrections must NOT be appended to `styleExamples`: learnFromLibrary
+//    assigns over that array (there is a test pinning "replaced, not appended"), so one click of the
+//    health card would silently wipe every correction he had ever made. Mined examples are derived
+//    data and can be rebuilt from disk at any time; corrections are the ONLY copy of what he told us.
+//
+// 2. CORRECTIONS WIN THE SLICE. The few-shot is cut to 12. The mined set holds up to 60, so a
+//    correction appended to the end would never once reach the model — stored, and still ignored.
+//    They go FIRST.
+//
+// 3. …BUT ONLY HALF OF IT. If he corrects twelve vlog clips in a row, twelve vlog examples would
+//    crowd out every other subject and the model would forget `pov` and `calisthenics` exist —
+//    learnFromLibrary deliberately spreads the mined examples ACROSS subjects for exactly that
+//    reason. So corrections take at most half the budget; the mined diversity keeps the rest.
+const STYLE_CORRECTION_CAP = 40;
+
+function recordStyleCorrection(pair) {
+  const subject = aiSlug((pair && pair.subject) || '');
+  const description = aiSlug((pair && pair.description) || '');
+  if (!subject || !description) return { ok: false };            // half a name teaches half a lesson
+  // `_delete_` is his junk MARKER, not a name. It sails past every other filter (see MARKER_SUBJECTS)
+  // and would land in the few-shot as though `delete` were a thing he films.
+  if (MARKER_SUBJECTS.has(subject) || MARKER_SUBJECTS.has(description)) return { ok: false };
+  //
+  // NOTE: no CAMERA_WORDS filter here, and that is deliberate — it is the whole reason these are two
+  // stores and not one. That filter exists because 18% of the archive's descriptions were written by
+  // the OLD AI and mining filenames cannot tell his words from the machine's. Here authorship is not
+  // in doubt: he typed it, just now, to correct us. Second-guessing his own correction would make the
+  // app disagree with the user about what the user prefers.
+  const ai = config.ai || (config.ai = {});
+  if (!Array.isArray(ai.styleCorrections)) ai.styleCorrections = [];
+  const text = `${subject} / ${description}`;
+  const already = ai.styleCorrections.findIndex((c) => c && c.pair === text);
+  if (already >= 0) ai.styleCorrections.splice(already, 1);      // re-corrected → it is fresh again
+  ai.styleCorrections.push({ pair: text, ts: Date.now() });
+  if (ai.styleCorrections.length > STYLE_CORRECTION_CAP) {
+    ai.styleCorrections = ai.styleCorrections.slice(-STYLE_CORRECTION_CAP);   // newest wins
+  }
+  saveConfig();
+  return { ok: true, pair: text, count: ai.styleCorrections.length };
+}
+
+// THE single owner of the few-shot block. Both prompt sites (get_naming_style, and the legacy
+// giant-prompt path in 07) read through this, so they can never drift apart.
+function styleFewShot(limit) {
+  const ai = config.ai || {};
+  const cap = Math.max(1, Number(limit) || 12);
+  const corrections = (Array.isArray(ai.styleCorrections) ? ai.styleCorrections : [])
+    .slice(-Math.floor(cap / 2))              // most RECENT — his style now beats his style last year
+    .reverse()                                // freshest first: it is the one that must survive the cut
+    .map((c) => c && c.pair)
+    .filter(Boolean);
+  const mined = (Array.isArray(ai.styleExamples) ? ai.styleExamples : []);
+  return [...new Set([...corrections, ...mined])].slice(0, cap);
+}
+
+ipcMain.handle('ai:recordStyleCorrection', (_e, pair) => {
+  try { return recordStyleCorrection(pair || {}); }
+  catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
 });
 
 // --- AI HEALTH — the things that were silently wrong ------------------------------------

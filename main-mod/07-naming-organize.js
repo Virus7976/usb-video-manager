@@ -310,7 +310,7 @@ function aiNamingSpec(ai, opts) {
   if (wantTags) rules.push('tags: 3-8 SHORT lowercase keyword tags for browsing/searching this clip later — concrete things VISIBLE in the footage: objects, setting/place, activity, season/time-of-day, mood. Each tag is 1-2 plain words (e.g. "backyard", "golden hour", "power tools", "winter"). Do NOT just repeat the subject/description words; add the broader searchable concepts. No people names (handled separately).');
   if (subjHint) rules.push(`Prefer these known subjects when they genuinely fit: [${subjHint}].`);
   const rulesText = rules.map((r) => `- ${r}`).join('\n');
-  const exs = (Array.isArray(ai.styleExamples) ? ai.styleExamples : []).slice(0, 12);
+  const exs = styleFewShot(12);   // one owner: his corrections first, then the mined archive
   // `exs` was capped at 12; `mems` was capped at NOTHING. The store holds up to 300 memories, so a
   // well-used install injected ~18 KB of English rules into EVERY clip's prompt, on a 7B model. A
   // 7B model does not follow 300 rules — it drowns in them, and the ones that matter get buried.

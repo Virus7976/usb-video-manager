@@ -360,28 +360,11 @@ function suggestLedgerMemory(clips) {
   return `\nPAST FILING MEMORY (projects you've already filed similar footage into — reuse the EXACT path when a clip matches one):\n${lines}\n`;
 }
 
-// Look at a batch summary and ask the user 2-4 SHORT clarifying questions whose
-// answers most reduce filing ambiguity (is a label a real project or a descriptor?
-// are different days separate projects? which client/category?). Each question may
-// carry a few tap-able suggested answers.
-ipcMain.handle('ai:batchQuestions', async (_e, payload) => {
-  const summary = String((payload && payload.summary) || '').trim();
-  const categories = (payload && payload.categories) || [];
-  const folders = (payload && payload.folders) || [];
-  if (!aiTextModel()) return { ok: false, error: 'No model selected' };
-  const folderList = folders.slice(0, 250).join('\n') || '(none)';
-  const prompt = `A videographer is about to file a batch of video clips. Here is what we know:\n${summary}\n\nTop-level categories: ${categories.join(' | ') || '(none)'}\n\nTheir EXISTING project folders (relative paths):\n${folderList}\n\nAsk ONLY the clarifying questions whose answer would actually CHANGE where a clip gets filed — as few as possible (0 to 6). Skip anything already determinable from the summary, the existing folders, or obvious context: do NOT ask about a subject that clearly matches an existing folder, and do NOT pad to hit a number. A question earns its place only by resolving a REAL filing ambiguity in THIS batch — e.g. whether a label like "vlog"/"timelapse" is a real project or just a descriptor, whether clips on different days are separate projects, who is in them, or which client/project an ambiguous subject belongs to. Merge near-duplicate ambiguities into one question.\nFor "hints" (tap-able suggested answers): when a question is about WHICH client or project something belongs to, the hints MUST be the ACTUAL matching folder NAMES from the list above — never placeholders like "Client A". For yes/no or project-vs-descriptor questions, use the obvious short options. Keep each question under ~14 words.\nReply STRICT JSON only: {"questions":[{"q":"<question>","hints":["<real option>","<real option>"]}]}.`;
-  try {
-    const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.3, timeout: 120000 }));
-    const arr = Array.isArray(o.questions) ? o.questions : (Array.isArray(o) ? o : []);
-    const questions = arr.map((x) => ({
-      q: String((x && (x.q || x.question)) || '').trim(),
-      hints: (Array.isArray(x && x.hints) ? x.hints : []).map((h) => String(h).trim()).filter(Boolean).slice(0, 5)
-    })).filter((x) => x.q).slice(0, 6);
-    if (!questions.length) return { ok: false, error: 'No questions' };
-    return { ok: true, questions };
-  } catch (err) { return { ok: false, error: err.message || String(err) }; }
-});
+// (`ai:batchQuestions` lived here: an LLM that invented clarifying questions to ask before filing.
+// It was DEAD — the renderer replaced it with a plain loop over the real subjects, which is both
+// cheaper and better, because the questions worth asking are the ones the DATA raises, not the ones
+// a 7B model can think of. Placement now asks per-SHOOT and remembers the answer forever, so the
+// question that survives is the one the app cannot answer itself. Deleted rather than left to rot.)
 
 // Analyze the batch's subjects and SUGGEST an answer for each (which folder, or
 // "descriptor" / "delete" / "unsorted") — used to pre-fill the wizard's per-subject
@@ -443,27 +426,9 @@ const DESCRIPTOR_WORDS = new Set([
   'establishing', 'drone', 'aerial', 'gimbal', 'handheld'
 ]);
 
-// Parse a plain-English filing instruction into a structured route, using the
-// real folder tree so the destination path matches what already exists.
-ipcMain.handle('ai:parseRoute', async (_e, payload) => {
-  const text = String((payload && payload.text) || '').trim();
-  const folders = (payload && payload.folders) || [];
-  if (!text) return { ok: false, error: 'Nothing to parse' };
-  if (!aiTextModel()) return { ok: false, error: 'No model selected (set one in AI settings)' };
-  const folderList = folders.slice(0, 250).join('\n') || '(no existing folders)';
-  const prompt = `Existing project folders (relative paths):\n${folderList}\n\nThe user is teaching ONE video-filing rule, in plain English:\n"${text}"\n\nDerive EVERY value below from the user's instruction above — do NOT reuse the placeholder text.\n- "name": a short label for this rule.\n- "match": the lowercase subject keywords (and obvious synonyms/typos) that should trigger it.\n- "dest": the destination folder PATH. If the user names a folder that exists in the list above, use that exact path; otherwise build a sensible new path under the right category.\n- "byDay": true only if the user wants each day in its own dated subfolder. When byDay is true, do NOT put a date in "dest" — the app adds the dated subfolder itself.\nReply STRICT JSON only in this exact shape (replace every <…> placeholder): {"name":"<short label>","match":["<keyword>","<synonym>"],"dest":"<folder path>","byDay":<true or false>}.`;
-  try {
-    const o = parseJsonLoose(await ollamaGenerate(aiTextModel(), prompt, { format: 'json', temperature: 0.1, timeout: 120000 }));
-    const route = {
-      name: String(o.name || '').slice(0, 80),
-      match: (Array.isArray(o.match) ? o.match : String(o.match || '').split(',')).map((s) => String(s).trim().toLowerCase()).filter(Boolean),
-      dest: String(o.dest || o.Dest || o.path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/\/\d{4}-\d{2}-\d{2}$/, '').trim(),
-      byDay: !!(o.byDay || o.byday || o.perDay)
-    };
-    if (!route.match.length || !route.dest) return { ok: false, error: 'Could not understand that — try naming the subject and the folder.' };
-    return { ok: true, route };
-  } catch (err) { return { ok: false, error: err.message || String(err) }; }
-});
+// (`ai:parseRoute` lived here: parse ONE plain-English filing rule. Dead — `ai:parseRules` below
+// supersedes it, parsing one or more rules and telling routes apart from descriptors. Two parsers for
+// the same sentence is one too many, and the unused one is the one that drifts.)
 
 // Parse a plain-English instruction into ONE OR MORE rules, telling apart real
 // PROJECT keywords (route → a folder) from DESCRIPTORS (vlog/timelapse/b-roll —

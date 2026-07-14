@@ -7368,8 +7368,29 @@ function aiTokenMatch(a, b) {
 }
 
 // Slug, then keep only the first N words. The filename has to stay usable.
+// Function words that must never START or END a description.
+//
+// MEASURED against the real qwen3:8b: handed a rich observation, it answers with an English SENTENCE,
+// and capping that at 8 words just truncates it — `two-men-sit-on-a-cut-lawn-beside`. Severed at a
+// preposition, stuffed with articles, and nothing like his own `wood-cleanup-fairview`.
+//
+// Only the EDGES are stripped, deliberately. Interior function words are left alone: his own
+// `headcam-getting-into-truck-and-checking-trailer` needs its `into` and its `and`, and a blanket
+// stopword strip would rewrite his style rather than enforce it. Leading filler is dropped BEFORE the
+// cap so the cap is not spent on "a"; trailing filler AFTER it, because that is where truncation
+// leaves the dangling preposition.
+const EDGE_FILLER = new Set([
+  'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'of', 'on', 'in', 'at', 'to', 'for', 'with',
+  'and', 'or', 'by', 'from', 'into', 'near', 'beside', 'over', 'under', 'as', 'but', 'it', 'its',
+  'his', 'her', 'their', 'this', 'that', 'there',
+]);
+
 function aiCapWords(s, n) {
-  return aiSlug(s).split('-').filter(Boolean).slice(0, n).join('-');
+  const w = aiSlug(s).split('-').filter(Boolean);
+  while (w.length && EDGE_FILLER.has(w[0])) w.shift();
+  const cut = w.slice(0, n);
+  while (cut.length && EDGE_FILLER.has(cut[cut.length - 1])) cut.pop();
+  return cut.join('-');
 }
 
 // How well does a candidate match a query? Weighted so a matched PERSON or DATE counts for more than
@@ -7683,14 +7704,32 @@ defineTool('get_shoot_context', {
 });
 
 defineTool('get_naming_style', {
-  description: 'Get real examples of how the user names their own footage, plus the subjects they already use. Call this FIRST — matching their existing style matters more than being descriptive.',
+  description: 'Get real examples of how the user names their own footage, plus the subjects they already use and who face recognition identified in THIS clip. Call this FIRST — matching their existing style matters more than being descriptive.',
   parameters: { type: 'object', properties: {} },
   run: async (_args, ctx) => {
     const ai = config.ai || {};
+    const people = (ctx.people || []).filter(Boolean);
     return {
       examples: styleFewShot(12),          // his CORRECTIONS first, then the mined archive — see styleFewShot
       known_subjects: (ctx.subjects || []).slice(0, 30),
       preferences: selectMemories(ai.memories, ctx.clipText || '', 12).map((m) => m.text),
+
+      // ⚠ FACE RECOGNITION BELONGS IN THE NAME. Owner, on reading the output: "I don't like those
+      // descriptions. It should also be using the face recognition."
+      //
+      // The app already runs face recognition and already hands the names to this loop — and the model
+      // still wrote `men-working-on-mower`. Of course it did: the VISION model cannot know that man is
+      // Josiah, so nothing in the observation ever says so, and nothing told the reasoning model that
+      // the name it was given outranks what the camera saw. His own archive is `josiah-front-lawn`,
+      // `liam-mowing-front-lawn`, `josiah-cleanroom-timelapse` — THE PERSON'S NAME IS THE DESCRIPTION.
+      //
+      // It goes in the TOOL RESULT, not just the system prompt, because on an 8B model a tool result is
+      // input and a system prompt is a suggestion — the same lesson get_shoot_context already taught us
+      // the hard way. Only when there is someone to name: an empty list invites "no people visible".
+      ...(people.length ? {
+        people_recognised_in_this_clip: people,
+        people_note: 'Face recognition identified them — the camera could not. Use their NAMES in the description, exactly as he does (josiah-front-lawn). Never "men", "a boy" or "someone" when you have been told who it is.',
+      } : {}),
     };
   },
 });
@@ -7714,13 +7753,32 @@ defineTool('set_clip_name', {
     type: 'object',
     properties: {
       subject: { type: 'string', description: 'One of the user\'s existing subjects — the KIND of shoot, not what is in frame.' },
-      description: { type: 'string', description: 'What is HAPPENING — concrete and specific. This is where the detail goes.' },
+      // ⚠ MEASURED. This field said only "What is HAPPENING — concrete and specific. This is where the
+      // detail goes." Handed a rich observation the real qwen3:8b answered with an English SENTENCE,
+      // which the word-cap then truncated into `two-men-sit-on-a-cut-lawn-beside` — an unusable
+      // filename. The rules below are not new: they are the ones the LEGACY giant prompt already had
+      // and this tool path dropped, so on this one field the redesign was WORSE than what it replaced.
+      // Keywords, a word count, and real examples of his — re-measure if you touch them.
+      description: { type: 'string', description: '2-6 keywords for WHAT IS HAPPENING — the action plus the setting or object, joined by hyphens. Good: "pushups-on-grass", "liam-mowing-front-lawn", "chainsaw-stump-removal". If get_naming_style named the people recognised in this clip, LEAD with their name ("josiah-repairing-mower", not "men-repairing-mower") — never "men", "a boy" or "someone" when you know who it is. The filename ALREADY contains the subject, so do not just restate it ("josiah-lawn-mowing" adds nothing) — say what makes THIS clip different from the others in the shoot. NEVER a sentence: no articles or filler ("a", "the", "is", "of", "on", "with"). Match the style of the user\'s own examples.' },
       shot_type: { type: 'string', description: 'e.g. wide, close-up, handheld, static, pan, follow. "" if unclear.' },
       tags: { type: 'array', items: { type: 'string' }, description: '3-8 short lowercase keywords visible in the footage' },
     },
     required: ['subject', 'description'],
   },
   terminal: true,
+  // ⚠ THE SHOOT CONTEXT IS NOT OPTIONAL — and asking nicely stopped working.
+  //
+  // get_shoot_context is the single biggest naming win there is (measured: subject accuracy 60% → 80%,
+  // and 100% once he answers the shoot). The system prompt merely ASKED for it, which held right up
+  // until get_naming_style started returning the recognised people too — the richer result made the
+  // model feel it had enough, and it went straight to naming. Measured, 4 runs of 4: the protocol
+  // collapsed from `get_naming_style → get_shoot_context → set_clip_name` to two calls.
+  //
+  // It got the subject right anyway, by luck: the word "lawn" was in the observation. The clips that
+  // NEED this tool are exactly the ones where it is not — men sitting on the grass repairing a mower
+  // is a lawn-mowing shoot, and nothing in the pixels says so. So the loop refuses to name a clip until
+  // the shoot has been looked at. Structure beats instruction, again.
+  requires: ['get_shoot_context'],
   run: async ({ subject, description, shot_type, tags }) => {
     // The model supplies MEANING; the format is not its problem. The subject is slugged here (it is an
     // identity — `lawn-mowing` and `Lawn Mowing` must never become two subjects). The description is
@@ -7976,11 +8034,14 @@ ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
 
   const system = [
     "You name a videographer's clips.",
-    'First call get_naming_style to see how THEY name things and which subjects they already use, and',
-    'get_shoot_context to see what they called the other clips from this same shoot.',
+    'First call get_naming_style to see how THEY name things, which subjects they already use, and WHO',
+    'face recognition identified in this clip; and get_shoot_context to see what they called the other',
+    'clips from this same shoot.',
     'The SUBJECT is what the footage is FOR — the shoot or the job (vlog, pov, lawn-mowing…) — NOT the',
     'objects in frame and not always the action on screen: men repairing a mower still belong to a',
     'lawn-mowing shoot. Everything you can actually see goes in the DESCRIPTION.',
+    'If people were recognised, NAME them in the description — the camera cannot tell you who someone',
+    'is, so a recognised name always beats "men" or "a boy".',
     'Then call set_clip_name with one of their existing subjects. Only if genuinely none of them fit, call propose_new_subject.',
     'Do not explain — call the tools.',
   ].join(' ');
@@ -7992,7 +8053,15 @@ ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
   const r = await runToolLoop({
     model, system, user,
     tools: ['get_naming_style', 'get_shoot_context', 'set_clip_name', 'propose_new_subject'],
-    ctx: { subjects, clipText: `${p.observation} ${p.context || ''}`, date: p.date || '', siblings: p.siblings || [] },
+    ctx: {
+      subjects,
+      clipText: `${p.observation} ${p.context || ''}`,
+      date: p.date || '',
+      siblings: p.siblings || [],
+      // Face recognition already ran and already knew who this was — the loop just never told the model
+      // in a place it reads. get_naming_style surfaces it now. See the note in that tool.
+      people: (p.people || []).filter(Boolean),
+    },
     enums: subjects.length ? { set_clip_name: { subject: subjects } } : {},
     maxSteps: 5,
   });

@@ -112,7 +112,16 @@ test('the naming loop is actually GIVEN the tool, and the context it needs', () 
   const start = src.indexOf("ipcMain.handle('ai:nameFromObservation'");
   const h = src.slice(start, src.indexOf('\n});', start));
   assert.match(h, /tools: \[[^\]]*'get_shoot_context'/, 'the tool is offered to the loop');
-  assert.match(h, /date: p\.date \|\| '', siblings: p\.siblings \|\| \[\]/, 'and its ctx is populated');
+  assert.match(h, /date: p\.date \|\| ''/, 'and its ctx is populated');
+  assert.match(h, /siblings: p\.siblings \|\| \[\]/);
+  // Offering the tool is not the same as it being CALLED. Once get_naming_style started returning the
+  // recognised people too, the richer result made the model feel it had enough and it skipped straight
+  // to naming — measured, 4 runs of 4. It got the subject right by luck (the word "lawn" was in the
+  // observation); the clips that NEED this tool are exactly the ones where it is not. So the loop
+  // refuses to name until the shoot has been looked at.
+  const st = src.slice(src.indexOf("defineTool('set_clip_name'"));
+  assert.match(st.slice(0, st.indexOf('\n});')), /requires: \['get_shoot_context'\]/,
+    'set_clip_name cannot run before it');
 
   const r = readFileSync(join(ROOT, 'src', 'mod', '04-tasks-ai.js'), 'utf8');
   const call = r.slice(r.indexOf('window.api.aiNameFromObservation({'));

@@ -15,8 +15,12 @@
 //     a prompt is unreliable; capping it in code is not.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadMain } from './harness.mjs';
 
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 let app;
 const plain = (v) => JSON.parse(JSON.stringify(v ?? null));
 
@@ -102,7 +106,10 @@ test('a 20-word description is cut down to a filename', async () => {
   }, {});
   const words = r.description.split('-');
   assert.ok(words.length <= 8, `${words.length} words — his own are 1-7`);
-  assert.equal(r.description, 'a-young-boy-moving-through-his-cluttered-bedroom');
+  // The leading article is gone. This used to assert `a-young-boy-moving-…`, which is the very filler
+  // the naming rules forbid — the cap was pinning a filename that STARTED with "a-".
+  assert.equal(r.description, 'young-boy-moving-through-his-cluttered-bedroom-standing');
+  assert.ok(!/^(a|an|the)-/.test(r.description), 'a filename never starts with an article');
 });
 
 test('a short description is left exactly alone', async () => {
@@ -147,4 +154,100 @@ test('the naming loop refuses to run on a model that cannot call tools', async (
   const r = await app.invoke('ai:nameFromObservation', { observation: 'a boy in a bedroom' });
   assert.equal(r.ok, false);
   assert.match(r.error, /tool-capable/i);
+});
+
+// --- ⚠ THE DESCRIPTION WAS A TRUNCATED SENTENCE. MEASURED ON THE REAL qwen3:8b. ----------------
+//
+// `set_clip_name`'s description field said only "What is HAPPENING — concrete and specific. This is
+// where the detail goes." Handed a rich observation, the real model answered with an English SENTENCE
+// and the 8-word cap truncated it:
+//
+//     two-men-sit-on-a-cut-lawn-beside        ← severed at a preposition. An unusable filename.
+//
+// The rules it needed were not new — the LEGACY giant prompt already had them ("2-6 keywords… no
+// articles/filler… no sentences") and the tool path had DROPPED them. On this one field the redesign
+// was worse than the thing it replaced. With them restored, on his real observation, 3 runs of 3:
+//
+//     men-working-on-mower                    ← baseline
+//     men-repairing-mower                     ← with his correction in the few-shot (it picked up
+//                                               "repairing" from the pair HE typed)
+
+test('the cap never severs a description at a preposition', () => {
+  const cap = app.get('aiCapWords');
+  // The exact string the real model produced, at the exact cap the tool uses.
+  assert.equal(cap('Two men sit on a cut lawn beside a ride-on mower', 8), 'two-men-sit-on-a-cut-lawn');
+  assert.equal(cap('a man mowing the front lawn', 8), 'man-mowing-the-front-lawn', 'leading article dropped');
+});
+
+test('⚠ interior filler is KEPT — his own style depends on it', () => {
+  // A blanket stopword strip would rewrite his names rather than enforce them: this is a real filename
+  // he wrote himself, and it needs its `into` and its `and`. Only the EDGES are stripped.
+  const cap = app.get('aiCapWords');
+  assert.equal(cap('headcam-getting-into-truck-and-checking-trailer', 8),
+    'headcam-getting-into-truck-and-checking-trailer');
+});
+
+test('the description schema demands keywords, not a sentence', () => {
+  // The strings are load-bearing and MEASURED — see the header above. If you change them, re-measure
+  // against his footage.
+  const src = readFileSync(join(ROOT, 'main-mod', '10-ai-tools.js'), 'utf8');
+  const tool = src.slice(src.indexOf("defineTool('set_clip_name'"));
+  const body = tool.slice(0, tool.indexOf('\n});'));
+  assert.match(body, /2-6 keywords for WHAT IS HAPPENING/);
+  assert.match(body, /NEVER a sentence/);
+  assert.match(body, /no articles or filler/);
+  assert.match(body, /pushups-on-grass/, 'real examples in his own style');
+});
+
+// --- ⚠ FACE RECOGNITION BELONGS IN THE NAME ---------------------------------------------------
+//
+// Owner, on reading the output: "I don't like those descriptions. It should also be using the face
+// recognition."
+//
+// He was right, and the gap was not in the face code — that already ran, already recognised Josiah,
+// and already handed the name to this loop. The model still wrote `men-working-on-mower`. Of course it
+// did: the VISION model cannot know that man is Josiah, so nothing in the observation says so, and
+// nothing told the reasoning model that the name it was handed outranks what the camera saw. His own
+// archive is `josiah-front-lawn`, `liam-mowing-front-lawn`, `josiah` — THE PERSON'S NAME IS THE
+// DESCRIPTION.
+//
+// Measured on the real qwen3:8b, same clip, 4 runs of 4:
+//     men-working-on-mower       →       josiah-repairing-mower
+
+test('get_naming_style tells the model WHO face recognition found', async () => {
+  const style = app.get('AI_TOOLS').get_naming_style;
+  const r = plain(await style.run({}, { subjects: REAL_SUBJECTS, people: ['Josiah'], clipText: '' }));
+  assert.deepEqual(r.people_recognised_in_this_clip, ['Josiah']);
+  assert.match(r.people_note, /Use their NAMES in the description/);
+  assert.match(r.people_note, /Never "men", "a boy" or "someone"/);
+});
+
+test('…and says NOTHING when nobody was recognised', async () => {
+  // An empty list is not neutral — it invites "no people visible" into the description. The keys are
+  // simply absent when face recognition found nobody.
+  const style = app.get('AI_TOOLS').get_naming_style;
+  const r = plain(await style.run({}, { subjects: REAL_SUBJECTS, people: [], clipText: '' }));
+  assert.equal('people_recognised_in_this_clip' in r, false);
+  assert.equal('people_note' in r, false);
+});
+
+test('the recognised people are actually PASSED to the loop', async () => {
+  // The names reached the handler and stopped there — the tool context never carried them, so the one
+  // tool the model always calls could not mention them.
+  const src = readFileSync(join(ROOT, 'main-mod', '10-ai-tools.js'), 'utf8');
+  const start = src.indexOf("ipcMain.handle('ai:nameFromObservation'");
+  const h = src.slice(start, src.indexOf('\n});', start));
+  assert.match(h, /people: \(p\.people \|\| \[\]\)\.filter\(Boolean\)/, 'ctx carries them');
+  assert.match(h, /NAME them in the description/, 'and the system prompt says to use them');
+});
+
+test('the description schema forbids "men" when it knows the name — and forbids restating the subject', () => {
+  // ⚠ These strings are MEASURED. `josiah-lawn-mowing` (the subject, restated) was the last flaw; the
+  // filename already carries the subject. Re-measure against his footage if you touch them.
+  const src = readFileSync(join(ROOT, 'main-mod', '10-ai-tools.js'), 'utf8');
+  const tool = src.slice(src.indexOf("defineTool('set_clip_name'"));
+  const body = tool.slice(0, tool.indexOf('\n});'));
+  assert.match(body, /LEAD with their name/);
+  assert.match(body, /never "men", "a boy" or "someone" when you know who it is/);
+  assert.match(body, /do not just restate it/);
 });

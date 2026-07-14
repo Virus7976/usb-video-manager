@@ -187,3 +187,21 @@ test('ai:batchQuestions and ai:parseRoute are deleted, not merely unused', () =>
   assert.match(main, /ipcMain\.handle\('ai:parseRules'/);
   assert.match(main, /DESCRIPTOR_WORDS/, 'the shared word list survived the delete');
 });
+
+// --- the measured baseline is not disturbed --------------------------------------------------
+
+test('⚠ with no corrections, the few-shot is IDENTICAL to the old code', () => {
+  // AGENTS.md: the tool-result strings are load-bearing and MEASURED — renaming one key once cost 20
+  // points of subject accuracy, deterministically. get_naming_style's `examples` was
+  // `(ai.styleExamples || []).slice(0, 12)`, and the 5/5-on-his-real-six measurement was taken with
+  // exactly that. This proves the change is a no-op until he actually corrects something, so that
+  // result still stands — and the only thing that ever alters what the model sees is HIS OWN edit.
+  const cfg = app.get('config');
+  const mined = Array.from({ length: 30 }, (_, i) => `vlog / example-${i}`);
+  cfg.ai.styleExamples = mined;
+  cfg.ai.styleCorrections = [];
+  // JSON round-trip: styleFewShot builds its array INSIDE the vm, so it carries the sandbox's
+  // Array.prototype and a strict deepEqual would fail on identity rather than on content.
+  const shown = JSON.parse(JSON.stringify(app.get('styleFewShot')(12)));
+  assert.deepEqual(shown, mined.slice(0, 12));
+});

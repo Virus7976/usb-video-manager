@@ -238,3 +238,103 @@ test('the review grid turns action:suggest into a card, not a silent file', () =
   assert.match(fn, /r\.action === 'suggest'/, 'the grid handles it explicitly');
   assert.match(fn, /g\.suggest = r\.path;\n\s+g\.why = r\.why \|\| '';/, 'as a suggestion, with its reason');
 });
+
+// --- ⚠ UNDO HAS TO ACTUALLY UNDO ------------------------------------------------------------
+//
+// An `exact` recall files a shoot with NO card and NO question, so the Undo button on that
+// auto-filed card is the ONLY way he can ever correct a placement the app got wrong. It used to clear
+// `g.chosen` — the UI — and leave the memory that CAUSED the auto-file sitting in config. Undo it,
+// close the review, and the same wrong project is chosen again next time. Silently. Forever. And the
+// app got MORE confident each time, because `count` goes up.
+//
+// It only ever looked fine because re-picking updates the record in place: the bug needs him to undo
+// and NOT immediately choose again — which is exactly what "undo" means.
+
+test('undo FORGETS the placement — not just the tick in the UI', () => {
+  const cfg = app.get('config');
+  app.get('rememberPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [], path: 'Client Work/Josiah' });
+  assert.equal(app.get('recallPlacement')({ date: '2026-06-01', subject: 'lawn-mowing' }).confidence, 'exact');
+
+  const r = app.get('forgetPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [] });
+  assert.equal(r.removed, 1);
+  assert.deepEqual(cfg.placementMemory, [], 'the record is gone from config, not just from the screen');
+});
+
+test('⚠ after an undo, the next shoot is ASKED about — not silently auto-filed again', () => {
+  // THE regression. `exact` is the one confidence that skips the question entirely.
+  app.get('rememberPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [], path: 'Client Work/WRONG' });
+  app.get('forgetPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [] });
+
+  const again = app.get('recallPlacement')({ date: '2026-06-01', subject: 'lawn-mowing' });
+  assert.equal(again, null, 'nothing is recalled, so the grid asks him instead of filing it');
+});
+
+test('undo forgets THAT shoot only — his other decisions survive', () => {
+  const cfg = app.get('config');
+  app.get('rememberPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [], path: 'Client Work/Josiah' });
+  app.get('rememberPlacement')({ date: '2026-07-02', subject: 'lawn-mowing', people: [], path: 'Client Work/Charles' });
+  app.get('rememberPlacement')({ date: '2026-06-01', subject: 'vlog', people: [], path: 'Personal/Vlog' });
+
+  app.get('forgetPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [] });
+
+  assert.equal(cfg.placementMemory.length, 2);
+  assert.equal(app.get('recallPlacement')({ date: '2026-07-02', subject: 'lawn-mowing' }).path, 'Client Work/Charles',
+    'the other lawn-mowing SHOOT is a different decision and is untouched');
+  assert.equal(app.get('recallPlacement')({ date: '2026-06-01', subject: 'vlog' }).path, 'Personal/Vlog',
+    'the same day, different subject, is a different decision too');
+});
+
+test('undo then re-pick lands the RIGHT project', () => {
+  const cfg = app.get('config');
+  app.get('rememberPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [], path: 'Client Work/WRONG' });
+  app.get('forgetPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [] });
+  app.get('rememberPlacement')({ date: '2026-06-01', subject: 'lawn-mowing', people: [], path: 'Client Work/Charles' });
+
+  assert.equal(cfg.placementMemory.length, 1, 'one decision, not two');
+  assert.equal(app.get('recallPlacement')({ date: '2026-06-01', subject: 'lawn-mowing' }).path, 'Client Work/Charles');
+});
+
+test('forget matches rememberPlacement identity EXACTLY — including people', () => {
+  // If the two disagree about what identifies a shoot, undo deletes the wrong record — or, worse,
+  // nothing at all while reporting success.
+  const cfg = app.get('config');
+  app.get('rememberPlacement')({ date: '2026-06-01', subject: 'vlog', people: ['Josiah'], path: 'A' });
+  app.get('rememberPlacement')({ date: '2026-06-01', subject: 'vlog', people: [], path: 'B' });
+  assert.equal(cfg.placementMemory.length, 2, 'people are part of the identity — two records');
+
+  // Order/case must not matter: remember sorts and lowercases, so forget must too.
+  const r = app.get('forgetPlacement')({ date: '2026-06-01', subject: 'vlog', people: ['josiah'] });
+  assert.equal(r.removed, 1);
+  assert.equal(cfg.placementMemory[0].path, 'B', 'the people-less record is the one left standing');
+});
+
+test('the review grid WIRES undo to forget — and cannot race the remember', () => {
+  const src = readFileSync(join(ROOT, 'src', 'mod', '07-organize-map.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function showPlacementReview('));
+  assert.match(fn, /const undo = \(i\) => \{/, 'undo is a real action, not an inline g.chosen reset');
+  assert.match(fn, /window\.api\.aiForgetPlacement\(\{ date: g\.date, subject: g\.subject, people: g\.people \}\)/);
+  assert.match(fn, /if \(t\.classList\.contains\('fgc-undo'\)\) return undo\(i\);/, 'the button calls it');
+  // Both WRITE the same record: a pick immediately followed by an undo must not land in the other
+  // order and leave the memory set.
+  assert.match(fn, /memWrites = memWrites\.then\(fn\)\.catch\(\(\) => \{\}\)/, 'serialized, and a rejection cannot escape');
+  assert.match(readFileSync(join(ROOT, 'preload.js'), 'utf8'), /aiForgetPlacement: \(p\) => ipcRenderer\.invoke\('ai:forgetPlacement', p\)/);
+});
+
+test('undo RE-ASKS rather than dumping him on an empty text box', () => {
+  // `g.options` — the one-click chips — is only ever filled from the model's own search trace, and a
+  // group that was auto-filed from memory never had one. So an undo with nothing behind it meant
+  // typing a project path from memory to fix the app's own mistake. Re-asking AFTER the forget is what
+  // makes it honest: the model calls recall_decision first, and now correctly finds nothing.
+  const src = readFileSync(join(ROOT, 'src', 'mod', '07-organize-map.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function showPlacementReview('));
+  assert.match(fn, /const askModel = async \(g\) => \{/, 'the ask is reusable, not trapped in the for-loop');
+  assert.match(fn, /if \(!g\.options \|\| !g\.options\.length\) learn\(\(\) => queueAsk\(g\)\);/);
+  // The forget is queued on the same chain BEFORE the re-ask, so the model's recall_decision cannot
+  // hand back the very record we are in the middle of deleting.
+  const u = fn.slice(fn.indexOf('const undo = (i) =>'));
+  const body = u.slice(0, u.indexOf('\n    };'));
+  assert.ok(body.indexOf('aiForgetPlacement') < body.indexOf('queueAsk'), 'forget is chained ahead of the re-ask');
+  // …and the original loop drives every group through the same function (see placement-review for the
+  // single-GPU queue that both callers share).
+  assert.match(fn, /await queueAsk\(g\);/, 'the initial pass uses it too — one code path, not two');
+});

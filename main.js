@@ -8112,6 +8112,41 @@ function rememberPlacement({ date, subject, people, location, path }) {
   return { ok: true, remembered: subj, date: day, path: dest };
 }
 
+// UNDO HAS TO ACTUALLY UNDO.
+//
+// An `exact` recall files a shoot with NO card and NO question (see the review grid), and the Undo
+// button on that auto-filed card is the ONLY way the user can ever correct a placement the app got
+// wrong. Undo used to clear `g.chosen` — the UI — and leave the memory that caused the auto-file
+// sitting in config. So: he undoes it, closes the review, and every future clip from that shoot is
+// silently filed into the project he just rejected, forever, with no card and no question. His undo
+// was quietly reverted, and the app got MORE confident each time (`count` goes up).
+//
+// It only ever looked fine because re-picking updates the record in place — the bug needs him to undo
+// and NOT immediately choose again, which is exactly what "undo" means.
+//
+// The identity here must match rememberPlacement's EXACTLY (subject + shoot day + people), or it
+// deletes the wrong record — or, worse, nothing at all while reporting success.
+function forgetPlacement({ date, subject, people }) {
+  const subj = aiSlug(subject || '');
+  if (!subj) return { ok: false, removed: 0 };
+  const day = shootDay(date);
+  const ppl = (Array.isArray(people) ? people : []).map((p) => String(p).toLowerCase()).sort();
+
+  const mem = placementMemory();
+  const keep = mem.filter((m) => !(m.subject === subj && shootDay(m.date) === day
+    && JSON.stringify(m.people || []) === JSON.stringify(ppl)));
+  const removed = mem.length - keep.length;
+  if (!removed) return { ok: true, removed: 0 };
+  config.placementMemory = keep;
+  saveConfig();
+  return { ok: true, removed };
+}
+
+ipcMain.handle('ai:forgetPlacement', (_e, payload) => {
+  try { return forgetPlacement(payload || {}); }
+  catch (e) { return { ok: false, removed: 0, error: (e && e.message) || String(e) }; }
+});
+
 // Have we been told this before? Deterministic — no model, no prompt, no variability.
 //
 // Returns a confidence so the caller can decide whether to act silently or still show the user.

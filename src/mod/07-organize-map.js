@@ -1806,15 +1806,45 @@ async function showPlacementReview(clips, opts = {}) {
     // Confirming is the moment the app LEARNS. The user's answer is the ground truth — not the
     // model's suggestion — so it is remembered permanently, and the same footage is never asked about
     // again. This is the whole of "it only ever asks it once and then it knows".
+    //
+    // Remember and forget both WRITE the same record, so they are chained rather than fired loose: a
+    // pick immediately followed by an undo must not land in the other order and leave the memory set.
+    let memWrites = Promise.resolve();
+    const learn = (fn) => { memWrites = memWrites.then(fn).catch(() => {}); };   // never blocks the UI
+
     const pick = (i, path) => {
       const p = String(path || '').trim();
       if (!p) return;
       const g = groups[i];
       g.chosen = p;
-      try {
-        window.api.aiRememberPlacement({ date: g.date, subject: g.subject, people: g.people, location: g.location, path: p });
-      } catch { /* non-fatal — the clips still file, we just don't learn from it */ }
+      learn(() => window.api.aiRememberPlacement({ date: g.date, subject: g.subject, people: g.people, location: g.location, path: p }));
       render();
+    };
+
+    // And UNDO HAS TO ACTUALLY UNDO. An `exact` recall auto-files a shoot with no card and no
+    // question, so this button is the only way he can ever correct a placement the app got wrong.
+    // Clearing `g.chosen` alone left the memory that CAUSED the auto-file in config — undo it, close
+    // the review, and the same wrong project is chosen again next time, silently, forever.
+    //
+    // Then ASK again, rather than dropping him on an empty text box: `g.options` (the one-click chips)
+    // is only ever filled from the model's own search trace, and a recalled group never had one — so
+    // an undo with nothing behind it means typing a project path from memory to fix the app's mistake.
+    // Re-asking AFTER forgetting is what makes it honest: the model calls recall_decision first, and
+    // now correctly finds nothing to recall.
+    const undo = (i) => {
+      const g = groups[i];
+      g.chosen = '';
+      g.recalled = 0;
+      g.suggest = '';
+      learn(() => window.api.aiForgetPlacement({ date: g.date, subject: g.subject, people: g.people }));
+      render();
+      // Only worth a model call if we have nothing else to show him. An undone SUGGESTION already has
+      // its chips from the search that produced it.
+      //
+      // Queued on `learn` so the FORGET lands first (or the model's recall_decision would hand back
+      // the very record we are deleting), and via queueAsk so it waits for the initial pass instead of
+      // racing it onto the GPU.
+      if (!g.options || !g.options.length) learn(() => queueAsk(g));
     };
 
     scroll.addEventListener('click', (e) => {
@@ -1823,7 +1853,7 @@ async function showPlacementReview(clips, opts = {}) {
       if (t.classList.contains('pr-yes')) return pick(i, groups[i].suggest);
       if (t.classList.contains('pr-no')) { groups[i].suggest = ''; render(); return; }
       if (t.classList.contains('fgc-chip')) return pick(i, t.dataset.path);
-      if (t.classList.contains('fgc-undo')) { groups[i].chosen = ''; render(); return; }
+      if (t.classList.contains('fgc-undo')) return undo(i);
     });
     scroll.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' || !e.target.classList.contains('pr-input')) return;
@@ -1833,8 +1863,71 @@ async function showPlacementReview(clips, opts = {}) {
 
     render();
 
-    // Ask the model about each group — one at a time, so the GPU only ever holds one model, and the
-    // cards fill in as answers arrive rather than making the user stare at a spinner.
+    // Ask the model where ONE group goes. Extracted so `undo` can re-ask: without it, undoing a wrong
+    // auto-file left him with a bare text box and no chips (`g.options` is only ever filled from the
+    // model's own search trace), i.e. typing a project path from memory to fix the app's mistake.
+    // Forgetting BEFORE we re-ask is what makes this honest — the model calls recall_decision first,
+    // and now correctly finds nothing.
+    const askModel = async (g) => {
+      g.pending = true; render();
+      try {
+        const poster = g.clips[0] && g.clips[0].sourcePath ? await window.api.getPoster(g.clips[0].sourcePath) : '';
+        if (poster) g.poster = poster;
+      } catch { /* a missing thumbnail is cosmetic */ }
+      let r = null;
+      try {
+        r = await window.api.aiPlaceGroup({
+          subject: g.subject, description: g.description, observation: g.observation,
+          people: g.people, location: g.location, date: g.date, count: g.clips.length,
+        });
+      } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+      g.pending = false;
+
+      if (!r || !r.ok) {
+        g.question = (r && r.error) || 'the AI could not answer';
+        g.options = [];
+      } else if (r.action === 'suggest') {
+        // A familiar subject on a DIFFERENT shoot. The model was never asked — the app decided this
+        // is his call, because handed the choice the model files into the old project every time.
+        g.suggest = r.path;
+        g.why = r.why || '';
+      } else if (r.action === 'place' || r.action === 'create') {
+        g.suggest = r.path;
+        // "AI proposes a folder, you confirm" — so SAY it is a new folder, and say why nothing
+        // existing fitted. A card that looks identical whether it files into a project he has had
+        // for a year or creates one out of thin air is not a confirmation, it is a rubber stamp.
+        g.isNew = r.action === 'create';
+        g.why = r.action === 'create' ? (r.why || "nothing you have fits this") : '';
+        g.options = (r.trace || [])
+          .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
+          .flatMap((t) => t.result.matches.map((m) => m.path))
+          .filter((p) => p !== r.path).slice(0, 6);
+      } else {
+        // ask_user — exactly the face grid's "Who is this?" card.
+        g.question = r.question || '';
+        g.options = r.options && r.options.length ? r.options : (r.trace || [])
+          .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
+          .flatMap((t) => t.result.matches.map((m) => m.path)).slice(0, 6);
+      }
+      render();
+    };
+
+    // ⚠ EVERY model call goes through this ONE queue — the initial pass AND a re-ask from undo.
+    //
+    // `for (const g of groups) { await … }` looks like it already guarantees one-at-a-time, and on its
+    // own it did. It does NOT survive `undo` re-asking: that fires from a click handler, OUTSIDE the
+    // loop, so it would run straight into the middle of it and put two tool loops on the GPU at once.
+    // Same model, so it does not OOM the way vision-plus-text does — it doubles the KV cache on a 6 GB
+    // card instead, and both crawl. The rule is one model call in flight, and it has to hold for calls
+    // the USER starts, not just the ones the loop starts.
+    let modelQueue = Promise.resolve();
+    const queueAsk = (g) => {
+      modelQueue = modelQueue.then(() => askModel(g)).catch(() => {});
+      return modelQueue;
+    };
+
+    // Ask about each group — one at a time, so the GPU only ever holds one model, and the cards fill
+    // in as answers arrive rather than making the user stare at a spinner.
     (async () => {
       for (const g of groups) {
         // Already told us? Then it is not a question. No model call, no card to confirm — it is just
@@ -1861,47 +1954,7 @@ async function showPlacementReview(clips, opts = {}) {
           }
         } catch { /* fall through to asking the model */ }
 
-        g.pending = true; render();
-        try {
-          const poster = g.clips[0] && g.clips[0].sourcePath ? await window.api.getPoster(g.clips[0].sourcePath) : '';
-          if (poster) g.poster = poster;
-        } catch { /* a missing thumbnail is cosmetic */ }
-        let r = null;
-        try {
-          r = await window.api.aiPlaceGroup({
-            subject: g.subject, description: g.description, observation: g.observation,
-            people: g.people, location: g.location, date: g.date, count: g.clips.length,
-          });
-        } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
-        g.pending = false;
-
-        if (!r || !r.ok) {
-          g.question = (r && r.error) || 'the AI could not answer';
-          g.options = [];
-        } else if (r.action === 'suggest') {
-          // A familiar subject on a DIFFERENT shoot. The model was never asked — the app decided this
-          // is his call, because handed the choice the model files into the old project every time.
-          g.suggest = r.path;
-          g.why = r.why || '';
-        } else if (r.action === 'place' || r.action === 'create') {
-          g.suggest = r.path;
-          // "AI proposes a folder, you confirm" — so SAY it is a new folder, and say why nothing
-          // existing fitted. A card that looks identical whether it files into a project he has had
-          // for a year or creates one out of thin air is not a confirmation, it is a rubber stamp.
-          g.isNew = r.action === 'create';
-          g.why = r.action === 'create' ? (r.why || "nothing you have fits this") : '';
-          g.options = (r.trace || [])
-            .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
-            .flatMap((t) => t.result.matches.map((m) => m.path))
-            .filter((p) => p !== r.path).slice(0, 6);
-        } else {
-          // ask_user — exactly the face grid's "Who is this?" card.
-          g.question = r.question || '';
-          g.options = r.options && r.options.length ? r.options : (r.trace || [])
-            .filter((t) => t.tool === 'search_projects' && t.result && t.result.matches)
-            .flatMap((t) => t.result.matches.map((m) => m.path)).slice(0, 6);
-        }
-        render();
+        await queueAsk(g);
       }
     })();
   });

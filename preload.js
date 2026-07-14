@@ -202,6 +202,7 @@ contextBridge.exposeInMainWorld('api', {
   // ASK ONCE, THEN KNOW. Confirming a placement teaches it permanently; recall answers next time with
   // no model call at all.
   aiRememberPlacement: (p) => ipcRenderer.invoke('ai:rememberPlacement', p),
+  aiForgetPlacement: (p) => ipcRenderer.invoke('ai:forgetPlacement', p),
   // Shoot memory — ask once per shoot, then never again.
   aiRememberShoot: (p) => ipcRenderer.invoke('ai:rememberShoot', p),
   aiRecallShoot: (date) => ipcRenderer.invoke('ai:recallShoot', date),

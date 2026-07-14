@@ -150,8 +150,20 @@ test('the model is asked one group at a time — the GPU only holds one model', 
   // Firing N placement calls in parallel would be the fastest possible way to rediscover that.
   const src = mod('07-organize-map.js');
   const fn = src.slice(src.indexOf('async function showPlacementReview('));
-  assert.match(fn, /for \(const g of groups\) \{[\s\S]*?await window\.api\.aiPlaceGroup/, 'sequential, not Promise.all');
   assert.equal(/Promise\.all\([\s\S]*aiPlaceGroup/.test(fn), false, 'never fanned out');
+
+  // There is exactly ONE place that calls the model, and every caller goes through the one queue.
+  // This used to be asserted as "the aiPlaceGroup call sits inside the for-loop", which stopped being
+  // true — and stopped being ENOUGH — the moment `undo` could re-ask: that fires from a click handler,
+  // OUTSIDE the loop, so `for … await` gives you nothing. Two tool loops on the same 8B model don't OOM
+  // the way vision-plus-text does; they double the KV cache on a 6 GB card and both crawl.
+  assert.equal((fn.match(/window\.api\.aiPlaceGroup/g) || []).length, 1, 'one call site');
+  assert.match(fn, /const queueAsk = \(g\) => \{\s*modelQueue = modelQueue\.then\(\(\) => askModel\(g\)\)/,
+    'serialized through one promise chain');
+  assert.match(fn, /await queueAsk\(g\);/, 'the initial pass goes through it');
+  assert.match(fn, /learn\(\(\) => queueAsk\(g\)\)/, '…and so does an undo re-ask, so a click cannot race the loop');
+  assert.equal(/(?<!queue)askModel\(g\)(?!\))/.test(fn.replace(/const askModel = async \(g\) => \{/, '')), false,
+    'nothing calls askModel directly, bypassing the queue');
 });
 
 test('Done returns only the groups the user actually confirmed', () => {

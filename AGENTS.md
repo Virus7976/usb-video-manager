@@ -558,6 +558,32 @@ day a *"shoot"* frames it as one thing, and the model starts answering with the 
 the footage. There is a test pinning the exact strings. **If you change them, re-measure against his
 footage.**
 
+### ⚠ UNDO HAS TO ACTUALLY UNDO — the second silent mis-file, same shape as the first
+
+An `exact` recall **files a shoot with no card and no question**. So the Undo button on that auto-filed
+card is the ONLY way he can ever correct a placement the app got wrong. It cleared `g.chosen` — the UI
+— and left the memory that *caused* the auto-file sitting in `config.placementMemory`. Undo it, close
+the review, and every future clip from that shoot is silently filed into the project he just rejected,
+forever. His undo was quietly reverted, and the app got **more** confident each time (`count` goes up).
+
+It only ever looked fine because re-picking updates the record in place: **the bug needs him to undo and
+NOT immediately choose again** — which is exactly what "undo" means.
+
+- `forgetPlacement()` removes the record, keyed on the **same identity `rememberPlacement` writes**
+  (subject + shoot day + people). If those two ever disagree, undo deletes the wrong record — or
+  nothing at all, while reporting success. There is a test pinning them together.
+- **Undo then RE-ASKS.** `g.options` (the one-click chips) is only ever filled from the model's own
+  search trace, and a recalled group never had one — so an undo dropped him on a bare text box, typing
+  a project path from memory to fix the app's mistake. **Forgetting BEFORE the re-ask is what makes it
+  honest:** the model calls `recall_decision` first, and now correctly finds nothing.
+
+**The single-GPU test caught a real bug in that re-ask** — not a stale pattern. `undo` fires from a
+click handler, **outside** the `for … await` loop, so it would have started a second tool loop straight
+into the middle of the first. Same model, so it does not OOM the way vision-plus-text does; it doubles
+the KV cache on a 6 GB card and both crawl. **`for … await` does not protect you from a click.** Every
+model call now goes through one `queueAsk` chain, and the test asserts *that* invariant rather than
+"the call is lexically inside the loop", which was only ever a proxy for it.
+
 ### ⚠ PLACEMENT IS PER-SHOOT — and the silent mis-file it fixes
 
 `recallPlacement` used to match on **subject alone** and return `confidence: 'exact'`, and the review

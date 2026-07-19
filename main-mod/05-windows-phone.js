@@ -491,8 +491,29 @@ async function adbPullToDest(serial, items, dest, onName) {
       if (have && it.size && have.size === Number(it.size)) status = 'SKIP';   // resume
       else {
         const r = await runAdb(['-s', serial, 'pull', '-a', adbRemotePath(it.rel, it.name), destFile]);
-        let ok = false; try { ok = fs.statSync(destFile).size > 0; } catch { /* */ }
+        // Judge on COMPLETENESS, not mere existence (audit #17). A cancelled pull, an unplugged
+        // cable or a phone that sleeps mid-transfer leaves a SHORT file under its final name, and
+        // `size > 0` called that a success. That is footage loss, not a wrong number: a file
+        // reported OK is never retried (the per-file retry only chases stragglers, #89) and the
+        // staging gate later deletes it for being short — so the clip vanishes from the pull AND
+        // from the retry list while the UI says the backup finished.
+        //
+        // The right test already existed three lines above in the resume check
+        // (`have.size === Number(it.size)`), and the MTP sibling has the same rule for the same
+        // reason (see the staging gate ~line 312). This just applies it here too.
+        let ok = false;
+        try {
+          const st = fs.statSync(destFile);
+          // Some devices report no size; requiring an exact match there would refuse every pull, so
+          // fall back to non-empty for that case ONLY — the same concession the MTP gate makes.
+          ok = it.size ? (st.size === Number(it.size)) : (st.size > 0);
+        } catch { /* nothing landed */ }
         status = (r.code === 0 && ok) ? 'OK' : 'FAIL';
+        // Remove a short/failed file rather than leaving it wearing a real clip name. Left on disk
+        // it can be adopted by a later resume scan (which only stats) and Tdarr'd into the archive
+        // as a corrupt clip — exactly what the MTP gate deletes for. The phone still holds the
+        // original, so a re-pull recovers it cleanly.
+        if (status === 'FAIL') { try { fs.unlinkSync(destFile); } catch { /* best-effort */ } }
       }
     } catch { status = 'FAIL'; }
     results.push({ status, name: it.name });

@@ -824,7 +824,7 @@ async function distributeFlowPhotos() {
     }
     try {
       window.api.recordCopied(safePhotos.map((p) => ({
-        key: clipKey(p), source: p.sourcePath, dest: landed.get(p.sourcePath), name: p.name,
+        key: clipKeyV2(p), source: p.sourcePath, dest: landed.get(p.sourcePath), name: p.name,   // #8
       })));
     } catch { /* non-fatal */ }
     saveFlowFinalMeta(safePhotos);   // carry the AI's work forward to Organize, same as videos
@@ -1025,7 +1025,7 @@ async function runCopy() {
     if (!done.length) return;
     state.copied = done;
     try {
-      window.api.recordCopied(done.map((c) => ({ key: clipKey(c), source: c.sourcePath, dest: c.destPath, name: c.name })));
+      window.api.recordCopied(done.map((c) => ({ key: clipKeyV2(c), source: c.sourcePath, dest: c.destPath, name: c.name })));   // #8
     } catch { /* non-fatal */ }
     showToast(`${done.length} clip${done.length !== 1 ? 's' : ''} copied and verified before the ${why} — they're safe, and you can clear them from the Delete step.`, 7000);
   };
@@ -1054,7 +1054,7 @@ async function runCopy() {
   // whole thing again. Keyed by the stable name__size fingerprint → survives replug and restart.
   try {
     window.api.recordCopied(state.copied.map((c) => ({
-      key: clipKey(c), source: c.sourcePath, dest: c.destPath, name: c.name,
+      key: clipKeyV2(c), source: c.sourcePath, dest: c.destPath, name: c.name,   // #8
     })));
   } catch { /* non-fatal — the in-memory list still drives this session */ }
   // Persist a metadata record keyed by the FINAL filename so the Finalize step can

@@ -1012,10 +1012,12 @@ async function restoreCopiedFromLog() {
   state.copied = [];
   if (!state.scannedFiles.length) return;
   let log = {};
-  try { log = await window.api.getCopied(state.scannedFiles.map((c) => clipKey(c))) || {}; } catch { return; }
+  // #8: ask with the collision-free key. Main matches records written under EITHER form and keys its
+  // reply by what we asked for, so this lookup always resolves (see copied:get).
+  try { log = await window.api.getCopied(state.scannedFiles.map((c) => clipKeyV2(c))) || {}; } catch { return; }
   const found = [];
   for (const c of state.scannedFiles) {
-    const rec = log[clipKey(c)];
+    const rec = log[clipKeyV2(c)];
     if (!rec || !rec.dest) continue;
     c._alreadyImported = true;
     found.push({ sourcePath: c.sourcePath, destPath: rec.dest, name: c.name, ext: c.ext, size: c.size });
@@ -12186,7 +12188,7 @@ async function distributeFlowPhotos() {
     }
     try {
       window.api.recordCopied(safePhotos.map((p) => ({
-        key: clipKey(p), source: p.sourcePath, dest: landed.get(p.sourcePath), name: p.name,
+        key: clipKeyV2(p), source: p.sourcePath, dest: landed.get(p.sourcePath), name: p.name,   // #8
       })));
     } catch { /* non-fatal */ }
     saveFlowFinalMeta(safePhotos);   // carry the AI's work forward to Organize, same as videos
@@ -12387,7 +12389,7 @@ async function runCopy() {
     if (!done.length) return;
     state.copied = done;
     try {
-      window.api.recordCopied(done.map((c) => ({ key: clipKey(c), source: c.sourcePath, dest: c.destPath, name: c.name })));
+      window.api.recordCopied(done.map((c) => ({ key: clipKeyV2(c), source: c.sourcePath, dest: c.destPath, name: c.name })));   // #8
     } catch { /* non-fatal */ }
     showToast(`${done.length} clip${done.length !== 1 ? 's' : ''} copied and verified before the ${why} — they're safe, and you can clear them from the Delete step.`, 7000);
   };
@@ -12416,7 +12418,7 @@ async function runCopy() {
   // whole thing again. Keyed by the stable name__size fingerprint → survives replug and restart.
   try {
     window.api.recordCopied(state.copied.map((c) => ({
-      key: clipKey(c), source: c.sourcePath, dest: c.destPath, name: c.name,
+      key: clipKeyV2(c), source: c.sourcePath, dest: c.destPath, name: c.name,   // #8
     })));
   } catch { /* non-fatal — the in-memory list still drives this session */ }
   // Persist a metadata record keyed by the FINAL filename so the Finalize step can

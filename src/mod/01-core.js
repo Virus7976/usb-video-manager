@@ -1010,10 +1010,12 @@ async function restoreCopiedFromLog() {
   state.copied = [];
   if (!state.scannedFiles.length) return;
   let log = {};
-  try { log = await window.api.getCopied(state.scannedFiles.map((c) => clipKey(c))) || {}; } catch { return; }
+  // #8: ask with the collision-free key. Main matches records written under EITHER form and keys its
+  // reply by what we asked for, so this lookup always resolves (see copied:get).
+  try { log = await window.api.getCopied(state.scannedFiles.map((c) => clipKeyV2(c))) || {}; } catch { return; }
   const found = [];
   for (const c of state.scannedFiles) {
-    const rec = log[clipKey(c)];
+    const rec = log[clipKeyV2(c)];
     if (!rec || !rec.dest) continue;
     c._alreadyImported = true;
     found.push({ sourcePath: c.sourcePath, destPath: rec.dest, name: c.name, ext: c.ext, size: c.size });

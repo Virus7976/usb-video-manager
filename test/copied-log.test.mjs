@@ -113,7 +113,9 @@ test('the renderer records after a copy, rebuilds after a scan, and forgets afte
   // The rebuild is scoped to clips ON THIS CARD — never the whole log.
   const fn = core.slice(core.indexOf('async function restoreCopiedFromLog'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.match(body, /state\.scannedFiles\.map\(\(c\) => clipKey\(c\)\)/, 'it asks only about the clips actually on this card');
+  // #8 moved this to clipKeyV2. The PROPERTY is unchanged and is what matters: it asks only about
+  // the clips actually on this card, rather than pulling the whole log. Assert that, not the spelling.
+  assert.match(body, /state\.scannedFiles\.map\(\(c\) => clipKeyV2\(c\)\)/, 'it asks only about the clips actually on this card');
   assert.match(body, /state\.copied = \[\];/, 'and starts from empty, so a stale list can never leak in');
 });
 

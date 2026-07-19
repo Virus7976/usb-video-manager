@@ -7000,13 +7000,21 @@ ipcMain.handle('copied:record', (_evt, entries) => {
 // would be offering to delete footage whose only other copy is gone.
 ipcMain.handle('copied:get', async (_evt, keys) => {
   const store = currentCopiedLog();
-  const want = Array.isArray(keys) && keys.length ? new Set(keys.map(String)) : null;
+  const want = Array.isArray(keys) && keys.length ? keys.map(String).filter(Boolean) : null;
   const out = {};
   const dead = [];
   for (const [k, v] of Object.entries(store)) {
-    if (want && !want.has(k)) continue;
+    // #8: match across key forms. A record written before the migration carries `name__size`, while
+    // the caller now asks with `name__size__mtime`. An exact-match miss reads as "not copied yet",
+    // which makes the Delete step refuse to clear a card whose footage IS safely on disk — the only
+    // cure being to copy the whole card again, which is precisely what this store exists to avoid.
+    const asked = want ? want.find((w) => clipKeyMatches(w, k)) : k;
+    if (want && !asked) continue;
     if (!v || !v.dest) { dead.push(k); continue; }
-    try { await fsp.stat(v.dest); out[k] = v; } catch { dead.push(k); }   // the copy is gone → forget it
+    // Keyed by what the CALLER ASKED FOR, not by how the record happens to be stored. The renderer
+    // looks the result up by the key it sent, so returning the store's key would hand back a record
+    // it then fails to find — a miss dressed up as a hit.
+    try { await fsp.stat(v.dest); out[asked] = v; } catch { dead.push(k); }   // the copy is gone → forget it
   }
   if (dead.length) {
     for (const k of dead) delete store[k];
@@ -7036,7 +7044,13 @@ ipcMain.handle('aiq:get', () => freshStore('aiQueue') || []);
 ipcMain.handle('copied:forget', (_evt, keys) => {
   const store = currentCopiedLog();
   let changed = false;
-  for (const k of (Array.isArray(keys) ? keys : [])) { if (store[String(k)]) { delete store[String(k)]; changed = true; } }
+  // #8: same cross-form match as copied:get. A forget that MISSES is the dangerous direction — the
+  // app would go on believing a clip is copied when its record should have been cleared.
+  const asked = (Array.isArray(keys) ? keys : []).map(String).filter(Boolean);
+  for (const k of Object.keys(store)) {
+    if (!asked.some((w) => clipKeyMatches(w, k))) continue;
+    delete store[k]; changed = true;
+  }
   if (changed) { config.copiedLog = store; saveStore('copiedLog'); }
   return true;
 });

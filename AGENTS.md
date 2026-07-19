@@ -358,6 +358,35 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19l — #8 slice 1/4 DONE (`27c4bc2`). THE QUEUE WAS NOT EMPTY — I was wrong.
+
+**Correction to the note below.** I declared the WSL-safe queue empty and stopped the loop. That was
+wrong on two counts: it ignored the open Gitea issues (#11 organize backend, #12 build/publish, #2
+photos in the rename grid, #3 source abstraction) and the also-rans, and it treated #8 as needing a
+"dedicated session" when the migration plan I had already written is **rewrite-free** — it never
+touches an existing store, so it does not need the app closed or a backup at all.
+
+**Slice 1 of 4 is done: DRAFTS.** `clipKeyV2` = `name__size__mtime` (mtime is already on every
+scanned clip), falling back to the legacy key when mtime is missing. `clipEntry(map, clip)` reads
+V2-then-V1. New writes use V2; **nothing on disk is deleted or rewritten**, so a half-applied
+migration degrades to "reads the old entry", never to "loses it".
+
+**The one that nearly got missed:** `isScanned` in `src/mod/08-people.js` looks up draft keys
+DIRECTLY, not through `clipEntry`. Left alone it would have reported every already-scanned clip as
+unscanned and re-detected the whole card. **When migrating a key, grep for raw `[clipKey(` lookups,
+not just the accessor.**
+
+**REMAINING SLICES — each self-contained, do them one at a time:**
+1. ~~drafts~~ DONE
+2. **finalMeta** — keyed by clip in `08-finalize-feedback.js`; note it is ALSO keyed by file NAME in
+   places (the `facesScanned` work), so check which lookups are clip-keyed before changing any.
+3. **clip observations + the faces `clipKeys` sets** — `ai.clipObs`, `faces-pending.json`.
+4. **`copiedLog` LAST AND ALONE.** It is what makes the Delete step reachable. `verifyCopyPair`
+   re-verifies at delete time and fails closed, so a key miss degrades to "can't clear the card"
+   rather than "deleted the wrong thing" — but prove that with a test before relying on it.
+
+---
+
 ### 2026-07-19k — #91 DONE (`a847dce`). THE WSL-SAFE QUEUE IS EMPTY — read before starting anything.
 
 Thresholds: `0.35` is now `FACE_DEDUP_T`, both blocks cross-reference each other, and

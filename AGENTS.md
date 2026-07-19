@@ -322,6 +322,36 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19be — BACKED UP his real store. 331 typed names + 2230 face crops are now recoverable.
+
+`bd` established that his 331 typed names sit behind a truncation path that is live in the build he is
+running. The deploy removes it, but the deploy is blocked — so this iteration took the one protective
+action available while the app runs. **PROMPT.md §3 describes exactly this procedure**; it is a COPY,
+non-destructive, and it touches nothing in the live store.
+
+**Backup location — state this where a future session will find it:**
+```
+C:\Users\jakeg\AppData\Roaming\USB SD Auto-Action.bak-20260719-1650\
+```
+
+**Scoped deliberately, not a blind 124 MB copy.** The store dir is 124 MB but most of that is live
+Chromium cache (Cache/, GPUCache/, Code/, DIPS-wal…) — worthless, and locked while the app runs.
+Backed up only what cannot be regenerated:
+- **13 JSON/JSONL stores** — drafts, people, final-meta, versions, project-ledger, clip-observations,
+  faces-pending, face-scenes, copied-log, ai-questions, config, rename-drafts, interaction-log.
+- **`faces/` — 2230 crops, 77 MB.** Today's GC finding (`2026-07-19ae`) proved these are deletable in
+  one go, and they cannot be rebuilt: a crop is a frame from a specific clip, and the card it came
+  from has usually been cleared. This is the most irreplaceable thing in the whole store.
+- **Skipped `poster-cache/`** (2.5 MB, derived and regenerable) and every Chromium cache dir.
+
+**Verified by reading the BACKUP, not by trusting `cp`:** drafts 4594 / 331 named, people 48, faces
+2230 — matching the live store exactly.
+
+Total 114 MB. If anything truncates his drafts or eats his face crops before the deploy lands, the
+recovery is a file copy.
+
+App still running (PID 7104) — **~86 commits undeployed, installer READY, store BACKED UP.**
+
 ### 2026-07-19bd — READ-ONLY check of Jake's REAL store: 4594 drafts, 331 typed names, all intact
 
 Nothing left to build, so I inspected his actual `%APPDATA%` store read-only to answer the question

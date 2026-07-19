@@ -7086,10 +7086,20 @@ function writeDrafts(map) {
 ipcMain.handle('drafts:save', (_evt, map) => writeDrafts(map));
 
 // Clear drafts: the given keys (consumed by a copy), or all of them.
+//
+// #8: the same cross-form match as copied:forget, and for the mirror-image reason. Here a MISS is
+// the bad direction — the draft survives the copy, so re-inserting the card re-offers a name the
+// user already dealt with, and drafts.json grows until DRAFTS_CAP evicts something still pending.
+// A BLEED would delete a different clip's typed name, but it cannot happen: two clips only match
+// across forms when they share name AND size, and under the legacy key those were ONE entry to
+// begin with. Two fully-qualified keys that differ never match (clipKeyMatches returns false).
 ipcMain.handle('drafts:clear', (_evt, keys) => {
   const drafts = currentDrafts();
   if (Array.isArray(keys) && keys.length) {
-    for (const k of keys) delete drafts[k];
+    const asked = keys.map(String).filter(Boolean);
+    for (const k of Object.keys(drafts)) {
+      if (asked.some((w) => clipKeyMatches(w, k))) delete drafts[k];
+    }
   } else {
     config.renameDrafts = {};
   }

@@ -322,6 +322,54 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ac — drafts were written under the V2 key and CLEARED under the legacy one. My #8 regression.
+
+Two new sweep axes run in parallel (write-vs-read normalisation; main-guard-vs-renderer-guard). Four
+findings, all with both sides quoted. Fixed the most severe; the other three are logged below.
+
+**The bug:** `buildDraftMap` (`src/mod/01-core.js:1209`) keys every draft with `clipKeyV2`
+(`name__size__mtime`), and card-scanned clips always carry an mtime (`main-mod/02-media.js:461` stats
+them), so **100% of card-import drafts land under the 3-part key**. The post-copy cleanup in
+`src/mod/09-phone-finalize.js:1082` hand-built the **2-part legacy key**, and `drafts:clear` deleted
+by exact key — so nothing matched and **nothing was ever cleared.**
+
+This is my own #8 fallout: I moved the writes to V2 and never touched this call site, which is
+precisely the failure mode PROMPT.md §8b item 4 warns about ("grep for RAW accesses, not just the
+accessor"). `git log -S` confirms the line hadn't been touched since the module split. It is also the
+*opposite* direction from the by-design V2→V1 read fallback: a V1 key used to ADDRESS a V2-written
+entry, with no fallback on either side. `copied:forget` was taught to match across the boundary;
+`drafts:clear` never was.
+
+**Harm, and it compounds with 2026-07-19aa:** re-inserting a card re-offers names for clips already
+imported and dealt with, and `drafts.json` grows without bound — until `DRAFTS_CAP` starts evicting,
+at which point (now that named drafts are exempt from the age prune) what gets thrown away is
+genuinely pending, not-yet-copied typed names. The two bugs feed each other.
+
+**Fix, both sides:** the renderer sends `clipKeyV2(f)`, and `drafts:clear` matches cross-form via
+`clipKeyMatches` so pre-migration drafts on disk are clearable at all. I checked the risk direction
+before choosing that: a MISS is the bug above; a BLEED would delete another clip's typed name but
+cannot happen, because two clips only match across forms when they share name AND size — under the
+legacy key those were ONE entry — and two fully-qualified keys that differ never match.
+
+`test/drafts-clear-key.test.mjs`, 5 tests, both sides proven by breaking them independently. Both
+tiers green: vm **918/837/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — undeployed.
+
+**Three findings logged, not yet fixed** (next session, in this order):
+1. `projects:move` refuses a run (removable card, or not enough free space) with `{ok:false, error}`,
+   but the only caller — `src/mod/07-organize-map.js:1413-1425` — reads neither `r.ok` nor `r.error`.
+   It reports **"Filed 0 into your Projects tree ✓"**, with a tick, then closes the map. Main composes
+   a precise actionable sentence and the renderer discards it. The twin (`src/mod/10-boot.js:381`)
+   does surface `summary.error`. A fix is strictly MORE visible — no new refusal is added.
+2. `projects:move`'s free-space preflight (`main-mod/02-media.js:576-593`) is **unreachable**: it sums
+   caller-supplied `mv.size`, and the only caller never sets `size` (`07-organize-map.js:1375`), so
+   `need` is always 0. Same class as the `cardIsGone` guard that sat on the non-default path. The twin
+   `finalize:run` doesn't trust the caller — it stats the files itself
+   (`main-mod/09-ipc-boot.js:578`). Fix main to stat, rather than adding a renderer field.
+3. LOW confidence, do not act without evidence: `ledgerFind` (`main-mod/03-ai-ollama.js:15`) compares
+   `p.rel === key` case-sensitively while the folder actually written is case-normalised against the
+   disk (`main-mod/02-media.js:242`). Needs a hand-typed destination to diverge; in the common paths
+   the on-disk casing flows through. Would split one project's ledger evidence across two records.
+
 ### 2026-07-19ab — PROMPT.md re-verified figure by figure; the known doc-bug is now FIXED, not documented
 
 Audited PROMPT.md against the repo instead of carrying its numbers forward. Every count it asserted

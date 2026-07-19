@@ -12506,7 +12506,7 @@ async function runCopy() {
     const verifiedClips = clips.filter((c) => okSrc.has(c.sourcePath));
     const keys = verifiedClips.map(importKey);
     if (keys.length) { window.api.importsAdd(keys); keys.forEach((k) => importedSet.add(k)); }
-    window.api.clearDrafts(verifiedClips.map((f) => `${f.name}__${f.size}`));
+    window.api.clearDrafts(verifiedClips.map((f) => clipKeyV2(f)));   // #8: the SAME form buildDraftMap wrote
   } catch { /* non-fatal */ }
   // Back up any photos on the card alongside the videos.
   const photoSummary = await distributeFlowPhotos();

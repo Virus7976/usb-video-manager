@@ -322,6 +322,44 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19an — two overlapping face scans could erase a review (new-queue item 3)
+
+`scanFacesForClips` is a load-modify-replace across MINUTES of GPU work: `clusters = await
+loadPendingFaces()` snapshots the whole review, and `faces:savePending` REPLACES the store wholesale
+(`config.ai.facesPending = list`). Two runs both snapshot, both replace, later wins — everything the
+first clustered, named or confirmed is gone.
+
+**Reachability checked, not assumed** (that is what makes it a bug rather than a hazard): three entry
+points start a scan — `scanFacesSelected`, the People dashboard's `.pd-scan`, and the Analyze flow —
+and **none disables its trigger**. A scan runs for minutes, so a second invocation is ordinary use.
+
+Fix: `faceScanActive` already existed, set before the long work and cleared in a `finally` — the
+exact shape a re-entrancy guard needs — but it was only used to widen the save debounce (#67). Now
+it is checked at the top, so the flag is PROMOTED rather than joined by a second one that could drift
+out of step. The refusal is spoken, because a silent return on a button click reads as the app
+ignoring you. The `finally` clear is what stops a failed scan wedging face scanning for the session.
+
+`test/face-scan-reentrancy.test.mjs`, 6 tests. Two guard ordering (the check precedes every read; the
+flag is claimed before the cumulative load) and one guards the self-recursive "no saved review —
+detect now?" path, which must keep working since it runs before the flag is claimed.
+
+**Two more of my own test bugs, both the same family as the running theme:**
+- I asserted the flag is set before `await loadPendingFaces()` — but `indexOf` found the FIRST
+  textual match, in the early-return branch that reopens a saved review without scanning and
+  legitimately reads before the flag. Targeted `clusters = await loadPendingFaces()` instead.
+- The visibility assertion used a 300-char window from the guard, which reached an unrelated
+  `showToast` further down the function, so making the guard SILENT left the test green. Bound it to
+  the guard's own line: `/if \(faceScanActive\)[^\n]*showToast\(/`.
+  **Windows reach; lines don't. Prefer the line.**
+
+Both tiers green: vm **981/900/81/0**, e2e **81/80/1/0**. App still running — undeployed, ~70 commits.
+
+**QUEUE:** 4 "🧠 AI learned N things" toasts outside its try/catch while the in-memory push is inside
+it · 5 face enrolment failure still renders a green ✓ card · 6 `_autoConsolidating` guards only itself
+while five other writers touch `config.ai.memories` · 7 LOW: "Remember this direction" fails silently;
+ledger-write rejection has no logIssue · 8 `projects:move` has no `.xmp` sidecar fallback (its twin
+does) — writes files beside footage, so it needs its own change and tests.
+
 ### 2026-07-19am — the map's Apply hid embed failures and per-clip errors (new-queue items 1 + 2)
 
 Same call site, so done together. Both are things main goes out of its way to report and the renderer

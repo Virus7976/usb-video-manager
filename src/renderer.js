@@ -10003,6 +10003,20 @@ function scanFacesSelected() {
 }
 
 async function scanFacesForClips(clipList, opts = {}) {
+  // ONE SCAN AT A TIME. This function is a load-modify-replace across minutes of GPU work:
+  // `clusters = await loadPendingFaces()` snapshots the whole review, and the main handler
+  // (faces:savePending) REPLACES the store wholesale. Two overlapping runs both snapshot and both
+  // replace, so the later one erases everything the first clustered, named or confirmed.
+  //
+  // Reachable by ordinary use, not a millisecond window: three entry points start a scan
+  // (scanFacesSelected, the People dashboard's .pd-scan, and the Analyze flow) and none of them
+  // disables its trigger, while a scan over a card of clips runs for minutes.
+  //
+  // `faceScanActive` already existed to widen the save debounce (#67); it is set before the long
+  // work and cleared in the `finally` below, which is exactly what a re-entrancy guard needs — so
+  // this promotes it rather than adding a second flag that could drift out of step. The refusal is
+  // spoken, because a silent return on a button click reads as the app ignoring you.
+  if (faceScanActive) { showToast('A face scan is already running — let it finish first', 4000); return; }
   if (!clipList || !clipList.length) { showToast('Select some clips first'); return; }
   // Skip clips already scanned in a previous (or interrupted) run — face scanning is slow and the
   // result is remembered, so never redo a clip unless explicitly forced.

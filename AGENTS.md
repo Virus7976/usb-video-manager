@@ -322,6 +322,74 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ae — the face-crop GC could unlink EVERY enrolled crop. Fixed. Seven more findings logged.
+
+Two more axes swept in parallel (every delete/clear/prune/evict site; write-throughs without their
+inverse). Eight findings. Fixed the worst; the rest are logged below **in priority order** — this is
+the richest queue the loop has had, do not start a new axis until it is worked through.
+
+**Fixed: `gcFaceCrops()` GC'd against a store it had not loaded.** The GC is reference-counted by
+design — its comment claims it "cannot delete a live crop no matter which call site forgot to think
+about it." That holds only if every reference store is in memory. It `ensureStore`d two of the three
+lazy stores it scans and **never `ai.people`**, which has no key in the config default either — so
+unloaded it read `undefined` → `|| []` → **no person crop was in the keep-set** and every
+`faces/*.jpg` was unlinked. `people.json` survived, still pointing at files that no longer existed:
+broken images in the dashboard and review grid, permanently.
+
+Reachable: `faces:saveScenes` calls the GC and loads only `ai.faceScenes`; renderer-side `ai.people`
+is pulled in by `matchPerson`, which runs **per detected face**. So a scan over footage with no faces
+in it (b-roll, drone, product) never loaded people, then fired `saveFaceScenesNow()` at end of scan.
+
+**Second trigger, and the nastier one:** when `people.json` fails to parse, `storeReadFailed` makes
+`saveStore` refuse to write it ("writing it would destroy the face DB") and the file is quarantined —
+but the GC had no matching guard, so the JSON was protected while the crops it references were
+deleted. It now aborts the sweep entirely if ANY reference store failed to read: leaking orphans
+until a clean launch costs disk, getting it wrong costs enrolment work with no source to rebuild
+from (the card is usually cleared by then).
+
+`test/face-crop-gc-lazy.test.mjs`, 3 tests, each half proven by breaking it; one test guards the
+other direction (a genuine orphan is still collected, so the fix doesn't just switch the GC off).
+Both tiers green: vm **926/845/81/0**, e2e **81/80/1/0**. App still running — undeployed, ~61 commits.
+
+**QUEUE — logged, verified by the sweeps, not yet fixed:**
+1. **Face-review Undo doesn't undo the enrolment.** `assign()` (`src/mod/08-people.js:731-745`) writes
+   `ai.people` (confirmed descriptors + crop + thumb), `finalMeta`, `renameDrafts` and
+   `config.subjects`. Undo (`:967`) calls only `untagClips`. **Confirmed descriptors are the only ones
+   that vote in `faceDecide`**, so mis-naming a face and hitting Undo permanently trains that face as
+   that person — every later scan re-suggests it, and "Confirm all" then propagates it in bulk. The
+   only repair is buried behind a right-click in the People dashboard.
+2. **`maybeAutoConsolidate()` can delete nearly all hand-taught memories, unattended.**
+   `main-mod/07-naming-organize.js:955-962` — the only guard is `merged.length <= mems.length`, which
+   bounds GROWTH, not shrinkage; one rule returned for twenty passes it. The sibling
+   `ai:consolidateMemories` proposes and waits for approval. Same operation, opposite consent model.
+3. **Deleting a person leaves the name on every filed clip.** `src/mod/08-people.js:1191` —
+   `removeClipPersonName` mutates in-memory only (no `flushDraftSave()`) and misses `peopleAuto`.
+   Rename and merge both call `offerRetagAffectedClips` → `clips:retagPerson`, which already supports
+   removal (`to === ''`). Delete just doesn't call it. The stale name gets embedded into the file at
+   the next organize and fed back into AI naming via clipObs.
+4. **`organize:undo` leaves `finalMeta.done = true`.** `done` is the sole gate on the finalMeta prune,
+   so an undone clip is pending work wearing a filed badge — age-evictable at 180 days and shed first
+   under the hard cap; once evicted `finalize:run` filters it out and it can never be organized again.
+5. **"Ignore this face" is advertised as reversible and is not.** `faces:ignore`
+   (`main-mod/08-finalize-feedback.js:341`) splices the face out of the person and pushes a record
+   carrying **no owner id**; `faces:unignore` (`:297`) only removes it from the bin, so nothing can
+   restore it. Also leaks the crop (no GC on that path).
+6. **Ledger record races its own Undo.** `src/mod/07-organize-map.js:1432` fires `recordToLedger`
+   un-awaited, then offers the Undo toast. A fast click reverses before `lastLedger` is stamped, then
+   `lastOrganize = null` destroys the second chance, and the late write creates a phantom project that
+   keeps scoring future imports. MEDIUM confidence — the ordering hazard is certain, the click window
+   is small.
+7. **LOW, do not act without evidence:** `ingestMemoryInbox` `slice(-300)` keeps the tail, so a >300
+   line inbox drop evicts the user's oldest hand-taught rules. Plus the earlier `ledgerFind`
+   case-sensitivity item from `ac`.
+
+The sweep also verified a lot as CLEAN — worth not re-checking: every other cap has exactly one site
+(`renameVersions` 12, memories 300, feedbackLog 200, styleCorrections 40, projectLedger 4000, clipObs
+4000, importIndex 30000, poster cache 4000); `finalMeta`'s prune correctly exempts `!isDone`;
+`delete:source` re-verifies every pair before unlink and fails closed; `organize:undo` refuses to
+delete the only copy; and tag/untag, copy/forget, save/clear-draft, rename/retag and merge/retag are
+all symmetric.
+
 ### 2026-07-19ad — the map's Apply said "Filed 0 ✓" when it had REFUSED, and its preflight was dead code
 
 Cleared logged findings 1 and 2 from `2026-07-19ac`. Both on `projects:move`, both mine from an

@@ -54,10 +54,28 @@ function saveFaceCrop(dataUrl) {
 function gcFaceCrops() {
   try {
     if (!fs.existsSync(FACES_DIR)) return;
+    // LOAD EVERY REFERENCE STORE, or the reference count is a lie. All three of these are lazy
+    // (LAZY_STORES, 01-core.js) and none has a key in the config default, so an unloaded one reads
+    // as `undefined` → `|| []` → its crops are simply absent from the keep-set and get unlinked.
+    // `ai.people` was the one missing: `faces:saveScenes` loads only ai.faceScenes, and on the
+    // renderer side people is pulled in by matchPerson — which runs PER DETECTED FACE. So a scan
+    // over footage with no faces in it (b-roll, drone, product) reached the GC with people unloaded
+    // and deleted EVERY enrolled crop. people.json survived, still pointing at files that no longer
+    // existed, so the dashboard and review grid showed broken images with no way back.
+    ensureStore('ai.people');         // enrolled faces + their cover thumbs
     ensureStore('ai.facesPending');   // pending clusters can reference crops too — never GC blind
     ensureStore('ai.faceScenes');     // …and so do the group shots. Miss this and the GC deletes every
                                       // scene frame the first time it runs — the store still points at
                                       // them, so the review grid silently shows broken images.
+
+    // A store that FAILED to read leaves an empty default in memory. saveStore already refuses to
+    // write those ("writing it would destroy the face DB") and quarantines the file — but the GC had
+    // no matching guard, so the JSON was protected while the crops it references were deleted. An
+    // incomplete keep-set must abort the sweep entirely: leaking a few orphans until the next clean
+    // launch costs disk, and getting this wrong costs enrolment work that cannot be rebuilt.
+    for (const k of ['ai.people', 'ai.facesPending', 'ai.faceScenes']) {
+      if (storeReadFailed[k]) { console.error(`[people] gc: skipped — ${k} failed to read this launch`); return; }
+    }
     const keep = new Set();
     const note = (u) => {
       const s = String(u || '');

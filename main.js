@@ -7371,7 +7371,31 @@ function writeDrafts(map) {
   const now = Date.now();
   // NON-DESTRUCTIVE upsert: set/update fields, but never overwrite saved content with
   // an empty value. A save can add a name; it can never blank one out.
-  for (const [k, v] of additions) drafts[k] = { ...mergeDraft(drafts[k], v), ts: now };
+  for (const [k, v] of additions) {
+    drafts[k] = { ...mergeDraft(drafts[k], v), ts: now };
+    // SUPERSEDE THE LEGACY TWIN. #8 writes new drafts under `name__size__mtime` and reads fall back
+    // to `name__size`, and nothing on disk was ever removed — "rewrite-free". Safe in isolation, but
+    // this function MERGES, so the first save after the migration went live added a SECOND entry for
+    // every clip instead of replacing one. Measured on the real store: 4594 drafts became 9188, 331
+    // typed names became 662, and the store hit 92% of DRAFTS_CAP with 812 entries of headroom.
+    // Nothing was lost or mis-read — reads resolve V2-then-legacy — but the next card would start
+    // evicting, and an evicted `facesScanned` flag means a clip gets re-scanned for nothing.
+    //
+    // This is a PER-WRITE supersede, not the cleanup pass the notes rightly forbid: no sweep, no
+    // rewrite of entries nobody touched. A legacy entry disappears only at the moment its V2
+    // replacement is written.
+    //
+    // ⚠ The legacy key is AMBIGUOUS — two clips sharing a name and size share it — so it may hold a
+    // name typed for a DIFFERENT clip. Never drop a NAMED legacy entry for an unnamed replacement:
+    // losing a duplicate is housekeeping, losing a typed name is what this whole area exists to
+    // prevent.
+    if (clipKeyHasMtime(k)) {
+      const stem = clipKeyStem(k);
+      if (stem && stem !== k && drafts[stem] && (draftIsNamed(drafts[k]) || !draftIsNamed(drafts[stem]))) {
+        delete drafts[stem];
+      }
+    }
+  }
   // Prune: drop entries older than 60 days; cap generously (users have thousands of
   // clips) and — crucially — NEVER evict a NAMED draft to make room for a flag-only one.
   // The AGE filter must exempt NAMED drafts, exactly as finalMeta:save exempts unconsumed work

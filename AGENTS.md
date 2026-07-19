@@ -322,6 +322,44 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bf — ⚠ DEPLOYED. And the deploy immediately exposed a flaw in my own #8 migration.
+
+**THE DEPLOY IS DONE.** App closed (graceful close didn't take; stopped), pre-built installer run with
+`/S -Wait`, relaunched as PID 15552. Verified in the DEPLOYED asar with `grep -ac`: `DRAFTS_CAP` (8),
+`people:undoAssign` (2), `readError: true` (1), `NOT backed up to the NAS` (1),
+`Not enough room: these photos` (1), `clearFinalMetaDone` (2), `notePersistFailure` (6), and the
+changelog text — **and `ents.length > 1000` is now 0.** The old truncating cap is gone from his machine.
+
+**Then the post-deploy data check caught something I shipped.** His drafts went **4594 → 9188** and
+typed names **331 → 662** on the first save. Exact doubling: every clip now carried BOTH a legacy
+`name__size` entry and a V2 `name__size__mtime` one, identical contents (verified by pairing the keys —
+all 4594 V2 entries had their legacy twin present).
+
+**This is #8 working as designed, and the design was incomplete.** "Rewrite-free" is safe in isolation,
+but `writeDrafts` MERGES, so the first save after the migration went live ADDED a second entry per clip
+instead of replacing one. Nothing was lost or mis-read — reads resolve V2-then-legacy — but the store
+hit **9188 of DRAFTS_CAP 10000: 92% full, 812 entries of headroom.**
+
+**His 662 typed names were never at risk**, and that is worth stating precisely: the named-first rule
+added this morning (`2026-07-19aa`) sheds flag-only entries first, so the cap protects exactly the
+thing the doubling threatened. A fix from earlier today covered a bug from later today.
+
+Fix: a **per-write supersede** — writing a V2 entry drops the legacy twin it replaces. **NOT the
+cleanup pass the notes forbid:** no sweep, no rewrite of untouched entries; a legacy entry disappears
+only as its replacement is written. Guarded on the legacy key's ambiguity — two clips sharing a name
+and size share that key, so a NAMED legacy entry is never dropped for an unnamed replacement.
+
+`test/drafts-legacy-supersede.test.mjs`, 7 tests, both parts proven with asserted breaks. Four guard
+the other direction: unrelated clips untouched, legacy-only writes unaffected, untouched entries never
+swept, and the named-legacy guard itself.
+
+**A test-fixture note:** one test failed on `ts: 1` (1970) because the 60-day age prune correctly shed
+an unnamed entry that old — nothing to do with the supersede. **Isolate a fixture from the OTHER rules
+operating on the same store.**
+
+Both tiers green: vm **1052/959/93/0**, e2e **93/92/1/0**. Store backed up at
+`USB SD Auto-Action.bak-20260719-1650` before any of this.
+
 ### 2026-07-19be — BACKED UP his real store. 331 typed names + 2230 face crops are now recoverable.
 
 `bd` established that his 331 typed names sit behind a truncation path that is live in the build he is

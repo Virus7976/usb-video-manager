@@ -322,6 +322,39 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bk — finishing what `bj` started: a capability without a control is worse than none
+
+Verified the shipped change instead of moving on, and it had left a genuinely dangerous gap. The list
+ALREADY rendered unmatched clips (a `fin-unmatched` row with a `fin-check-spacer` and a "no metadata"
+badge) — deliberately inert, because they could not be filed. Making them fileable turned that into
+three problems at once:
+
+1. **No checkbox, but selected by default.** `finRenderList` defaults everything `finMatched()`
+   returns to `selected = true`, and `finMatched()` now returns everything — so **4263 clips were
+   silently armed with no way to untick them individually.** One Run would have swept his whole
+   library into `_unsorted`. That is a worse failure than the one I fixed.
+2. **The badge said "no metadata"** — reads as an error, so the row looked broken rather than
+   actionable.
+3. **The summary counted them as described**, so it would claim "4594 with metadata" when 331 have any.
+
+Fixed: unmatched rows get a real, wired checkbox; they default to **UNSELECTED** so he opts in while
+the clips he has already worked on stay the default action; the badge says **"files by date →
+_unsorted"**; and the summary counts the two groups separately ("331 with metadata · 4263 will file by
+date").
+
+**The rule this earned:** *a capability without a control is worse than no capability.* Shipping the
+ability to file unnamed clips without the ability to choose which ones would have been a regression
+dressed as a feature.
+
+`test/e2e/unmatched-clips-selectable.e2e.mjs`, 6 tests, driven through the real DOM because what
+matters is the row he actually clicks. Both safety properties proven by breaking them. Two guard the
+other direction: named clips still default to selected, and a tick still reaches the model.
+
+Both tiers green: vm **1073/974/99/0**, e2e **99/98/1/0**.
+
+**Standing lesson for this backlog: after shipping a Tier 1 item, re-open the screen it changed.**
+`bj` was correct and incomplete, and the incompleteness was more dangerous than the original bug.
+
 ### 2026-07-19bj — ⭐ TIER 1 #5+#9: unnamed clips could not be filed AT ALL. That is the whole diagnosis.
 
 The single most important finding of the session. **Filing was gated on the AI having already

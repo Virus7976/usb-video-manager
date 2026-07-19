@@ -13331,11 +13331,15 @@ function finRenderList() {
   listEl.innerHTML = '';
   const files = finScan.files;
   const matched = finMatched();
-  // Default every matched clip to selected (tick once, untick to narrow down).
-  for (const f of matched) if (f.selected === undefined) f.selected = true;
+  // Default the clips he has already worked on to selected; leave the UNNAMED ones unticked so he
+  // opts in. Both are fileable now, but 4263 clips armed by default behind one Run button is a
+  // library-wide move nobody asked for — a capability needs a control, not just a default.
+  for (const f of matched) if (f.selected === undefined) f.selected = !!f.matched;
   const nameN = matched.filter((f) => f.matchType === 'name').length;
+  const describedN = matched.filter((f) => f.matched).length;
+  const plainN = matched.length - describedN;
   let summary = files.length
-    ? `${files.length} clip${files.length !== 1 ? 's' : ''} found · ${matched.length} with metadata`
+    ? `${files.length} clip${files.length !== 1 ? 's' : ''} found · ${describedN} with metadata${plainN ? ` · ${plainN} will file by date` : ''}`
     : 'No video files in this folder.';
   if (nameN) summary += ` (${nameN} from filename)`;
   $('finSummaryLine').textContent = summary;
@@ -13365,9 +13369,14 @@ function finRenderList() {
       const cb = li.querySelector('.fin-check');
       cb.addEventListener('change', () => { f.selected = cb.checked; finUpdateSelectionUI(); });
     } else {
-      li.innerHTML = `<span class="fin-check-spacer" aria-hidden="true"></span>
-        <span class="fin-body"><span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span><span class="fin-src-badge skip">no metadata</span></span></span>
+      // A REAL checkbox: these clips can be filed now, so the row has to be actionable. And the badge
+      // says where it will GO rather than "no metadata", which read as an error state — a clip the AI
+      // never reached is not broken, it just files by its date.
+      li.innerHTML = `<input type="checkbox" class="fin-check" ${f.selected ? 'checked' : ''} />
+        <span class="fin-body"><span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span><span class="fin-src-badge skip" title="No name yet — files into a dated folder you can sort later">files by date → _unsorted</span></span></span>
         <span class="file-size">${fmtBytes(f.size)}</span>`;
+      const cb2 = li.querySelector('.fin-check');
+      cb2.addEventListener('change', () => { f.selected = cb2.checked; finUpdateSelectionUI(); });
     }
     listEl.appendChild(li);
   }

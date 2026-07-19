@@ -358,6 +358,34 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19p — Gitea issue triage: #11 is mostly DONE; #2 scoped. (`05b6915`)
+
+**#11 (organize backend) overstates its remaining work.** Audited each acceptance criterion:
+- **3 — filing robustness: DONE**, and now VERIFIED by `test/projects-move-partial.test.mjs` (4).
+  `organizeMove` already does ensureDir, in-place detection, FULL-hash dup detection and `uniqueDest`
+  versioning; the handler wraps each clip in its own try/catch with copy as the default. The
+  partial-failure behaviour was untested, so it was a comment rather than a fact — it is a fact now.
+- **4 — buildEmbedTags: largely DONE** via #32/#53/#54/#55/#56. The renderer-preview-vs-embed parity
+  PROMPT.md warns "has drifted twice" is covered by six agreeing tests in `test/naming.test.mjs`.
+- **1 and 2 — rule polarity enum, route-vs-descriptor detection: NOT SAFE FROM WSL.** Both change
+  `ai:parseRules` / `ai:parseRoute` prompt and schema contracts, i.e. measured input.
+  **#11 reduces to its AI half. Do not pick it up from here.**
+
+**#2 (photos in the Step-1 Rename grid) — scoped, NOT started.** It is genuinely multi-part:
+`scan:videos` uses `walkForVideos` (`main-mod/05-windows-phone.js:1069`) which has no photo
+counterpart (`listImagesShallow` in `02-media.js` is the SHALLOW organize-screen scanner, not the
+recursive card walk); the grid's preview/date-reading differ for stills; and photos copy to
+`photosTempFolder`, NOT the Uncompressed intake — that last part is footage routing and deserves its
+own slice with its own tests. **Suggested split: (a) recursive photo walk + `scan:videos` returning
+stills behind a flag, main-side, tested; (b) grid rendering + date handling; (c) copy routing to
+Photos Temp.** Do NOT do (c) casually.
+
+**Remaining Gitea issues by what they need:** #12 build/publish + auto-update and #7 README
+screenshots need the owner's Windows machine; #3 source-abstraction refactor is large and touches the
+phone paths that cannot be exercised here.
+
+---
+
 ### 2026-07-19o — #8 IS COMPLETE (`2959bd0`). The top-ranked backlog item is closed.
 
 All four stores it spans are migrated: **drafts** (`27c4bc2`), **observations** (`94ac02b`), **faces

@@ -322,6 +322,40 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bi — TIER 1 #4: the home screen can finally see the work he abandoned
+
+First build against the toolness backlog. The finding is better than the backlog item assumed: a
+`#pendingWork` section and a `renderPendingWork()` **already exist** — they were just blind to the
+work that matters. `pending:work` counts FILES IN FOLDERS (uncompressed intake, ready-to-organize),
+so his **458 half-reviewed face clusters** were invisible on every launch. He has done 267 face
+confirmations by the click log; the app simply never told him there was a partly-finished job to walk
+back into.
+
+Added `facesPending` to `pending:work` and a resume card that opens the SAVED review — crops and
+clusters are already on disk, so it reopens where he stopped rather than re-detecting anything.
+
+**Two judgement calls worth keeping:**
+1. **Only UNREVIEWED clusters count** (`!done && !skipped && !rejected`). A number that never drops is
+   one he learns to ignore, which is worse than not showing it.
+2. **Deliberately did NOT surface "4263 clips unnamed"**, which the backlog item suggested. Naming 4263
+   clips is precisely the marathon he already refuses; that number tells him he is behind without
+   offering a step he would take. **Surface resumable work, not a backlog.** Faces qualify — half
+   done, one keystroke each, and every answer permanently improves recognition.
+
+`ensureStore('ai.facesPending')` first — it is LAZY, and an unloaded lazy store reads as undefined and
+would silently report 0, the same bug class as the face-crop GC. Best-effort throughout: nothing on
+this card is worth failing a launch over.
+
+`test/pending-faces-resume.test.mjs`, 7 tests, all three parts proven with asserted breaks. Two guard
+the other direction (existing folder counts still reported; a broken store still renders).
+
+**Another weak-assertion catch:** the lazy-load test first asserted `typeof === 'number'`, which held
+whether or not `ensureStore` ran. Rewritten to boot a SEPARATE app with `faces-pending.json` seeded on
+DISK and the in-memory copy deleted — with the load it finds 2, without it finds nothing. **When the
+property is "it read from disk", the test has to involve a disk.**
+
+Both tiers green: vm **1059/966/93/0**, e2e **93/92/1/0**.
+
 ### 2026-07-19bh — Jake: *"more like a tool, less like a visually appealing random thing I never use"*
 
 Measured his REAL store and interaction log before writing anything, and the numbers say something

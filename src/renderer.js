@@ -332,6 +332,9 @@ async function withBusyBtn(btn, busyLabel, fn, onError) {
 const DL_ICON_CARD = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v4M11 4v4M15 4v4"/><path d="M3 13h18"/></svg>`;
 const DL_ICON_USB = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="9" width="10" height="12" rx="2"/><path d="M9.5 9V4.5h5V9"/><path d="M12 13v4"/></svg>`;
 const DL_ICON_PHONE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2"/><line x1="10.5" y1="18" x2="13.5" y2="18"/></svg>`;
+// Same line-icon language as DL_ICON_PHONE (1.7 stroke, round caps) so the pending-work cards read
+// as one family rather than a colour emoji shouting next to a monochrome one.
+const DL_ICON_PEOPLE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c0-3 2.5-4.8 5.5-4.8s5.5 1.8 5.5 4.8"/><path d="M16.5 5.6a3 3 0 0 1 0 5.4"/><path d="M18 14.6c2 .6 3.2 2.1 3.2 4.4"/></svg>`;
 // Film strip — for the "footage waiting" card. Same line vocabulary as the device icons above
 // (24 viewBox, 1.7 stroke, currentColor) so it inherits the .sc-icon chip's colour like they do.
 // It replaces a 🎬 emoji, which rendered as full-colour clip-art beside monochrome line icons.
@@ -415,7 +418,24 @@ async function renderPendingWork() {
   // emoji — so two of them stacked read as two competing alert boxes shouting over the list beneath.
   // Same card language now; the only accent is a slim left rail and the CTA pill, which is enough to
   // say "there's work waiting" without drowning the screen.
+  // FACES WAITING — the work he starts most and finishes least. Phrased as a resumable job, not a
+  // backlog: it says how many are left and offers to continue, because each answer is one keystroke
+  // and every one permanently improves recognition. Deliberately NOT paired with a "4263 clips
+  // unnamed" line — naming 4263 clips is the marathon he already refuses, and putting that number on
+  // the home screen tells him he is behind without offering a step he would take.
+  const facesWaiting = (w && w.facesPending) || 0;
+
   const cards = [];
+  if (facesWaiting) {
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwFaces">
+        <span class="sc-icon accent">${DL_ICON_PEOPLE}</span>
+        <span class="sc-text">
+          <span class="sc-title">Faces waiting to be named</span>
+          <span class="sc-sub"><b>${facesWaiting}</b> face${facesWaiting !== 1 ? 's' : ''} left · answer a few, it remembers the rest</span>
+        </span>
+        <span class="pw-cta">Continue<span class="pw-chev">›</span></span>
+      </button>`);
+  }
   if (phoneStaged) {
     cards.push(`<button type="button" class="settings-card action pw-card" id="pwPhone">
         <span class="sc-icon accent">${DL_ICON_PHONE}</span>
@@ -452,6 +472,17 @@ async function renderPendingWork() {
   if (go) go.addEventListener('click', () => openFinalize());
   const ph = host.querySelector('#pwPhone');
   if (ph) ph.addEventListener('click', () => resumePhoneStaged());
+  // Straight back into the saved review — the clusters and their crops are already on disk, so this
+  // reopens exactly where he stopped rather than re-detecting anything.
+  const fc = host.querySelector('#pwFaces');
+  if (fc) {
+    fc.addEventListener('click', async () => {
+      let pending = [];
+      try { pending = await loadPendingFaces(); } catch { pending = []; }
+      if (!pending.length) { showToast('Nothing left to review — all faces are named'); renderPendingWork(); return; }
+      showFaceReviewGrid(pending, state.scannedFiles || [], 0);
+    });
+  }
 }
 
 // Wireless workflow: remember the NAS folder a phone app (QNAP QuMagie/Qfile) uploads

@@ -8134,7 +8134,25 @@ ipcMain.handle('pending:work', async () => {
       for (const f of files) { const lc = f.name.toLowerCase(); if (store[lc] || stems.has(stemOf(lc))) readyAnalyzed += 1; }
     } catch { /* ignore */ }
   }
-  return { ok: true, intakeDir, readyDir, uncompressed, ready, readyAnalyzed };
+  // THE WORK HE ACTUALLY ABANDONED. Everything above counts FILES IN FOLDERS; none of it can see a
+  // half-finished face review, which on his real store is 458 clusters — the largest pile of
+  // part-done work he has, invisible on every launch. His click log shows 267 face confirmations, so
+  // he does this work; he just never gets told there is a partly-finished job to walk back into.
+  //
+  // Only UNREVIEWED clusters count. One he named (`done`), dismissed (`skipped`) or rejected is
+  // finished business, and a number that never drops is one he learns to ignore.
+  //
+  // ensureStore first: ai.facesPending is LAZY, and an unloaded lazy store reads as undefined and
+  // would silently report 0 — the same bug class that let the face-crop GC delete every crop.
+  // Best-effort: nothing here is worth failing a launch over.
+  let facesPending = 0;
+  try {
+    ensureStore('ai.facesPending');
+    const pend = (config.ai && config.ai.facesPending) || [];
+    if (Array.isArray(pend)) facesPending = pend.filter((c) => c && !c.done && !c.skipped && !c.rejected).length;
+  } catch { facesPending = 0; }
+
+  return { ok: true, intakeDir, readyDir, uncompressed, ready, readyAnalyzed, facesPending };
 });
 
 // Scan the (top level of the) Compressed folder and match each file to a stored

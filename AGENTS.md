@@ -358,40 +358,42 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
-### 2026-07-19b — face-scan durability: 3 of 4 defects DONE (commit `95cc8a0`)
+### 2026-07-19b — face-scan durability: ALL 4 defects DONE (`95cc8a0`, `a457716`)
 
 Owner: *"if I do a face scan right now but don't confirm faces it doesn't remember the scan."*
-Fixed: the un-seeded `collectClipFaces` callers (which made an Analyze run **silently delete every
-unconfirmed face from an earlier scan** — worse than the reported symptom), persistence before the
-grid opens on both callers, `saveFaceScenesNow()` when a scan ends, and `scanFacesAuto` no longer
-claiming clips are review-scanned. Tests: `test/e2e/faces-scan-durable.e2e.mjs` (5).
+All four fixed: the un-seeded `collectClipFaces` callers (which made an Analyze run **silently
+delete every unconfirmed face from an earlier scan** — worse than the reported symptom), persistence
+before the grid opens on both callers, `saveFaceScenesNow()` when a scan ends, `scanFacesAuto` no
+longer claiming clips are review-scanned, and the scanned flag now persisting from the
+Organize/Finalize screen via `finalMeta` (keyed by file NAME, which survives the rename — the draft
+map only walks `state.scannedFiles`). Tests: `test/faces-scanned-finalmeta.test.mjs` (3),
+`test/e2e/faces-scan-durable.e2e.mjs` (6).
 
-**STILL OPEN — the 4th defect. The scanned flag does not persist from the Organize/Finalize
-screen.** `currentSelectedClips()` (`src/mod/08-people.js:1182`) builds throwaway clips whose `_ref`
-points into `finScan.files`, and `flushDraftSave` → `buildDraftMap()` walks **only**
-`state.scannedFiles` (`src/mod/01-core.js:1157`, and it bails entirely when that array is empty at
-`:1197`). On Finalize the files are already renamed, so `clipKey` (`name__size`) no longer matches
-and the flag is written to nothing durable — next session every clip re-scans. Note
-`f.meta.facesScanned` is READ at `08-people.js:1182` but **nothing anywhere writes it**; that read
-is dead. Fix: add a main-side mark-by-key handler (or upsert through `writeDrafts` keyed by
-`clipKey`) so `08-people.js:538` works regardless of which screen owns the clip list, and write
-`meta.facesScanned` on the Finalize path so the dead read becomes live. **Write the failing test
-first** — a two-launch e2e in the style of `faces-persistence.e2e.mjs`.
+**KEEP THIS — a trap in `finalMeta:save`.** It stringified every non-array value, and `String(false)`
+is `'false'`, which is **truthy**. Any boolean written to that store would read back as `true`
+forever. `facesScanned` is the first flag to live there and has to be able to say "no", so booleans
+are now preserved. If you add another flag to a store that stringifies, check this first.
 
-**FOUND, PRE-EXISTING, NOT MINE — `#58` e2e fails:** *"a dateless VIDEO takes its date from the
-container, not the copy time"* (`test/e2e/phone-capture-date.e2e.mjs`). Confirmed pre-existing by
-stashing this session's changes and watching it still fail. Not diagnosed. It means a dateless phone
-video may be getting dated to copy-time — worth checking before it silently mis-dates a shoot.
+**NEXT — pick from the backlog.** Nothing is half-built; the tree is clean. Two known items:
 
-**ALSO REQUESTED, not started:** drag a region on the group photo to name a face the detector
-missed ("I should be able to drag over a section on the screen and name it even if it's not
-recognized as a face"). Open design question: a hand-drawn region has **no descriptor**, so decide
-whether it enrols (it cannot produce a descriptor without a detect pass over that crop) or only tags
-the clip. It changes what `people.json` means — do not guess.
+1. **`#58` e2e FAILS and is PRE-EXISTING, not diagnosed** — *"a dateless VIDEO takes its date from
+   the container, not the copy time"* (`test/e2e/phone-capture-date.e2e.mjs`). Confirmed pre-existing
+   by stashing. It means a dateless phone video may be dated to COPY TIME, which silently mis-dates
+   a shoot — and the shoot date is the signal the whole placement brain leans on
+   (`usb-app-shoots-in-batches`). Worth taking before new features.
+2. **Drag-to-name a missed face** (owner-requested, not started): *"I should be able to drag over a
+   section on the screen and name it even if it's not recognized as a face."* Open design question —
+   a hand-drawn region has **no descriptor**, so decide whether it enrols (it cannot produce one
+   without a detect pass over that crop) or only tags the clip. It changes what `people.json` means;
+   do not guess.
+
+**NOT YET DEPLOYED.** Everything since `82f72ba` is committed and green but the owner's installed
+build predates it — he was mid-review with 4263 clips left, so no rebuild was run. Check the app is
+not running, then build per §9 and install.
 
 **ENVIRONMENT NOTE:** `shell.openPath` HANGS under headless WSL (no desktop file handler — the IPC
-reply never arrives and the call dies at 30s with "reply was never sent"). Any e2e that opens a
-folder for real must be skipped here, not debugged.
+reply never arrives, dying at 30s with "reply was never sent"). Any e2e that opens a folder for real
+must be skipped here, not debugged.
 
 ### 2026-07-19a — #95 DONE
 

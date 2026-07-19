@@ -322,6 +322,54 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19aw — photos now enter the import index and get their drafts cleared. PHOTO PARITY CLOSED.
+
+The video path marks verified clips imported and clears their drafts right after verification, with
+the comment *"A clip that failed verification stays un-imported and keeps its draft, so re-inserting
+the card re-offers it — never trust (or forget the name of) a bad copy."* `clips` there is
+`filesToCopy()`, which strips photos — so a still was never marked and its draft never cleared, while
+`distributeFlowPhotos` already computed exactly the right set (`safePhotos`, photos with at least one
+VERIFIED destination) and used it for `state.copied`, `recordCopied` and `saveFlowFinalMeta` only.
+
+**Severity, honestly:** the least harmful item in the photo sweep. Re-copying costs time, not data —
+`phone:distribute`'s collision guard full-hashes and skips a byte-identical destination. The draft
+half is the part that actually mattered: an uncleared photo draft counts against `DRAFTS_CAP` forever
+(see `aa`/`ac`) and keeps re-offering a name already dealt with.
+
+`test/photo-import-index.test.mjs`, 5 tests, all three parts proven with asserted breaks. Two guard
+the other direction: only verified photos are marked, and the existing bookkeeping is untouched.
+
+**Test limitation stated rather than glossed:** `distributeFlowPhotos` drives real IPC and
+`window.api` cannot be stubbed (contextBridge props are non-writable), so neither harness can observe
+the calls behaviourally. These are source assertions, written with the session's discipline. **A
+behavioural test would be better and is not available here** — say so rather than implying more
+coverage than exists.
+
+**Two more of my own regex bugs, both failing against CORRECT code:** I demanded a paren after
+`importKey`, which is passed as a function reference (`.map(importKey)`); and I used `[^)]*` to span
+`map((p) => clipKeyV2(p))`, which cannot cross the arrow function's own parens. **A regex that is
+"more specific" is not automatically stricter — it is just likelier to be wrong.**
+
+Both tiers green: vm **1033/946/87/0**, e2e **87/86/1/0**. App still running (PID 7104) — undeployed,
+**~79 commits**.
+
+---
+
+## STATE: photo/video parity is CLOSED. Ten axes swept. Nothing known remains.
+
+The `at` sweep's three findings are all fixed (`at`, `au`, `av`, `aw`). Every axis tried this session
+is recorded as closed: sibling-path, three-axis, store invariants, write-vs-read normalisation,
+main-vs-renderer guards, delete/evict paths, undo/inverse pairs, swallowed failures, re-entrancy, and
+photo/video parity.
+
+**THE DEPLOY IS THE ONLY HIGH-VALUE ACTION LEFT** — ~79 commits, green, blocked all session by the app
+running (PID 7104). Recipe in PROMPT.md §9.
+
+If the app is still open next iteration, a NEW axis is needed and none is obvious. Untried angles: a
+store file deleted or replaced mid-session; the AI model missing/renamed mid-run; what a second app
+instance does to the single-instance lock. **If a sweep comes back empty, SAY SO PLAINLY — a short
+honest report is the correct output, and at this point an empty result is the likeliest one.**
+
 ### 2026-07-19av — the photo fan-out had no free-space preflight at all
 
 Video has TWO layers (the renderer's `spaceTargets`, plus `copy:start`'s per-destination `statfs` with

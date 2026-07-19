@@ -850,6 +850,20 @@ async function distributeFlowPhotos() {
       })));
     } catch { /* non-fatal */ }
     saveFlowFinalMeta(safePhotos);   // carry the AI's work forward to Organize, same as videos
+    // …and the LAST two things the video path does after verification, which photos never got:
+    // mark them imported and drop their drafts. Without this, re-inserting a card re-offered and
+    // re-copied every still (time, not data — the collision guard full-hashes and skips an identical
+    // destination) and, worse, their drafts were never cleared, so they counted against DRAFTS_CAP
+    // forever and kept re-offering a name the user had already dealt with.
+    //
+    // Only safePhotos, exactly as the video path uses only verified clips: a photo that failed to
+    // copy anywhere must stay un-imported and keep its draft so the card re-offers it. Drafts are
+    // cleared under clipKeyV2 — the form buildDraftMap wrote them under (#8).
+    try {
+      const pkeys = safePhotos.map(importKey);
+      if (pkeys.length) { window.api.importsAdd(pkeys); pkeys.forEach((k) => importedSet.add(k)); }
+      window.api.clearDrafts(safePhotos.map((p) => clipKeyV2(p)));
+    } catch { /* non-fatal */ }
   }
   const names = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ') || 'Photos Temp';
   // Surface partial failures instead of implying every photo copied (the copy is now

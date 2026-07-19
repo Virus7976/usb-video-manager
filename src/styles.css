@@ -2885,3 +2885,17 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
   background: color-mix(in srgb, var(--danger) 16%, transparent);
   color: var(--danger);
 }
+
+/* "What's new" — the changelog rendered in-app (Help → What's new…). Deliberately reuses the
+   modal/typography scale rather than inventing one, so it reads as the same app. */
+.cl-body { overflow-y: auto; padding: 4px 20px 8px; line-height: 1.55; }
+.cl-body .cl-h { margin: 18px 0 8px; line-height: 1.3; }
+.cl-body .cl-h1 { font-size: 18px; font-weight: 650; }
+.cl-body .cl-h2 { font-size: 16px; font-weight: 650; padding-bottom: 6px; border-bottom: 1px solid var(--border, #2a2a2a); }
+.cl-body .cl-h3 { font-size: 14px; font-weight: 650; color: var(--accent, #4cc2ff); }
+.cl-body .cl-h4 { font-size: 13px; font-weight: 600; }
+.cl-body .cl-p { margin: 8px 0; font-size: 13px; }
+.cl-body .cl-list { margin: 8px 0 12px; padding-left: 20px; }
+.cl-body .cl-list li { margin: 6px 0; font-size: 13px; }
+.cl-body code { padding: 1px 5px; border-radius: 4px; background: var(--menu-solid, #2a2a2a); font-size: 12px; }
+.cl-body strong { font-weight: 650; }

@@ -1111,6 +1111,24 @@ function installUpdateNow() {
 
 // Renderer-triggered native notification (AI done, faces tagged, etc.).
 ipcMain.handle('app:version', () => { try { return app.getVersion(); } catch { return ''; } });
+
+// What changed, readable inside the app — the owner asked to see what's being done to his tool
+// without reading a repo. CHANGELOG.md is already written in his language ("your footage"), so it is
+// the source rather than a second list that would drift. Shipped in build.files; read from
+// __dirname so it resolves the same packed in app.asar as it does in dev.
+//
+// Returns RAW markdown and lets the renderer format it: the renderer already owns escaping (it runs
+// webSecurity:false, so nothing untrusted may reach innerHTML unescaped), and doing it here would
+// hand it pre-built HTML — exactly the shape that guard exists to prevent.
+ipcMain.handle('changelog:get', async () => {
+  try {
+    const text = await fsp.readFile(path.join(__dirname, 'CHANGELOG.md'), 'utf8');
+    return { ok: true, text, version: (() => { try { return app.getVersion(); } catch { return ''; } })() };
+  } catch (err) {
+    // A missing changelog is a packaging mistake, not a crash — say so plainly in the dialog.
+    return { ok: false, error: err.message || String(err) };
+  }
+});
 ipcMain.handle('app:notify', (_e, payload) => {
   const title = String((payload && payload.title) || 'USB / SD Auto-Action');
   const body = String((payload && payload.body) || '');

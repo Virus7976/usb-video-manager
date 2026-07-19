@@ -50,6 +50,7 @@
       "main.js",
       "preload.js",
       "config.json",
+      "CHANGELOG.md",
       "src/**/*",
       "!src/mod/**"
     ],

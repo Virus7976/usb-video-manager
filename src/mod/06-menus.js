@@ -211,6 +211,7 @@ const MENUS = {
         { label: 'Report feedback…', action: () => showFeedbackReportDialog(lastFeedbackSection) },
         { label: 'Export feedback…', action: showFeedbackExportDialog }
       ] },
+    { label: "What's new…", action: showChangelog },
     { label: 'Activity log…', action: showActivityLog },
     { label: 'Copy diagnostics…', action: showDiagnostics },
     { sep: true },
@@ -1125,6 +1126,62 @@ function logIssue(area, msg) {
     if (sessionLog.length > 400) sessionLog.shift();
     const dot = document.getElementById('logDot'); if (dot) dot.classList.remove('hidden');
   } catch { /* never throw from logging */ }
+}
+// "What's new" — the changelog, in the app. Renders a deliberately SMALL subset of markdown:
+// headings, bullets, `code`, **bold**, *italic*. Everything is escaped FIRST and the inline rules
+// are applied to escaped text, so no changelog content can inject markup — this renderer runs
+// webSecurity:false, so that ordering is not optional.
+function renderChangelogMarkdown(md) {
+  const out = [];
+  let inList = false;
+  const inline = (s) => escapeHtml(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+    // Keep-a-Changelog links are noise in a dialog — show the text, drop the target.
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+  const closeList = () => { if (inList) { out.push('</ul>'); inList = false; } };
+  for (const raw of String(md || '').split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    const h = /^(#{1,4})\s+(.*)$/.exec(line);
+    const li = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (h) { closeList(); out.push(`<h${h[1].length} class="cl-h cl-h${h[1].length}">${inline(h[2])}</h${h[1].length}>`); continue; }
+    if (li) { if (!inList) { out.push('<ul class="cl-list">'); inList = true; } out.push(`<li>${inline(li[1])}</li>`); continue; }
+    if (!line.trim()) { closeList(); continue; }
+    closeList();
+    out.push(`<p class="cl-p">${inline(line)}</p>`);
+  }
+  closeList();
+  return out.join('');
+}
+async function showChangelog() {
+  const ov = document.createElement('div'); ov.className = 'modal-overlay';
+  ov.innerHTML = `<div class="modal-card modal-form" style="width:min(720px,94vw);max-height:84vh;display:flex;flex-direction:column">
+    <div class="ai-hd"><span class="ai-hd-icon">📝</span><div class="ai-hd-text"><h3>What's new</h3><p class="muted small cl-sub">Loading…</p></div></div>
+    <div class="cl-body"><div class="muted small" style="padding:24px;text-align:center">Loading…</div></div>
+    <div class="modal-actions"><button type="button" class="btn primary cl-close">Close</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.querySelector('.cl-close').addEventListener('click', close);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  const body = ov.querySelector('.cl-body');
+  const sub = ov.querySelector('.cl-sub');
+  // IPC can reject; without the catch the dialog would sit on "Loading…" forever with no clue why.
+  try {
+    const r = await window.api.changelog();
+    if (r && r.ok) {
+      body.innerHTML = renderChangelogMarkdown(r.text);
+      sub.textContent = r.version ? `You're on v${r.version}. Newest changes first.` : 'Newest changes first.';
+    } else {
+      body.innerHTML = `<div class="muted small" style="padding:24px;text-align:center">Couldn't read the changelog${r && r.error ? ` — ${escapeHtml(r.error)}` : ''}.</div>`;
+      sub.textContent = '';
+    }
+  } catch (e) {
+    body.innerHTML = `<div class="muted small" style="padding:24px;text-align:center">Couldn't read the changelog — ${escapeHtml((e && e.message) || String(e))}.</div>`;
+    sub.textContent = '';
+    logIssue('UI', `Changelog failed to load: ${(e && e.message) || e}`);
+  }
 }
 function showActivityLog() {
   const ov = document.createElement('div'); ov.className = 'modal-overlay';

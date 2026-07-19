@@ -322,6 +322,41 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bg — ✅ DEPLOYED AND VERIFIED ON REAL DATA. The store is clean and the migration is complete.
+
+Second deploy of the session, carrying the supersede fix. App closed, installer run `/S -Wait`,
+relaunched as **PID 10516**. `SUPERSEDE THE LEGACY TWIN` confirmed present in the deployed asar.
+
+**Measured on his actual store, before → after:**
+| | before deploy | after 1st deploy | after supersede |
+|---|---|---|---|
+| drafts | 4594 | **9188** (doubled) | **4594** |
+| typed names | 331 | 662 (dupes) | **331** |
+| V2-keyed | 0 | 4594 | **4594** |
+| legacy-keyed | 4594 | 4594 | **0** |
+| cap headroom | — | **812** | **5406** |
+
+**The #8 migration is now COMPLETE on his machine** — every draft is V2-keyed, no legacy entries
+remain, no duplicates, and every typed name survived. The store went from 92% of the cap to 46%.
+
+Nothing was lost at any point: the doubling was additive, reads resolved V2-then-legacy throughout,
+and the named-first rule protected the typed names even at 92% full.
+
+**What this session should be remembered for, beyond the fixes:** the post-deploy data check is what
+caught the doubling. Deploying and walking away would have left him at 812 entries of headroom with a
+store that re-scans clips as it churns. **Always re-measure the real store after a migration reaches
+production** — the whole point of `bd`'s read-only audit was having a before-number to compare against.
+
+---
+
+## STATE: DEPLOYED. Everything is live and verified.
+
+- **~88 commits shipped.** The machine is running HEAD.
+- **Store: 4594 drafts / 331 names / fully V2 / 46% of cap.** Clean.
+- **Backup retained** at `C:\Users\jakeg\AppData\Roaming\USB SD Auto-Action.bak-20260719-1650\`
+  (13 stores + 2230 face crops). Safe to delete once he's satisfied, but no reason to rush.
+- **Queue empty**, eleven axes swept, in-app changelog current so he can read today's work in the app.
+
 ### 2026-07-19bf — ⚠ DEPLOYED. And the deploy immediately exposed a flaw in my own #8 migration.
 
 **THE DEPLOY IS DONE.** App closed (graceful close didn't take; stopped), pre-built installer run with

@@ -1017,7 +1017,17 @@ async function aiAutoEnhance() {
       // every unnamed clip, so an unbounded call here stalls exactly the run it was meant to finish.
       const r = await aiCallGuard(aiSuggestClip(i, 'empty', { quiet: true }), 300000);
       queueQuestions(i, r);
-      markClipAnalyzing(i, false); flushDraftSave(); done += 1;
+      markClipAnalyzing(i, false); flushDraftSave();
+      // THE CARD WAS PULLED. The legacy single-pass loop has always checked this; the batch loops
+      // never did — and `batched` is the DEFAULT once a tool model is configured, so the guard was
+      // effectively unreachable. Without it every remaining clip fails on its own and pays the full
+      // aiCallGuard timeout: on a 200-clip card that is hours of apparent hang, and the honest
+      // one-time "your card is gone" is replaced by N bogus "model timeout" entries in the issue
+      // log. reportCardGone() is idempotent and sets aiAborted, so this reports once and unwinds any
+      // later phase (each opens with `if (aiAborted) break`).
+      // eslint-disable-next-line no-await-in-loop
+      if (!(r && r.ok) && await cardIsGone()) { reportCardGone(); break; }
+      done += 1;
     }
     // 2) learn durable rules from everything analyzed
     const withObs = all.filter((i) => { const c = state.scannedFiles[i]; return obsOf(c) && (c.subject || c.description); });
@@ -1481,6 +1491,15 @@ async function aiAnalyzeSelected(preset = null) {
         noteClipObs(clip, r.observation);   // remember for next time
       } else if (r && r.error) lastErr = r.error;
       markClipAnalyzing(i, false);
+      // THE CARD WAS PULLED. The legacy single-pass loop has always checked this; the batch loops
+      // never did — and `batched` is the DEFAULT once a tool model is configured, so the guard was
+      // effectively unreachable. Without it every remaining clip fails on its own and pays the full
+      // aiCallGuard timeout: on a 200-clip card that is hours of apparent hang, and the honest
+      // one-time "your card is gone" is replaced by N bogus "model timeout" entries in the issue
+      // log. reportCardGone() is idempotent and sets aiAborted, so this reports once and unwinds any
+      // later phase (each opens with `if (aiAborted) break`).
+      // eslint-disable-next-line no-await-in-loop
+      if (!(r && r.ok) && await cardIsGone()) { reportCardGone(); break; }
       done += 1;
     }
     // PHASE 2 — the reasoning model names them all from those observations (it
@@ -1516,6 +1535,15 @@ async function aiAnalyzeSelected(preset = null) {
       queueQuestions(i, r);
       markClipAnalyzing(i, false);
       flushDraftSave();   // persist each named clip immediately — survives a mid-run crash
+      // THE CARD WAS PULLED. The legacy single-pass loop has always checked this; the batch loops
+      // never did — and `batched` is the DEFAULT once a tool model is configured, so the guard was
+      // effectively unreachable. Without it every remaining clip fails on its own and pays the full
+      // aiCallGuard timeout: on a 200-clip card that is hours of apparent hang, and the honest
+      // one-time "your card is gone" is replaced by N bogus "model timeout" entries in the issue
+      // log. reportCardGone() is idempotent and sets aiAborted, so this reports once and unwinds any
+      // later phase (each opens with `if (aiAborted) break`).
+      // eslint-disable-next-line no-await-in-loop
+      if (!(r && r.ok) && await cardIsGone()) { reportCardGone(); break; }
       done += 1;
     }
   } else {

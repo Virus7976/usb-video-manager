@@ -1724,6 +1724,7 @@ ipcMain.handle('organize:undo', async () => {
   const lo = config.lastOrganize;
   if (!lo || !Array.isArray(lo.moves) || !lo.moves.length) return { ok: false, error: 'Nothing to undo' };
   let undone = 0; let failed = 0;
+  const reopened = [];   // source basenames we actually restored — these become pending work again
   for (const m of lo.moves) {
     try {
       let here = false; try { await fsp.access(m.to); here = true; } catch { /* filed file gone */ }
@@ -1738,6 +1739,7 @@ ipcMain.handle('organize:undo', async () => {
         // eslint-disable-next-line no-await-in-loop
         if (origHere) { await fsp.unlink(m.to); } else { await ensureDir(path.dirname(m.from)); await moveFileCrossDevice(m.to, m.from); }
         undone += 1;
+        reopened.push(path.basename(m.from));
         continue;
       }
       await ensureDir(path.dirname(m.from));
@@ -1746,8 +1748,14 @@ ipcMain.handle('organize:undo', async () => {
       // eslint-disable-next-line no-await-in-loop
       await moveFileCrossDevice(m.to, target);
       undone += 1;
+      reopened.push(path.basename(m.from));
     } catch { failed += 1; }
   }
+  // The un-filed clips are PENDING again, so their metadata must stop being evictable — finalize:run
+  // marked them done, and `done` is the sole gate on the finalMeta prune. Keyed by the source
+  // basename, exactly as markFinalMetaDone was called (`filed.push(it.name)`). Like the ledger
+  // reversal below, the files are already back at this point, so this must never fail the undo.
+  try { clearFinalMetaDone(reopened); } catch { /* metadata only — never fail the undo */ }
   // Reverse this run's PROJECT-LEDGER additions too (audit #37). Undoing the files but keeping
   // the memory left a phantom project whose dates/subjects kept matching future imports. The
   // files are already back at this point, so a ledger problem must never fail the undo.
@@ -7394,6 +7402,26 @@ function markFinalMetaDone(names) {
   for (const n of (Array.isArray(names) ? names : [])) {
     const k = String(n || '').toLowerCase();
     if (store[k] && !store[k].done) { store[k].done = true; changed = true; }
+  }
+  if (changed) { config.finalMeta = store; saveStore('finalMeta'); }
+}
+
+// The inverse: a clip that was UN-filed is pending work again, so its metadata must stop being
+// evictable. organize:undo restored the files, reversed the ledger and cleared lastOrganize, but
+// never cleared this flag — leaving the clip unfiled while still flagged filed. `done` is the sole
+// gate on the finalMeta prune AND what makes an entry shed first under the hard cap, so an undone
+// clip became age-evictable at 180 days; once evicted, finalize:run filters it out (`it.meta`
+// required) and it can never be organized again. That is the same "the AI's work silently gone"
+// outcome the skipMove guard above exists to prevent, re-created from the other side.
+//
+// Only the clips the undo actually restored are cleared — a move that failed is still filed
+// somewhere, and reopening its metadata would be a different kind of wrong.
+function clearFinalMetaDone(names) {
+  const store = currentFinalMeta();
+  let changed = false;
+  for (const n of (Array.isArray(names) ? names : [])) {
+    const k = String(n || '').toLowerCase();
+    if (store[k] && store[k].done) { store[k].done = false; changed = true; }
   }
   if (changed) { config.finalMeta = store; saveStore('finalMeta'); }
 }

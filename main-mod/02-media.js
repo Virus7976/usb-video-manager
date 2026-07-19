@@ -661,6 +661,7 @@ ipcMain.handle('organize:undo', async () => {
   const lo = config.lastOrganize;
   if (!lo || !Array.isArray(lo.moves) || !lo.moves.length) return { ok: false, error: 'Nothing to undo' };
   let undone = 0; let failed = 0;
+  const reopened = [];   // source basenames we actually restored — these become pending work again
   for (const m of lo.moves) {
     try {
       let here = false; try { await fsp.access(m.to); here = true; } catch { /* filed file gone */ }
@@ -675,6 +676,7 @@ ipcMain.handle('organize:undo', async () => {
         // eslint-disable-next-line no-await-in-loop
         if (origHere) { await fsp.unlink(m.to); } else { await ensureDir(path.dirname(m.from)); await moveFileCrossDevice(m.to, m.from); }
         undone += 1;
+        reopened.push(path.basename(m.from));
         continue;
       }
       await ensureDir(path.dirname(m.from));
@@ -683,8 +685,14 @@ ipcMain.handle('organize:undo', async () => {
       // eslint-disable-next-line no-await-in-loop
       await moveFileCrossDevice(m.to, target);
       undone += 1;
+      reopened.push(path.basename(m.from));
     } catch { failed += 1; }
   }
+  // The un-filed clips are PENDING again, so their metadata must stop being evictable — finalize:run
+  // marked them done, and `done` is the sole gate on the finalMeta prune. Keyed by the source
+  // basename, exactly as markFinalMetaDone was called (`filed.push(it.name)`). Like the ledger
+  // reversal below, the files are already back at this point, so this must never fail the undo.
+  try { clearFinalMetaDone(reopened); } catch { /* metadata only — never fail the undo */ }
   // Reverse this run's PROJECT-LEDGER additions too (audit #37). Undoing the files but keeping
   // the memory left a phantom project whose dates/subjects kept matching future imports. The
   // files are already back at this point, so a ledger problem must never fail the undo.

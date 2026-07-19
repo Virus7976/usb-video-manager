@@ -1198,6 +1198,26 @@ function markFinalMetaDone(names) {
   if (changed) { config.finalMeta = store; saveStore('finalMeta'); }
 }
 
+// The inverse: a clip that was UN-filed is pending work again, so its metadata must stop being
+// evictable. organize:undo restored the files, reversed the ledger and cleared lastOrganize, but
+// never cleared this flag — leaving the clip unfiled while still flagged filed. `done` is the sole
+// gate on the finalMeta prune AND what makes an entry shed first under the hard cap, so an undone
+// clip became age-evictable at 180 days; once evicted, finalize:run filters it out (`it.meta`
+// required) and it can never be organized again. That is the same "the AI's work silently gone"
+// outcome the skipMove guard above exists to prevent, re-created from the other side.
+//
+// Only the clips the undo actually restored are cleared — a move that failed is still filed
+// somewhere, and reopening its metadata would be a different kind of wrong.
+function clearFinalMetaDone(names) {
+  const store = currentFinalMeta();
+  let changed = false;
+  for (const n of (Array.isArray(names) ? names : [])) {
+    const k = String(n || '').toLowerCase();
+    if (store[k] && store[k].done) { store[k].done = false; changed = true; }
+  }
+  if (changed) { config.finalMeta = store; saveStore('finalMeta'); }
+}
+
 // Find every stored clip (organized finalMeta + in-progress drafts) tagged with a person
 // name — powers the "you changed X, re-tag N clips?" offer after a rename/merge/reassign.
 ipcMain.handle('clips:findByPerson', (_evt, name) => {

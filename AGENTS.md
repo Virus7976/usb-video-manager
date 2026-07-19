@@ -322,6 +322,39 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ai — organize:undo left finalMeta.done set, so undone clips became evictable (queue item 4)
+
+`finalize:run` ends with `markFinalMetaDone(filed)`, and that flag means exactly one thing: this
+clip's metadata may now be evicted. `done` is the SOLE gate on the finalMeta prune and also what
+makes an entry shed first under the hard cap.
+
+`organize:undo` restored the files, reversed the ledger delta and cleared `lastOrganize` — and never
+touched finalMeta. So after an undo the clip was unfiled while still flagged filed: age-evictable at
+180 days, shed first under the cap, and once evicted `finalize:run` filters it out at the top of the
+loop (`it.meta` required) so it can **never be organized again**. That is precisely the outcome the
+skipMove guard a few lines above exists to prevent — "the AI's work silently gone" — re-created from
+the other side. Delayed and silent: nothing looks wrong on the day you press Undo.
+
+Fix: `clearFinalMetaDone(names)` next to its forward twin, called from `organize:undo` with the
+source basenames of the clips it **actually restored** — keyed the same way `markFinalMetaDone` was
+called (`filed.push(it.name)`). A move that FAILED keeps its flag: that clip is still filed somewhere
+and reopening its metadata would be a different kind of wrong. Wrapped in try/catch like the ledger
+reversal, for the same stated reason: the files are already back, so this must never fail the undo.
+
+`test/organize-undo-finalmeta.test.mjs`, 6 tests; all four parts (copy branch, move branch, the call,
+the clear itself) proven by breaking them separately — the rule from `ah`, applied deliberately this
+time rather than after being caught. Three tests guard the other direction: the AI subject/description
+survive, a clip that couldn't be restored keeps its flag, and an unrelated filed clip is not reopened.
+
+vm **951/870/81/0**. e2e not run — `main-mod/` only, no renderer file touched. **Run both before any
+deploy.** App still running (PID 7104) — undeployed, ~65 commits.
+
+**QUEUE:** 5 "Ignore this face" is not reversible (splices a descriptor off a person and the ignored
+record carries no owner id, so nothing CAN restore it — needs a schema addition, and it also leaks
+the crop) · 6 ledger/undo race (MEDIUM confidence; `recordToLedger` is fired un-awaited then Undo is
+offered immediately) · 7 LOW: memory-inbox `slice(-300)` evicting the oldest hand-taught rules,
+`ledgerFind` case-sensitivity (**do not act without evidence**).
+
 ### 2026-07-19ah — deleting a person left their name on every filed clip (queue item 3)
 
 Rename and merge both end with `offerRetagAffectedClips` → `clips:retagPerson`, which reaches

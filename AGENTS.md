@@ -358,6 +358,28 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19f — the backlog was re-audited; USE THE NEW SECTION, NOT THE TIER LISTS
+
+The tier lists in `memory/usb-app-audit-backlog-2026-07.md` are **~1-in-3 stale**. Ten entries were
+found already-fixed by tripping over them one at a time this session, costing an iteration each, so
+all 42 remaining items were re-checked against the code. The file now ends with a section
+**"⭐ BACKLOG RE-AUDITED AGAINST THE CODE — 2026-07-19"** carrying a verdict per item. **Pull work
+from that section; treat the tier lists above it as history.**
+
+~20 more turned out already done, including several that read like big wins: **#64 (nvenc GPU encode
++ CPU fallback), #78 (Ollama cancel via AbortController), #21 (num_ctx), #22, #23, #24, #29, #37,
+#38, #40, #42, #52, #58.**
+
+**Top of the open list is #8 — `clipKey = name__size` (`src/mod/01-core.js:1154`)** — the widest
+blast radius in the app: drafts, finalMeta, faces and AI observations all key on it, so two GoPro
+`GX010042.MP4` of equal size from different cards cross-contaminate names AND people, and any rename
+orphans the draft. Pure in-process JS, so it is fully reproducible here.
+
+The audit also separates the **Windows/hardware-gated** items (#92 unsigned auto-update, #98 a COM
+throw reading as "no phone", #13 the cluster threshold) so nobody starts one blind from WSL.
+
+---
+
 ### 2026-07-19e — #73 find & replace (`8f2ced3`); DEPLOY DEBT is now the top risk
 
 Edit → "Find & replace…" across the text fields the user owns. Literal find (metacharacters escaped),

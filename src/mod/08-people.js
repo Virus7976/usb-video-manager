@@ -523,7 +523,10 @@ async function scanFacesForClips(clipList, opts = {}) {
   if (!opts.force) {
     try { const drafts = (await window.api.getDrafts()) || {}; for (const k of Object.keys(drafts)) { if (drafts[k] && drafts[k].facesScanned) scannedKeys.add(k); } } catch { /* fall back to the in-memory flag alone */ }
   }
-  const isScanned = (c) => !!c._facesScanned || scannedKeys.has(clipKey(c));
+  // Check BOTH keys (audit #8). Drafts written before the collision fix are keyed `name__size`;
+  // new ones use `name__size__mtime`. Looking up only one would silently report every already-scanned
+  // clip as unscanned and re-detect the whole card — hours of GPU time, with nothing reporting it.
+  const isScanned = (c) => !!c._facesScanned || scannedKeys.has(clipKeyV2(c)) || scannedKeys.has(clipKey(c));
   const toScan = opts.force ? clipList : clipList.filter((c) => !isScanned(c));
   const skipped = clipList.length - toScan.length;
   if (!toScan.length) {

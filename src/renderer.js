@@ -1031,7 +1031,7 @@ async function applyPeopleFromDrafts() {
   try { drafts = await window.api.getDrafts(); } catch { return; }
   if (!drafts) return;
   for (const clip of state.scannedFiles) {
-    const d = drafts[clipKey(clip)];
+    const d = clipEntry(drafts, clip);
     if (!d) continue;
     if (Array.isArray(d.people) && d.people.length) clip.people = addUnique(clip.people, d.people);
     if (Array.isArray(d.peopleAuto) && d.peopleAuto.length) clip.peopleAuto = addUnique(clip.peopleAuto, d.peopleAuto);
@@ -1153,7 +1153,33 @@ function scheduleVersionRecompute() {
 // (not just in-session navigation). Keyed by a per-clip fingerprint (name+size)
 // so it re-attaches even if the card mounts under a different drive letter.
 // ---------------------------------------------------------------------------
+// LEGACY key — still READ everywhere, never removed. Every draft, copied-log and finalMeta entry
+// Jake already has on disk is keyed this way; dropping it would orphan all of it.
 function clipKey(clip) { return `${clip.name}__${clip.size}`; }
+
+// The collision fix (audit #8). `name__size` is not unique: two GoPro `GX010042.MP4` of identical
+// size from different cards are the SAME key, so their drafts, people and AI observations bleed into
+// each other. Adding the file's mtime separates them — it is already on every scanned clip
+// (main-mod/02-media.js stats each file), so this costs nothing and needs no new plumbing.
+//
+// Falls back to the legacy key when mtime is missing or nonsense rather than inventing
+// `name__size__undefined`: a key that varies with a missing field would be worse than a colliding
+// one. Rounded to whole ms because some filesystems report sub-ms noise that is not stable.
+function clipKeyV2(clip) {
+  const m = Number(clip && clip.mtimeMs);
+  return (Number.isFinite(m) && m > 0) ? `${clip.name}__${clip.size}__${Math.round(m)}` : clipKey(clip);
+}
+
+// Read a clip-keyed map NEW-KEY-FIRST, falling back to the legacy key. This is what makes the
+// migration safe with no rewrite step: new entries land under V2, everything already on disk still
+// resolves under V1, and nothing is ever deleted. Both keys are identical when mtime is unavailable,
+// so the lookup collapses to the old behaviour on clips that lack it.
+function clipEntry(map, clip) {
+  if (!map || !clip) return undefined;
+  const k2 = clipKeyV2(clip);
+  if (Object.prototype.hasOwnProperty.call(map, k2)) return map[k2];
+  return map[clipKey(clip)];
+}
 
 function buildDraftMap() {
   const map = {};
@@ -1180,7 +1206,7 @@ function buildDraftMap() {
       selected: !!clip.selected
     };
     for (const fld of organizeFields) d[fld.id] = clip[fld.id] || '';
-    map[clipKey(clip)] = d;
+    map[clipKeyV2(clip)] = d;   // NEW entries use the collision-free key; old ones stay readable
   }
   return map;
 }
@@ -1229,8 +1255,8 @@ async function maybeRestoreDrafts() {
   try { drafts = await window.api.getDrafts(); } catch { drafts = {}; }
   if (!drafts) return false;
   const total = state.scannedFiles.length;
-  const namedBefore = state.scannedFiles.filter((c) => { const d = drafts[clipKey(c)]; return d && (d.subject || '').trim(); }).length;
-  const anyData = state.scannedFiles.some((c) => { const d = drafts[clipKey(c)]; return d && Object.entries(d).some(([k, v]) => k !== 'ts' && v); });
+  const namedBefore = state.scannedFiles.filter((c) => { const d = clipEntry(drafts, c); return d && (d.subject || '').trim(); }).length;
+  const anyData = state.scannedFiles.some((c) => { const d = clipEntry(drafts, c); return d && Object.entries(d).some(([k, v]) => k !== 'ts' && v); });
   if (!anyData) return false;   // no prior work for these clips → genuinely fresh footage
   const leftN = total - namedBefore;
   // Default: silently restore previous work and jump to where they left off — no
@@ -1263,7 +1289,7 @@ async function maybeRestoreDrafts() {
 function applyDraftsToClips(drafts) {
   let n = 0;
   for (const clip of state.scannedFiles) {
-    const d = drafts[clipKey(clip)];
+    const d = clipEntry(drafts, clip);
     if (!d) continue;
     if (d.subject) clip.subject = d.subject;
     if (d.description) clip.description = d.description;
@@ -1340,7 +1366,7 @@ async function saveVersionPoint(label, auto) {
 function applyVersionToClips(map) {
   let n = 0;
   for (const clip of state.scannedFiles) {
-    const d = map[clipKey(clip)];
+    const d = clipEntry(map, clip);
     if (!d) continue;
     clip.subject = d.subject || '';
     clip.description = d.description || '';
@@ -9892,7 +9918,10 @@ async function scanFacesForClips(clipList, opts = {}) {
   if (!opts.force) {
     try { const drafts = (await window.api.getDrafts()) || {}; for (const k of Object.keys(drafts)) { if (drafts[k] && drafts[k].facesScanned) scannedKeys.add(k); } } catch { /* fall back to the in-memory flag alone */ }
   }
-  const isScanned = (c) => !!c._facesScanned || scannedKeys.has(clipKey(c));
+  // Check BOTH keys (audit #8). Drafts written before the collision fix are keyed `name__size`;
+  // new ones use `name__size__mtime`. Looking up only one would silently report every already-scanned
+  // clip as unscanned and re-detect the whole card — hours of GPU time, with nothing reporting it.
+  const isScanned = (c) => !!c._facesScanned || scannedKeys.has(clipKeyV2(c)) || scannedKeys.has(clipKey(c));
   const toScan = opts.force ? clipList : clipList.filter((c) => !isScanned(c));
   const skipped = clipList.length - toScan.length;
   if (!toScan.length) {

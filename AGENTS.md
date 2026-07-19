@@ -358,6 +358,36 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19s — sibling gaps 1 and 4 handled (`98665a1`). TWO LEFT.
+
+**Gap 1 DONE:** `projects:move` now has the free-space preflight `finalize:run` / `copy:start` /
+`phone:pull` already had — per-destination, copy-only, advisory (no declared sizes → no refusal, an
+unreadable volume skips the check). Test: `test/projects-move-freespace.test.mjs` (4).
+
+**Gap 4 DOCUMENTED, DELIBERATELY NOT CHANGED.** `people:reassignFace` dedups at a hardcoded `0.2`
+while `people:save` uses `FACE_DEDUP_T` (0.35) for the same question. **This is not a rename — it is
+a behaviour change to face matching.** 0.35 rejects more candidates as duplicates, so reassigning
+would add fewer faces to a person's enrolment set and shift how that person matches from then on.
+Tighter errs toward keeping a genuine variation; looser toward not bloating the set. **Needs a run
+against Jake's real face data. Do not "tidy" it.** A comment at the call site now says so.
+
+**REMAINING SIBLING GAPS — both still open:**
+- **The AI BATCH path has no `cardIsGone()` check.** `src/mod/04-tasks-ai.js:1542` is the ONLY call
+  site and it sits in the LEGACY single-pass loop, while `const batched = aiCfg.multiPass ||
+  aiToolModelReady` (line 1458) means **a configured tool model makes the guard unreachable** — so
+  the default path is the unguarded one. Pull the card mid-analyze and every remaining clip pays a
+  full `aiCallGuard` timeout (200s perceive line 1497, 300s naming line 1537) instead of one honest
+  "your card is gone". On a 200-clip card that is hours of apparent hang plus N bogus "model
+  timeout" entries in the issue log. **WSL-verifiable with a stubbed `window.api`. BEST NEXT ITEM.**
+- **`projects:move` will MOVE files off a removable card**; `finalize:run` refuses
+  (`09-ipc-boot.js:570`, `isOnRemovableVolume` — which appears nowhere in `02-media.js`).
+  Reachability is narrow (needs Compressed pointed at a card) but that is exactly the case the twin
+  bothers to guard, and it would strip footage without passing the delete gate. Code asymmetry is
+  WSL-verifiable; live behaviour needs Windows because `isOnRemovableVolume` is drive-letter based
+  and `DETECTION_ENABLED`-gated.
+
+---
+
 ### 2026-07-19r — SIBLING-PATH SWEEP: 6 confirmed gaps, 2 fixed (`0da93e2`). Read the remaining 4.
 
 A systematic sweep for "a guard exists on one path, its twin lacks it" — the single most productive

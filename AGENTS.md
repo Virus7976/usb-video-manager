@@ -358,6 +358,40 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19o — #8 IS COMPLETE (`2959bd0`). The top-ranked backlog item is closed.
+
+All four stores it spans are migrated: **drafts** (`27c4bc2`), **observations** (`94ac02b`), **faces
+clipKeys + cross-boundary matching** (`d2f99f9`), **copiedLog** (`2959bd0`). `name__size` collisions
+no longer bleed names, people, AI observations or copy records between unrelated footage.
+
+**The migration is rewrite-free and stays that way.** New writes use `clipKeyV2`
+(`name__size__mtime`); every read tries V2 then falls back to legacy; `clipKeyMatches` bridges the
+IPC boundary; nothing on disk is ever deleted or rewritten. A future half-applied change degrades to
+"reads the old entry", never to "loses it". **Do not add a rewrite/cleanup pass** — the fallback IS
+the design, and removing it would orphan every pre-migration entry.
+
+**The safety asymmetry to keep in mind for anything touching copiedLog:** a key MISS means "looks
+un-copied", so the card can't be cleared — annoying but safe. A key BLEED means a different clip
+looks copied, and the delete gate gets asked about the wrong pair. Always fail toward the miss.
+
+**FOUR PROCESS LESSONS FROM THIS MIGRATION, all of which cost real time:**
+1. **Existing tests assert the code SHAPE, not the property.** Broke 14 tests across three slices
+   (11 + 2 + 1) on renames while behaviour was unchanged. Rewrite them to assert the property.
+2. **Source-extracting vm tests inject deps BY NAME** (`analyze-resume`, `ai-analyze-tools`, some
+   positionally via a DEPS array). Rename an accessor → they fail while e2e stays green.
+3. **A guard you haven't broken is not a guard.** My first leftover-site check inspected three named
+   functions and missed a reintroduced raw lookup in a fourth.
+4. **A test can pass for the wrong reason.** The `copied:forget` case went green while forget did
+   nothing, because a broken `get` missed the legacy record too — empty for two different reasons is
+   indistinguishable. Assert through the path that ISN'T under test.
+
+**NEXT:** no ranked WSL-safe item remains from the re-audited backlog. Take an open Gitea issue
+(#11 organize backend, #12 build/publish + auto-update, #2 photos in the Step-1 rename grid, #3
+source-abstraction refactor, #7 README screenshots) or the also-rans. **The deploy is still the
+single highest-value action the moment the app is closed.**
+
+---
+
 ### 2026-07-19n — #8 slice 3 DONE (`d2f99f9`). ONLY `copiedLog` REMAINS — read this before it.
 
 Faces done: clusters key by `clipKeyV2`, `byKey` indexes all three forms (new key, legacy

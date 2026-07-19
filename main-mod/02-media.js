@@ -532,6 +532,27 @@ ipcMain.handle('projects:move', async (_e, payload) => {
   // The Projects root, so each folder can be resolved against the DISK (case-correct) rather than
   // filed at a verbatim joined path. Without this the map forked the tree on any case/spelling drift.
   const projRoot = (payload && payload.root) ? String(payload.root).replace(/[\\/]+$/, '') : '';
+  // NEVER MOVE FOOTAGE OFF A CARD. The twin path (finalize:run, main-mod/09-ipc-boot.js) refuses
+  // this outright; projects:move — which the destination map's "Apply — file clips" calls — had no
+  // removability test at all, so unticking "Keep the originals" while Compressed pointed at a card
+  // would strip the clips off it. Card deletes are only ever allowed through the Delete step, after
+  // the copies are hash-verified; this is the one other door that could take footage off a card, and
+  // it was unlocked.
+  //
+  // A COPY takes nothing off the card, so it is not part of this — the twin draws the same line, and
+  // copy is the default. Asked ONCE PER DISTINCT SOURCE FOLDER: isOnRemovableVolume shells out to
+  // PowerShell, so asking per clip would add a process spawn to every file in a 200-clip batch.
+  // Failing closed is deliberate — isOnRemovableVolume already fails closed on an unreadable volume.
+  if (!copy) {
+    const srcDirs = [...new Set(moves.map((mv) => (mv && mv.from) ? path.dirname(mv.from) : '').filter(Boolean))];
+    for (const d of srcDirs) {
+      // eslint-disable-next-line no-await-in-loop
+      if (await isOnRemovableVolume(d)) {
+        return { ok: false, error: 'That folder is on a removable card or USB drive. Organizing MOVES files, so it would take them off the card — which is only ever allowed from the Delete step, after the copies are verified. Point “Compressed” at a folder on your computer first.' };
+      }
+    }
+  }
+
   // WILL THIS EVEN FIT? The twin path (finalize:run, main-mod/09-ipc-boot.js) has had this preflight
   // for a while, as do copy:start and phone:pull — projects:move, which the map's "Apply — file
   // clips" actually calls, never got it. Same operation, same default (copy), same destination: the

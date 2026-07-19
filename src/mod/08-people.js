@@ -275,7 +275,12 @@ async function collectClipFaces(clip, clusters, keys) {
 // feed the AI descriptions + metadata; a later person rename/merge offers to re-tag the
 // affected clips. Never blocks or deletes. Returns how many clips got a tag.
 async function scanFacesAuto(clipList) {
-  const toScan = (clipList || []).filter((c) => c && c.sourcePath && !c._facesScanned);
+  // Its OWN flag, deliberately not `_facesScanned`. This pass auto-tags but never clusters and never
+  // persists anything, so marking clips with the shared flag made the REAL review scan skip them:
+  // "Scan faces" then found nothing to scan and no saved review, and reported "No saved face review
+  // found" while quietly forcing a full re-detect. Auto-tagging and reviewing are different jobs and
+  // now track separately.
+  const toScan = (clipList || []).filter((c) => c && c.sourcePath && !c._facesAutoScanned);
   if (!toScan.length) return { ok: true, tagged: 0 };
   const probe = await ensureFaceModels();
   if (!probe.ok) return { ok: false, tagged: 0 };   // face recognition not set up — skip silently
@@ -308,7 +313,7 @@ async function scanFacesAuto(clipList) {
       if (r !== clip) { r.people = clip.people; r.peopleAuto = clip.peopleAuto; }
       tagged += 1;
     }
-    clip._facesScanned = true; r._facesScanned = true;
+    clip._facesAutoScanned = true; r._facesAutoScanned = true;
   }
   clearTask('faces');
   try { scheduleDraftSave(); } catch { /* ignore */ }
@@ -573,6 +578,12 @@ async function scanFacesForClips(clipList, opts = {}) {
     // in flight, and ending a scan must never leave the review unsaved (audit #67).
     faceScanActive = false;
     try { savePendingNow(clusters); } catch { /* the grid below re-saves on any edit anyway */ }
+    // saveFaceScenesNow() used to be called from exactly ONE place — render(), inside the review
+    // grid. So a scan whose grid was never opened (closed early, aborted, or a scan that found faces
+    // but the user walked away) kept its pending clusters but silently dropped every GROUP SHOT:
+    // noteFaceScene only mutates the in-memory faceScenes array. Ending a scan must persist both
+    // halves of the review, for the same reason the pending flush above exists (audit #67).
+    try { saveFaceScenesNow(); } catch { /* best-effort; the grid re-saves on any edit */ }
   }
   scheduleDraftSave();   // make sure the last clips' scanned-flags persist
   if (faceScanAborted) { showToast(`Face scan stopped — ${done} scanned so far are remembered (resume to do the rest).`, 4500); }
@@ -581,7 +592,7 @@ async function scanFacesForClips(clipList, opts = {}) {
   // Pass ALL scanned clips (not just this batch) so confirming a merged-in face
   // from an earlier scan still tags its clips.
   if (clusters.length) await showFaceReviewGrid(clusters, state.scannedFiles, 0);   // await so Analyze can name AFTER you confirm
-  else { savePendingNow(clusters); if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`); }
+  else { savePendingNow(clusters); saveFaceScenesNow(); if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`); }
 }
 
 // digiKam-style face confirm GRID. Three sections: SUGGESTED (tentative match —

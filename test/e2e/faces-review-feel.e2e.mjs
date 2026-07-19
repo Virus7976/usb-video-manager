@@ -36,7 +36,10 @@ test('render() preserves scroll position across the innerHTML rebuild', { skip: 
 test('the popup no longer smooth-scrolls on every click', { skip: !RUN }, async () => {
   // `block:'nearest'` already no-ops when the element is visible — but `behavior:'smooth'` animated
   // even that no-op, which is what read as being thrown somewhere random.
-  assert.equal(/behavior:\s*'smooth'/.test(src), false, 'no smooth scroll left in the review grid');
+  // Match the CALL, not the word: Function.prototype.toString() includes comments, and the comment
+  // explaining this fix necessarily says "smooth" — the same trap faces-review-sections.e2e.mjs
+  // documents. Asserting on the bare word made this test fail against correct code.
+  assert.equal(/scrollIntoView\([^)]*smooth/.test(src), false, 'no smooth scrollIntoView left in the review grid');
   assert.match(src, /getBoundingClientRect/, 'it only scrolls when the popup is genuinely off-screen');
 });
 

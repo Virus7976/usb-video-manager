@@ -8085,7 +8085,14 @@ async function showDestinationMap(rawClips, opts = {}) {
     const reps = sample ? Object.values(groups).map((g) => g[0]) : pool;
     setAiRunClips(reps);                                   // real-thumbnail conveyor for these clips
     let done = 0; let ok = 0;
-    const faceClusters = []; const faceAutoByName = new Map(); let faceAuto = 0;   // → "Review faces" popup at the end
+    // SEEDED, and this matters: an un-seeded array here was silent data loss. When the review grid
+    // renders it calls schedulePendingSave(clusters) -> faces:savePending, which REPLACES the whole
+    // pending store. So starting from [] meant an Analyze run quietly deleted every unconfirmed face
+    // from an earlier scan. scanFacesForClips has always seeded this way ("a scan merges, never
+    // replaces"); these callers just never got the same treatment.
+    const faceClusters = await loadPendingFaces();
+    await ensureFaceScenes();
+    const faceAutoByName = new Map(); let faceAuto = 0;   // → "Review faces" popup at the end
     for (const c of reps) {
       if (aiAborted) break;
       const r = c._ref || c;
@@ -8138,6 +8145,10 @@ async function showDestinationMap(rawClips, opts = {}) {
     recomputeAuto(); renderTree();
     if (faceOk && !aiAborted) refreshAllClipPeople && refreshAllClipPeople();
     // Faces found → let the user name/confirm them (this is the assign-faces popup).
+    // Persist BEFORE the grid opens (or doesn't). An analyze run that found faces and was then
+    // aborted, or whose grid the user never opened, previously lost every cluster it had built
+    // while the clips stayed marked as scanned — so a re-scan skipped them and the faces were gone.
+    try { savePendingNow(faceClusters); saveFaceScenesNow(); } catch { /* best-effort */ }
     if (faceClusters.length) setTimeout(() => showFaceReviewGrid(faceClusters, pool, faceAuto), 350);
     return ok;
   }
@@ -9496,7 +9507,12 @@ async function collectClipFaces(clip, clusters, keys) {
 // feed the AI descriptions + metadata; a later person rename/merge offers to re-tag the
 // affected clips. Never blocks or deletes. Returns how many clips got a tag.
 async function scanFacesAuto(clipList) {
-  const toScan = (clipList || []).filter((c) => c && c.sourcePath && !c._facesScanned);
+  // Its OWN flag, deliberately not `_facesScanned`. This pass auto-tags but never clusters and never
+  // persists anything, so marking clips with the shared flag made the REAL review scan skip them:
+  // "Scan faces" then found nothing to scan and no saved review, and reported "No saved face review
+  // found" while quietly forcing a full re-detect. Auto-tagging and reviewing are different jobs and
+  // now track separately.
+  const toScan = (clipList || []).filter((c) => c && c.sourcePath && !c._facesAutoScanned);
   if (!toScan.length) return { ok: true, tagged: 0 };
   const probe = await ensureFaceModels();
   if (!probe.ok) return { ok: false, tagged: 0 };   // face recognition not set up — skip silently
@@ -9529,7 +9545,7 @@ async function scanFacesAuto(clipList) {
       if (r !== clip) { r.people = clip.people; r.peopleAuto = clip.peopleAuto; }
       tagged += 1;
     }
-    clip._facesScanned = true; r._facesScanned = true;
+    clip._facesAutoScanned = true; r._facesAutoScanned = true;
   }
   clearTask('faces');
   try { scheduleDraftSave(); } catch { /* ignore */ }
@@ -9794,6 +9810,12 @@ async function scanFacesForClips(clipList, opts = {}) {
     // in flight, and ending a scan must never leave the review unsaved (audit #67).
     faceScanActive = false;
     try { savePendingNow(clusters); } catch { /* the grid below re-saves on any edit anyway */ }
+    // saveFaceScenesNow() used to be called from exactly ONE place — render(), inside the review
+    // grid. So a scan whose grid was never opened (closed early, aborted, or a scan that found faces
+    // but the user walked away) kept its pending clusters but silently dropped every GROUP SHOT:
+    // noteFaceScene only mutates the in-memory faceScenes array. Ending a scan must persist both
+    // halves of the review, for the same reason the pending flush above exists (audit #67).
+    try { saveFaceScenesNow(); } catch { /* best-effort; the grid re-saves on any edit */ }
   }
   scheduleDraftSave();   // make sure the last clips' scanned-flags persist
   if (faceScanAborted) { showToast(`Face scan stopped — ${done} scanned so far are remembered (resume to do the rest).`, 4500); }
@@ -9802,7 +9824,7 @@ async function scanFacesForClips(clipList, opts = {}) {
   // Pass ALL scanned clips (not just this batch) so confirming a merged-in face
   // from an earlier scan still tags its clips.
   if (clusters.length) await showFaceReviewGrid(clusters, state.scannedFiles, 0);   // await so Analyze can name AFTER you confirm
-  else { savePendingNow(clusters); if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`); }
+  else { savePendingNow(clusters); saveFaceScenesNow(); if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`); }
 }
 
 // digiKam-style face confirm GRID. Three sections: SUGGESTED (tentative match —
@@ -12872,7 +12894,14 @@ async function finAnalyzeSelected() {
   const groups = {};             // subjKey -> [clips], so a quick face scan can tag the whole group
   pending.forEach((f) => { const k = subjKeyOf(f); (groups[k] = groups[k] || []).push(f); });
   const byKey = {}; for (const f of pending) byKey[f.key || f.sourcePath] = f;
-  const faceClusters = []; const faceAutoByName = new Map();
+    // SEEDED, and this matters: an un-seeded array here was silent data loss. When the review grid
+    // renders it calls schedulePendingSave(clusters) -> faces:savePending, which REPLACES the whole
+    // pending store. So starting from [] meant an Analyze run quietly deleted every unconfirmed face
+    // from an earlier scan. scanFacesForClips has always seeded this way ("a scan merges, never
+    // replaces"); these callers just never got the same treatment.
+  const faceClusters = await loadPendingFaces();
+  await ensureFaceScenes();
+  const faceAutoByName = new Map();
   let ok = 0; let lastErr = '';
 
   // ===== PHASE 1 — FACES: scan everyone first, then either VERIFY with you, or (with
@@ -12906,6 +12935,9 @@ async function finAnalyzeSelected() {
         // Verify with you BEFORE naming, so the names can include who's actually in each clip.
         await showFaceReviewGrid(faceClusters, pending, 0);
       }
+      // Persist either way — the auto-tag branch above never opened a grid, so nothing else would
+      // have written these clusters to disk.
+      try { savePendingNow(faceClusters); saveFaceScenesNow(); } catch { /* best-effort */ }
     }
   }
 

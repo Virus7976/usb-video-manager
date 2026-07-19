@@ -1766,7 +1766,14 @@ async function finAnalyzeSelected() {
   const groups = {};             // subjKey -> [clips], so a quick face scan can tag the whole group
   pending.forEach((f) => { const k = subjKeyOf(f); (groups[k] = groups[k] || []).push(f); });
   const byKey = {}; for (const f of pending) byKey[f.key || f.sourcePath] = f;
-  const faceClusters = []; const faceAutoByName = new Map();
+    // SEEDED, and this matters: an un-seeded array here was silent data loss. When the review grid
+    // renders it calls schedulePendingSave(clusters) -> faces:savePending, which REPLACES the whole
+    // pending store. So starting from [] meant an Analyze run quietly deleted every unconfirmed face
+    // from an earlier scan. scanFacesForClips has always seeded this way ("a scan merges, never
+    // replaces"); these callers just never got the same treatment.
+  const faceClusters = await loadPendingFaces();
+  await ensureFaceScenes();
+  const faceAutoByName = new Map();
   let ok = 0; let lastErr = '';
 
   // ===== PHASE 1 — FACES: scan everyone first, then either VERIFY with you, or (with
@@ -1800,6 +1807,9 @@ async function finAnalyzeSelected() {
         // Verify with you BEFORE naming, so the names can include who's actually in each clip.
         await showFaceReviewGrid(faceClusters, pending, 0);
       }
+      // Persist either way — the auto-tag branch above never opened a grid, so nothing else would
+      // have written these clusters to disk.
+      try { savePendingNow(faceClusters); saveFaceScenesNow(); } catch { /* best-effort */ }
     }
   }
 

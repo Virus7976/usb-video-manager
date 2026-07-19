@@ -866,7 +866,14 @@ async function showDestinationMap(rawClips, opts = {}) {
     const reps = sample ? Object.values(groups).map((g) => g[0]) : pool;
     setAiRunClips(reps);                                   // real-thumbnail conveyor for these clips
     let done = 0; let ok = 0;
-    const faceClusters = []; const faceAutoByName = new Map(); let faceAuto = 0;   // → "Review faces" popup at the end
+    // SEEDED, and this matters: an un-seeded array here was silent data loss. When the review grid
+    // renders it calls schedulePendingSave(clusters) -> faces:savePending, which REPLACES the whole
+    // pending store. So starting from [] meant an Analyze run quietly deleted every unconfirmed face
+    // from an earlier scan. scanFacesForClips has always seeded this way ("a scan merges, never
+    // replaces"); these callers just never got the same treatment.
+    const faceClusters = await loadPendingFaces();
+    await ensureFaceScenes();
+    const faceAutoByName = new Map(); let faceAuto = 0;   // → "Review faces" popup at the end
     for (const c of reps) {
       if (aiAborted) break;
       const r = c._ref || c;
@@ -919,6 +926,10 @@ async function showDestinationMap(rawClips, opts = {}) {
     recomputeAuto(); renderTree();
     if (faceOk && !aiAborted) refreshAllClipPeople && refreshAllClipPeople();
     // Faces found → let the user name/confirm them (this is the assign-faces popup).
+    // Persist BEFORE the grid opens (or doesn't). An analyze run that found faces and was then
+    // aborted, or whose grid the user never opened, previously lost every cluster it had built
+    // while the clips stayed marked as scanned — so a re-scan skipped them and the faces were gone.
+    try { savePendingNow(faceClusters); saveFaceScenesNow(); } catch { /* best-effort */ }
     if (faceClusters.length) setTimeout(() => showFaceReviewGrid(faceClusters, pool, faceAuto), 350);
     return ok;
   }

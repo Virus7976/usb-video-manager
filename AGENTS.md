@@ -358,6 +358,35 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19u — SIBLING SWEEP CLOSED (`a4026fc`). All gaps handled. What to do next.
+
+`projects:move` can no longer move footage off a card — the last gap. It now asks
+`isOnRemovableVolume` once per distinct source folder (that call shells out to PowerShell, so
+per-clip would add a spawn per file) and refuses with `finalize:run`'s sentence verbatim. A COPY is
+unaffected, matching the twin. Tested by STUBBING the check, because it is drive-letter based and
+`DETECTION_ENABLED`-gated so Linux always answers false — assert that the CALL IS MADE and OBEYED,
+not that a card was detected.
+
+**SWEEP FINAL TALLY: 7 confirmed, 5 fixed, 1 documented-not-changed, 1 cleared.**
+Fixed: photo overwrite in `phone:distribute`; `copy:start` per-destination preflight;
+`projects:move` free-space preflight; `cardIsGone()` in all three analyze loops; this one.
+Not changed: `people:reassignFace`'s `0.2` vs `FACE_DEDUP_T` — **a behaviour change to matching, not
+a rename. Needs real face data. Leave it.**
+
+**NEXT — the sweep is exhausted for the twins listed above. Options, honestly ranked:**
+1. **THE DEPLOY.** ~40 commits since `82f72ba` are green and unreachable, including three fixes to
+   footage handling (photo overwrite, photo routing, card-move). This is worth more than any
+   remaining code change and needs only that the app be closed.
+2. **A NEW sweep axis.** The twin-pairs above are done, but the technique generalises: look for
+   guards present in `main-mod/` and absent in `src/mod/` for the same value, or a validation applied
+   on first-run but not on resume, or on the happy path but not the retry.
+3. Nothing else WSL-safe remains: the re-audited backlog is worked through, the also-rans are
+   exhausted, and everything open needs Ollama, Windows, a phone, or a labelled face fixture.
+
+**Do not manufacture churn.** If a sweep turns up nothing genuine, say so plainly.
+
+---
+
 ### 2026-07-19t — sibling gap 2 DONE (`afc2909`). ONE LEFT.
 
 **Pulling the card mid-analyze now stops the run once.** `cardIsGone()` had ONE call site, in the

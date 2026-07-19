@@ -141,7 +141,12 @@ test('phone:distribute returns per-job results, which is what makes that possibl
   const src = readFileSync(join(ROOT, 'main-mod', '05-windows-phone.js'), 'utf8');
   const h = src.slice(src.indexOf("ipcMain.handle('phone:distribute'"));
   const body = h.slice(0, h.indexOf('\n});'));
-  assert.match(body, /results\.push\(\{ src: j\.src, dest: j\.dest, ok, error \}\)/);
+  // Assert the PROPERTY — a per-job record carrying src, dest and the outcome — not the exact
+  // literal. Card photos are now staged off the card before embedding, so the reported src became
+  // `j.origSrc || j.src` (the ORIGINAL path, which the renderer matches on) and an exact-shape
+  // assertion failed on a correct change.
+  assert.match(body, /results\.push\(\{ src: [^,]+, dest: j\.dest, ok, error \}\)/, 'a per-job record');
+  assert.match(body, /j\.origSrc \|\| j\.src/, 'reporting the original source, not a staging path');
   assert.match(body, /results,/, 'and they are returned');
 });
 

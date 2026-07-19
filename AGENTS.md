@@ -322,6 +322,63 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19at — card stills were WRITTEN IN PLACE before any copy existed. The one absolute, inverted.
+
+New axis (photo/video parity — a standing PROMPT.md §2 obligation never swept before) and it found the
+most serious thing left in the app.
+
+`phone:distribute` embeds the AI's record into each unique SOURCE photo, and its comment says *"The
+source is a working staging copy (Photos Temp / a pulled temp), NEVER the phone original."* That is
+true of the PHONE caller — `phone:pull` has already staged the stills. It is **false of the CARD
+caller**: `distributeFlowPhotos` builds jobs with `src: p.sourcePath`, which for a GoPro/SD scan is a
+path **on the card**. So `-overwrite_original` was applied to the ONLY copy of a photo, on removable
+media, **before its backup existed**. A video in the identical position is never written to — its
+embed happens later, on the intake copy. Textbook second-caller drift, with the comment describing the
+first caller's world.
+
+**The fix could NOT be "embed the destinations instead."** The collision guard a few lines below
+full-hashes `j.src` against `j.dest` to tell a genuine re-run from a name collision; embedding copies
+but not the source would make every retry see a mismatch and litter the backup with _v2/_v3. So a
+card-resident source is STAGED off the card, the staged copy is embedded, and every job copies from
+there — src and dest stay byte-identical. A photo that cannot be staged is left ALONE and simply
+loses its embedded record: a far smaller harm than writing to the only copy.
+
+Results still report the ORIGINAL card path (`j.origSrc || j.src`), because the renderer matches on it
+(`landed.has(p.sourcePath)`) to decide which photos may later be cleared off the card.
+
+`test/photo-embed-never-on-card.test.mjs`, 6 tests; all three parts proven with asserted breaks. Three
+guard the other direction: a non-removable source is still embedded in place (the phone flow is
+unchanged), a re-run still dedupes rather than versioning, and an embed failure never blocks a backup.
+
+**Two fixture bugs of mine, both loud rather than silent — read the handler's destructuring first.**
+`phone:distribute` takes `{ jobs }`, and I passed the array bare, so it returned early and test 1
+"passed" while nothing ran. And I invented a `TEMP_DIR` constant that doesn't exist; staging threw,
+was caught, and the copy silently lost its record — the test caught it.
+
+**A pre-existing test broke, correctly, for the third time this session:** `flow-gaps` asserted the
+exact `results.push({ src: j.src, … })` literal. Rewritten to assert the property plus the specific
+`j.origSrc || j.src` behaviour that matters.
+
+Both tiers green: vm **1016/935/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — undeployed,
+**~76 commits**.
+
+**Also found by this sweep, logged NOT fixed (in priority order):**
+1. **Card photos are excluded from the NAS mirror every clip on the same card gets.** Videos mirror via
+   `config.nasBackup` inside `copy:start`; photos never reach `copy:start` and use a separate,
+   separately-configured `phoneDestNas`/`phoneNasFolder`. Turn on NAS backup in the setup wizard and
+   never open phone preferences → every video mirrored, **zero photos** — and the summary still says
+   "Photos backed up".
+2. **Card photos get no free-space preflight anywhere.** Videos have two layers (renderer + main);
+   `phone:distribute` has no `statfs` at all, and a card of stills fans out to 4 destinations each.
+3. **Photos never enter the import index or get drafts cleared**, so re-inserting a card re-offers and
+   re-copies every still. Costs time, not data (the collision guard full-hashes and skips identical).
+
+**Verified EQUAL and not worth re-checking:** the delete gate is entirely kind-blind and photos reach
+it (and are re-hashed fresh at delete time, i.e. stricter than video); photo copies use
+`copyFileVerified`/`stageVerifiedCopy` while video's card copy uses the unverified
+`copyFileWithProgress`; collision handling, faces (stills short-circuit to a single frame), AI
+enrichment, and the whole organize/embed/sidecar/finalize path.
+
 ### 2026-07-19as — finalize:run abandoned its sidecar at the source. Eventual DATA LOSS, now fixed.
 
 Logged last iteration, verified this one, and it is worse than logged. The sidecar was written at

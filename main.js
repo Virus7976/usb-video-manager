@@ -3783,15 +3783,50 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   // a photo left the flow. The source is a working staging copy (Photos Temp / a pulled temp), NEVER
   // the phone original, so this respects "organize copies, never the archive original"; and an XMP
   // write to a JPG/HEIC is metadata-only, so "photos stay original quality" still holds.
+  // …EXCEPT WHEN THE SOURCE IS STILL ON THE CARD. The comment above describes the PHONE caller's
+  // world, where phone:pull has already staged the stills to Photos Temp. The CARD caller
+  // (distributeFlowPhotos) builds its jobs with `src: p.sourcePath`, which for a GoPro/SD scan is a
+  // path on the card — so this loop was applying `-overwrite_original` to the ONLY copy of a photo,
+  // on removable media, before any backup of it existed. A video in the identical position is never
+  // written to: its embed happens later, on the intake copy. The card is read-only until copies
+  // provably exist elsewhere, and that has to hold for stills too.
+  //
+  // So a card-resident source is STAGED off the card first and the staged copy is embedded. Note the
+  // fix is not "embed the destinations instead": the collision guard below full-hashes `j.src`
+  // against `j.dest` to tell a genuine re-run from a name collision, so the source and its copies
+  // must stay byte-identical or every retry litters the backup with _v2/_v3.
+  const staged = new Map();      // original card path -> staged path we actually copy from
+  let stageDir = '';
+  for (const j of jobs) {
+    if (!j || !j.src || staged.has(j.src)) continue;
+    // eslint-disable-next-line no-await-in-loop
+    if (!(await isOnRemovableVolume(path.dirname(j.src)))) continue;
+    try {
+      if (!stageDir) { stageDir = path.join(app.getPath('temp'), `usb-auto-action-photo-stage-${Date.now()}`); await ensureDir(stageDir); }
+      const st = path.join(stageDir, path.basename(j.src));
+      // eslint-disable-next-line no-await-in-loop
+      await copyFileVerified(j.src, st);
+      staged.set(j.src, st);
+    } catch { /* couldn't stage — fall through and simply skip embedding this one, never write the card */ }
+  }
+
   let tagged = 0; let tagFailed = 0; const embeddedSrc = new Set();
   for (const j of jobs) {
     if (!j || !j.meta || !j.src || embeddedSrc.has(j.src)) continue;
     embeddedSrc.add(j.src);
+    // A card-resident photo we could not stage is left ALONE. Losing the embedded record is a far
+    // smaller harm than writing to the only copy on removable media.
+    const target = staged.get(j.src) || (await isOnRemovableVolume(path.dirname(j.src)) ? '' : j.src);
+    if (!target) continue;
     try {
       const tags = buildEmbedTags(j.meta, [], path.basename(j.src));
-      if (Object.keys(tags).length) { await getExifTool().write(j.src, tags, ['-overwrite_original']); tagged += 1; }
+      if (Object.keys(tags).length) { await getExifTool().write(target, tags, ['-overwrite_original']); tagged += 1; }
     } catch { tagFailed += 1; }   // a tag failure never blocks the backup — the copy still runs
   }
+  // Copy FROM the staged file, but keep reporting the original path: the renderer matches results
+  // back to clips with `landed.has(p.sourcePath)` to decide which photos may be cleared off the card,
+  // and a staging path there would break that match.
+  for (const j of jobs) { if (j && staged.has(j.src)) { j.origSrc = j.src; j.src = staged.get(j.src); } }
   // PER-JOB results, not just a tally. The caller needs to know WHICH photo landed WHERE:
   // without that, a photo has no recorded destination, which is why photos could never enter
   // state.copied and therefore could never be cleared off the card — and why their AI metadata
@@ -3822,9 +3857,11 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
       await copyFileVerified(j.src, j.dest);
       done += 1; ok = true;
     } catch (e) { error = (e && e.message) || String(e); errors.push(error); }
-    results.push({ src: j.src, dest: j.dest, ok, error });
+    results.push({ src: j.origSrc || j.src, dest: j.dest, ok, error });
     try { sender.send('phone:copy-progress', { done, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
   }
+  // Drop the staging copies — they exist only so the card never had to be written to.
+  if (stageDir) { try { await fsp.rm(stageDir, { recursive: true, force: true }); } catch { /* temp dir; harmless */ } }
   // ok reflects reality — false when any file failed (was unconditionally true, so a
   // partial backup with dropped photos reported success).
   return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, results, tagged, tagFailed, error: errors[0] || '' };

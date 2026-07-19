@@ -322,6 +322,46 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19af — face-review Undo now reverses the ENROLMENT, not just the tags (queue item 1)
+
+`assign()` made three persisted writes — `people:save` (confirmed descriptors + crop + thumb),
+`tagClips` (finalMeta + renameDrafts) and `rememberSubject` (config.subjects). Undo called only
+`untagClips`. The tag half had already been fixed once (#26); the enrolment half never was, and it is
+the half that lasts: **only CONFIRMED descriptors vote in `faceDecide`**, and naming a face confirms
+it. So mis-naming a face and pressing Undo left the recognizer permanently taught that face as that
+person — every later scan re-suggested it, and "Confirm all suggestions" propagated it in bulk. The
+only repair was `people:removeFace`, buried behind a right-click in the dashboard.
+
+**The inverse could not be guessed after the fact**, which is why this needed a receipt rather than a
+one-liner: `people:save` does one of THREE things per descriptor — create the person, append a face,
+or PROMOTE an existing near-duplicate from unconfirmed to confirmed (#28). Deleting a promoted face
+on undo would destroy an enrolment that predates the assign. `people:save` now returns
+`{personId, createdPerson, addedFids, promotedFids}` and `people:undoAssign` replays it backwards:
+removes only what it appended, demotes only what it promoted, deletes the person only if this save
+created them AND nothing is left. Faces carry an additive optional `fid`; an old people.json still
+reads fine and simply can't be undone, which is the safe direction. Replayed/unknown receipts no-op —
+Undo is a UI button and a double-click must not eat a second face.
+
+Deliberately NOT reversed: `rememberSubject`'s entry in `config.subjects`. The name may be in use
+elsewhere and the subjects list is a convenience picker, so removing it could delete a real entry.
+
+`test/face-assign-undo.test.mjs`, 6 tests; each of the four parts proven by breaking it.
+
+**⚠ THE SOURCE-ASSERTION TRAP BIT AGAIN — third time this session.** My renderer test matched
+`/undoAssign/` and stayed GREEN when I made the call unreachable with `if (false)`, because the
+identifier was still in the text. Tightened to bind the call to its guard
+(`/if \(cl\._enrol\)[\s\S]{0,160}undoAssignPerson/`). **Rule: a source assertion must match the
+CALL PLUS ITS GUARD, never a bare identifier** — and it still cannot prove reachability, so prefer a
+behavioural test whenever the code is reachable from a harness. This one isn't: the handler is a DOM
+listener and the e2e faces fixture has no enrolled person to undo.
+
+Both tiers green: vm **932/851/81/0**, e2e **81/80/1/0**. App still running — undeployed, ~62 commits.
+
+**QUEUE (unchanged order, item 1 now done):** 2 `maybeAutoConsolidate` unbounded shrink ·
+3 delete-person leaves the name on filed clips · 4 `organize:undo` leaves `finalMeta.done` ·
+5 "Ignore this face" is not reversible · 6 ledger/undo race · 7 LOW: memory-inbox `slice(-300)`
+evicting oldest rules, and `ledgerFind` case-sensitivity. Full detail in `2026-07-19ae`.
+
 ### 2026-07-19ae — the face-crop GC could unlink EVERY enrolled crop. Fixed. Seven more findings logged.
 
 Two more axes swept in parallel (every delete/clear/prune/evict site; write-throughs without their

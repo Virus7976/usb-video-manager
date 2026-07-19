@@ -10186,7 +10186,12 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   async function assign(cl, name) {
     name = String(name || '').trim();
     if (!name) return;
-    await window.api.savePerson({ name, descriptors: cl.descriptors, thumb: cl.thumb });
+    // Keep the enrolment receipt so Undo can reverse it precisely. Without this the undo reversed
+    // the clip tags only, and the confirmed descriptors — the ONLY ones that vote in recognition —
+    // stayed trained onto the person forever.
+    let enrol = null;
+    try { enrol = (await window.api.savePerson({ name, descriptors: cl.descriptors, thumb: cl.thumb }) || {}).receipt || null; } catch { /* non-fatal */ }
+    cl._enrol = enrol;
     tagClips(cl, name);
     rememberSubject && rememberSubject(name);
     cl.done = true; cl.assignedName = name;
@@ -10417,7 +10422,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       if (!cl) return;
       const yes = card.querySelector('.fgc-yes'); if (yes) yes.addEventListener('click', () => flash(card, 'ok', () => assign(cl, cl.suggest.name)));
       const no = card.querySelector('.fgc-no'); if (no) no.addEventListener('click', () => flash(card, 'no', () => { cl.rejected = true; render(); }));
-      const undo = card.querySelector('.fgc-undo'); if (undo) undo.addEventListener('click', () => { if (cl.assignedName) untagClips(cl, cl.assignedName); cl.done = false; cl.assignedName = ''; cl.suggest = null; render(); });
+      const undo = card.querySelector('.fgc-undo'); if (undo) undo.addEventListener('click', async () => { if (cl.assignedName) untagClips(cl, cl.assignedName); if (cl._enrol) { try { await window.api.undoAssignPerson(cl._enrol); } catch { /* non-fatal */ } cl._enrol = null; } cl.done = false; cl.assignedName = ''; cl.suggest = null; render(); });
       const save = card.querySelector('.fgc-save'); const inp = card.querySelector('.fgc-input');
       if (save && inp) save.addEventListener('click', () => { if (inp.value.trim()) flash(card, 'ok', () => assign(cl, inp.value)); });
       if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && inp.value.trim()) { e.preventDefault(); flash(card, 'ok', () => assign(cl, inp.value)); } });

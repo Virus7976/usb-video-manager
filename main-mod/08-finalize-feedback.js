@@ -103,6 +103,11 @@ function gcFaceCrops() {
   } catch { /* never let housekeeping break a save */ }
 }
 
+// Stable per-face id, so an enrolment can be undone precisely. Additive: faces written before this
+// existed simply have none, and an undo skips them rather than guessing.
+let faceFidSeq = 0;
+function newFaceFid() { faceFidSeq += 1; return `f${Date.now().toString(36)}${faceFidSeq.toString(36)}`; }
+
 function migratePerson(p) {
   if (!Array.isArray(p.faces)) {
     const ds = Array.isArray(p.descriptors) ? p.descriptors : [];
@@ -237,7 +242,14 @@ ipcMain.handle('people:save', (_e, payload) => {
   const confirmed = !(payload && payload.confirmed === false);
   const people = aiPeople();
   let p = people.find((x) => x.name.toLowerCase() === name.toLowerCase());
-  if (!p) { p = { id: `pp${Date.now()}${Math.random().toString(36).slice(2, 6)}`, name, faces: [], thumb: '', ts: Date.now() }; people.push(p); }
+  // RECEIPT — what this save actually changed, so its inverse doesn't have to guess. Each descriptor
+  // takes one of three paths below (create / append / promote), and only the first two are safe to
+  // delete on undo: unpicking a PROMOTION by removing the face would destroy an enrolment that
+  // existed before this assign. `fid` is an additive optional field, so an old people.json still
+  // reads fine — an entry without one simply can't be undone, which is the safe direction.
+  const receipt = { personId: '', createdPerson: false, addedFids: [], promotedFids: [] };
+  if (!p) { p = { id: `pp${Date.now()}${Math.random().toString(36).slice(2, 6)}`, name, faces: [], thumb: '', ts: Date.now() }; people.push(p); receipt.createdPerson = true; }
+  receipt.personId = p.id;
   migratePerson(p);
   for (const d of descriptors) {
     // If a near-duplicate already exists and THIS save is a confirmation, PROMOTE the existing face to
@@ -245,14 +257,56 @@ ipcMain.handle('people:save', (_e, payload) => {
     // descriptors that were auto-saved unconfirmed during the scan; skipping them meant the confirmed
     // set never grew and — since only confirmed faces vote — confirmations never improved matching.
     const near = (p.faces || []).find((f) => f.d && faceDist(f.d, d) < FACE_DEDUP_T);
-    if (near) { if (confirmed && !near.confirmed) { near.confirmed = true; if (thumb) near.t = thumb; } }
-    else p.faces.push({ d, t: thumb, confirmed });
+    if (near) {
+      if (confirmed && !near.confirmed) {
+        near.confirmed = true; if (thumb) near.t = thumb;
+        if (!near.fid) near.fid = newFaceFid();
+        receipt.promotedFids.push(near.fid);
+      }
+    } else {
+      const fid = newFaceFid();
+      p.faces.push({ d, t: thumb, confirmed, fid });
+      receipt.addedFids.push(fid);
+    }
   }
   if (!descriptors.length && thumb) p.faces.push({ d: null, t: thumb, confirmed });
   p.faces = capFacesKeepingConfirmed(p.faces, 80);   // shed unconfirmed guesses first (#49)
   if (thumb && confirmed && !p.thumb) p.thumb = thumb;
   saveStore('ai.people');
-  return { ok: true, id: p.id };
+  return { ok: true, id: p.id, receipt };
+});
+
+// The INVERSE of people:save, replaying a receipt backwards. Face-review's Undo reversed the clip
+// tags (#26) but never the enrolment, and enrolment is the half that lasts: only CONFIRMED faces
+// vote in faceDecide, so mis-naming a face and pressing Undo left the recognizer permanently taught
+// that this face is that person — every later scan re-suggested it and "Confirm all" propagated it
+// in bulk. The only repair was people:removeFace, buried behind a right-click in the dashboard.
+//
+// Deliberately NARROW: it removes only the faces this save appended, demotes only the ones it
+// promoted, and deletes the person only if this save created them AND they have nothing left. It
+// never touches a face that predates the assign. Unknown or replayed receipts are a no-op — Undo is
+// a UI button and a double-click must not eat a second face.
+ipcMain.handle('people:undoAssign', (_e, receipt) => {
+  const r = receipt || {};
+  const people = aiPeople();
+  const p = people.find((x) => x.id === String(r.personId || ''));
+  if (!p) return { ok: false };
+  const added = new Set((Array.isArray(r.addedFids) ? r.addedFids : []).map(String).filter(Boolean));
+  const promoted = new Set((Array.isArray(r.promotedFids) ? r.promotedFids : []).map(String).filter(Boolean));
+  if (Array.isArray(p.faces)) {
+    if (added.size) p.faces = p.faces.filter((f) => !(f && f.fid && added.has(String(f.fid))));
+    for (const f of p.faces) if (f && f.fid && promoted.has(String(f.fid))) f.confirmed = false;
+  }
+  // The cover may have pointed at a face that just left.
+  if (p.thumb && !(p.faces || []).some((f) => f && f.t === p.thumb)) p.thumb = personCover(p);
+  let removedPerson = false;
+  if (r.createdPerson && !(p.faces || []).length) {
+    const i = people.indexOf(p);
+    if (i >= 0) { people.splice(i, 1); removedPerson = true; }
+  }
+  saveStore('ai.people');
+  gcFaceCrops();
+  return { ok: true, removedPerson };
 });
 // Promote an unconfirmed face to confirmed.
 ipcMain.handle('people:confirmFace', (_e, payload) => {

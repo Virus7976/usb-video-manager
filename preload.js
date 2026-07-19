@@ -229,6 +229,7 @@ contextBridge.exposeInMainWorld('api', {
   // People / face recognition (descriptors computed in the renderer via face-api.js)
   getPeople: () => ipcRenderer.invoke('people:get'),
   savePerson: (payload) => ipcRenderer.invoke('people:save', payload),
+  undoAssignPerson: (receipt) => ipcRenderer.invoke('people:undoAssign', receipt),
   getPendingFaces: () => ipcRenderer.invoke('faces:getPending'),
   savePendingFaces: (list) => ipcRenderer.invoke('faces:savePending', list),
   renamePerson: (payload) => ipcRenderer.invoke('people:rename', payload),

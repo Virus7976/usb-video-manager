@@ -626,11 +626,19 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     const tags = buildEmbedTags(meta, parts, it.name);
     const keywords = Array.isArray(tags['XMP-dc:Subject']) ? tags['XMP-dc:Subject'] : [];
 
+    // Did this clip's metadata reach the disk — in the file, or in a sidecar beside it? Drives
+    // whether we may mark it consumed at the bottom (see `filed`). Only meaningful when embedding.
+    let metaLanded = !et;
+
     // 1. Embed a RICH XMP packet (Title, Description, flat keywords→dc:subject,
     // hierarchical tags for digiKam/Lightroom, date, location, people, shot type…).
-    // If the embed fails, SKIP the move/backup for this file and leave it where it
-    // is, so re-running retries it cleanly (a moved-but-untagged file would drop
-    // out of the next shallow scan).
+    //
+    // An embed failure used to `continue`, skipping the move, the NAS mirror and the CSV row for
+    // that clip — "leave it for a clean retry". But the retry hits the SAME error: a HEIC, an odd
+    // codec, or a read-only file fails every time, so with Embed on that clip could NEVER be filed.
+    // One unwritable file quietly stayed out of the Projects tree forever, which is worse than
+    // filing it with its metadata in a sidecar. So: fall back to an `.xmp` beside the file, then
+    // carry on filing either way (#69).
     if (et) {
       emit(i, it.name, 'embedding');
       try {
@@ -648,9 +656,23 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
           if (!already) await et.write(curPath, tags, ['-overwrite_original']);
           summary.embedded += 1;   // it IS embedded either way (written now, or already carrying it)
         }
+        metaLanded = true;
       } catch (err) {
-        summary.errors.push(`Embed ${it.name}: ${err.message}`);
-        continue;   // leave untouched for a clean retry
+        // Sidecar fallback. An XMP sidecar is a real, standard carrier — digiKam and Lightroom both
+        // read `<file>.xmp` — so the metadata is not lost just because the container refused it.
+        let sidecar = '';
+        try {
+          sidecar = `${curPath}.xmp`;
+          await et.write(sidecar, tags, ['-overwrite_original']);
+          metaLanded = true;
+          summary.sidecars = (summary.sidecars || 0) + 1;
+          summary.errors.push(`Embed ${it.name}: ${err.message} — wrote ${path.basename(sidecar)} instead`);
+        } catch (err2) {
+          // Neither route worked. File the clip anyway (leaving it unfiled forever is the worse
+          // failure), but say so plainly and do NOT mark its metadata consumed below, so the record
+          // survives for a manual retry rather than being pruned away.
+          summary.errors.push(`Embed ${it.name}: ${err.message}; sidecar also failed: ${err2.message}`);
+        }
       }
     }
 
@@ -742,7 +764,10 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     // hasn't placed it yet), so its metadata must survive for the run that finally files it. Marking
     // it done let the prune evict its meta, after which it was filtered out at the top of the loop
     // (`it.meta` required) and could NEVER be organized again — the AI's work silently gone.
-    if (!skipMove) filed.push(it.name);
+    // Only mark the metadata CONSUMED if it actually landed somewhere (embedded, or in a sidecar).
+    // Marking a clip done whose metadata reached neither would let the finalMeta prune evict the
+    // AI's work with nothing to show for it.
+    if (!skipMove && metaLanded) filed.push(it.name);
   }
   markFinalMetaDone(filed);
 

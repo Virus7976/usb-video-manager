@@ -358,22 +358,68 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
-**NEXT STEP — #95 (path validation on fs/shell IPC).** Analyzed this session, **not yet
-implemented**; nothing is half-built, the tree is clean. The harm is confirmed still real:
-`open:folder` (`main-mod/09-ipc-boot.js:1111`) passes its argument straight to `shell.openPath`
-with no validation, and `path:exists` (`:1053`), `disk:freeSpace` (`:1041`), `media:url`
-(`06-copy-transfer.js:546`) and `poster:get` (`:550`) are equally open. With `webSecurity:false`
-and untrusted filenames/AI text in the DOM, one XSS is arbitrary local read/open.
-The design to build: a shared `assertAllowedPath(p)` in `main-mod/01-core.js` that resolves the
-real path and requires it under an allowed root — the configured folders (`intakeFolder`,
-`projectsRoot`, `finalizeSource`, `photosTempFolder`, `phoneBackupFolder`, `phoneComputerFolder`,
-`phoneNasFolder`, `organizeDest`, `nasBackup.path`), `userData`, `temp`, currently-attached
-removable volumes (`04-routes-ledger.js` already enumerates them), **plus a session set of paths
-the user picked through a native `showOpenDialog`** — user consent is what makes an arbitrary
-folder legitimate, and without that set the folder pickers break. Fail closed with the
-`{ ok:false, refused:true, error }` shape `delete:source` uses. Test `test/ipc-path-guard.test.mjs`:
-assert a path outside every root is refused, a configured root is allowed, `..` traversal out of a
-root is refused, and a dialog-approved path is allowed. **Write the failing test first.**
+### 2026-07-19b — NEXT STEP: the face scan is not durable (owner-reported, NOT yet fixed)
+
+Owner: *"if I do a face scan right now but don't confirm faces it doesn't remember the scan."*
+Diagnosed in full this session; **deliberately not started** — it is four separate defects across
+three pipelines and touches the pending-faces store, so a partial fix is worse than none. On a
+4594-clip card a lost scan is hours. Fix in this order:
+
+1. **`collectClipFaces` callers REPLACE the pending store — this is silent data loss and is worse
+   than the reported symptom.** `src/mod/07-organize-map.js:869` and `src/mod/09-phone-finalize.js:1769`
+   each start `const faceClusters = []` **un-seeded**, unlike `scanFacesForClips` which seeds from
+   `loadPendingFaces()`. When the grid renders, `schedulePendingSave(clusters)` →
+   `faces:savePending` **replaces the whole store** (`main-mod/08-finalize-feedback.js:141`). So an
+   Analyze run silently deletes every unconfirmed face from an earlier scan. Fix: seed both from
+   `await loadPendingFaces()` and `savePendingNow(faceClusters)` right after the collect loop,
+   before the grid is (or isn't) opened.
+2. **`scanFacesAuto` marks clips scanned while persisting zero clusters**
+   (`src/mod/08-people.js:277-317`): sets `_facesScanned = true` but never clusters and never saves.
+   It runs automatically after a copy via `autoBackgroundEnrich`. Afterwards "Scan faces" finds
+   `toScan` empty and `loadPendingFaces()` empty → *"No saved face review found."* Fix: either
+   cluster+persist like `scanFacesForClips`, or use a separate `_facesAutoScanned` flag so it stops
+   suppressing the real scan.
+3. **The scanned flag never persists from the Organize/Finalize screen.**
+   `currentSelectedClips()` (`src/mod/08-people.js:1119`) builds throwaway clips whose `_ref` points
+   into `finScan.files`, and `flushDraftSave` → `buildDraftMap()` walks **only**
+   `state.scannedFiles` (`src/mod/01-core.js:1157`). On Finalize the files are already renamed so the
+   `clipKey` (`name__size`) no longer matches and the flag is written to nothing. Note
+   `f.meta.facesScanned` is READ at `:1120` but **nothing anywhere writes it** — that read is dead.
+   Fix: mark scanned BY KEY through a main-side handler, and write `meta.facesScanned` on the
+   Finalize path so the read stops being dead.
+4. **Group shots are only persisted from inside the grid.** `saveFaceScenesNow()` is called in
+   exactly one place — `render()` (`src/mod/08-people.js:779`). The `finally` in `scanFacesForClips`
+   saves pending but not scenes, so scenes from a scan whose grid never opened are dropped.
+   Fix: one line — `saveFaceScenesNow()` beside `savePendingNow(clusters)` in that `finally`.
+
+**Watch out:** `test/face-scenes.test.mjs:144-159` string-matches the exact popup `cardHTML(...)`
+output, so any move from innerHTML-rebuild to incremental DOM updates breaks it and it must be
+updated in the same change.
+
+**ALSO REQUESTED, not started:** drag a region on the group photo to name a face the detector
+missed ("I should be able to drag over a section on the screen and name it even if it's not
+recognized as a face"). Needs a manual-region path into the same cluster/enrolment flow — the face
+has no descriptor, so decide whether a hand-drawn region enrolls (it cannot produce a descriptor
+without a detect pass over that crop) or only tags the clip. Do not guess; it changes what
+`people.json` means.
+
+---
+
+### 2026-07-19a — #95 DONE
+
+**#95 (path validation on fs/shell IPC) is COMPLETE** — commit `46ac9c1`.
+`isPathAllowed()` in `main-mod/01-core.js` now guards `open:folder`, `path:exists`,
+`disk:freeSpace`, `media:url`, `poster:get` and `meta:get` (the last one the audit never named —
+same class, found by grepping for the sibling). Consent-based: `dialog.showOpenDialog` is wrapped
+ONCE so all 8 pickers and any future one approve automatically, and `listRemovableDrives()` approves
+cards (which are picked on the home screen, never through a dialog).
+
+**The lesson worth keeping:** allowlisting `app.getPath('temp')` made the guard a near no-op — that
+is all of `/tmp` on Linux and the user's whole `%TEMP%` on Windows. **All 13 vm tests passed against
+a guard that did not guard**, because the vm harness stubs `app.getPath` to its own isolated dir so
+the over-broad root never appeared. Only asking the REAL renderer for a `file://` URL to an outside
+path caught it. When a guard's correctness depends on a real OS path, the vm suite can lie to you.
+Tests: `test/ipc-path-guard.test.mjs` (13), `test/e2e/path-guard.e2e.mjs` (5).
 
 ---
 

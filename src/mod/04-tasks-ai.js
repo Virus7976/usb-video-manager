@@ -1419,11 +1419,23 @@ async function aiAnalyzeSelected(preset = null) {
   aiRunDirection = dlg.direction || '';
   // …and, if they asked, is remembered so future runs benefit too.
   if (dlg.direction && dlg.remember) {
+    // The user ticked a box asking the app to KEEP this. An explicit request deserves an explicit
+    // answer: this used to say nothing either way, so a failed save was discovered months later by
+    // the AI simply not behaving that way. The in-memory push is gated on the same outcome, so the
+    // two can't diverge and leave the app believing it knows something it will forget on restart.
+    let kept = false;
     try {
-      await window.api.aiAddMemories([{ text: dlg.direction, example: '' }]);
+      const rr = await window.api.aiAddMemories([{ text: dlg.direction, example: '' }]);
+      kept = !(rr && rr.ok === false);
+    } catch (e) { kept = false; logIssue('AI', `Couldn’t remember the direction "${dlg.direction}": ${(e && e.message) || e}`); }
+    if (kept) {
       if (!Array.isArray(aiCfg.memories)) aiCfg.memories = [];
       aiCfg.memories.push({ text: dlg.direction, example: '' });
-    } catch { /* non-fatal */ }
+      showToast('Remembered — future runs will use this too', 3500);
+    } else {
+      showToast('Couldn’t remember that direction — it still applies to this run', 6000);
+      logIssue('AI', `aiAddMemories did not persist the remembered direction "${dlg.direction}"`);
+    }
   }
   // Snapshot the current naming BEFORE the AI changes anything, so it's always
   // recoverable from Edit → Version history (unless the user turned this off).

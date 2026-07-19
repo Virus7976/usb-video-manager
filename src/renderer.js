@@ -4083,11 +4083,23 @@ async function aiAnalyzeSelected(preset = null) {
   aiRunDirection = dlg.direction || '';
   // …and, if they asked, is remembered so future runs benefit too.
   if (dlg.direction && dlg.remember) {
+    // The user ticked a box asking the app to KEEP this. An explicit request deserves an explicit
+    // answer: this used to say nothing either way, so a failed save was discovered months later by
+    // the AI simply not behaving that way. The in-memory push is gated on the same outcome, so the
+    // two can't diverge and leave the app believing it knows something it will forget on restart.
+    let kept = false;
     try {
-      await window.api.aiAddMemories([{ text: dlg.direction, example: '' }]);
+      const rr = await window.api.aiAddMemories([{ text: dlg.direction, example: '' }]);
+      kept = !(rr && rr.ok === false);
+    } catch (e) { kept = false; logIssue('AI', `Couldn’t remember the direction "${dlg.direction}": ${(e && e.message) || e}`); }
+    if (kept) {
       if (!Array.isArray(aiCfg.memories)) aiCfg.memories = [];
       aiCfg.memories.push({ text: dlg.direction, example: '' });
-    } catch { /* non-fatal */ }
+      showToast('Remembered — future runs will use this too', 3500);
+    } else {
+      showToast('Couldn’t remember that direction — it still applies to this run', 6000);
+      logIssue('AI', `aiAddMemories did not persist the remembered direction "${dlg.direction}"`);
+    }
   }
   // Snapshot the current naming BEFORE the AI changes anything, so it's always
   // recoverable from Edit → Version history (unless the user turned this off).
@@ -8882,7 +8894,11 @@ async function showDestinationMap(rawClips, opts = {}) {
       //
       // The cost is one IPC. The slow part — an AI summary per touched project — is already detached
       // inside recordToLedger, so the toast is not delayed by this.
-      try { await recordToLedger(clips, placement, r.results || []); } catch (e) { /* non-fatal */ }
+      // Still fail-open — the clips are filed by now and a ledger problem must never undo that — but
+      // no longer SILENT. A rejection means the Projects index won't list this run and same-shoot
+      // detection won't offer the project next import: learned work quietly degrading. Logged rather
+      // than toasted, because the run itself succeeded and a warning here would be noise.
+      try { await recordToLedger(clips, placement, r.results || []); } catch (e) { logIssue('Organize', `Filed, but the project memory wasn’t updated: ${(e && e.message) || e}`); }
       aiActivityDone(`Filed ${okN}${failN ? `, ${failN} failed` : ''} into your Projects tree ✓`);
       // Offer the undo RIGHT HERE. projects:move already records everything needed to reverse the
       // run (config.lastOrganize, main-mod/02-media.js:427) and undoLastOrganize() has always

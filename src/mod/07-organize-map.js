@@ -1440,7 +1440,11 @@ async function showDestinationMap(rawClips, opts = {}) {
       //
       // The cost is one IPC. The slow part — an AI summary per touched project — is already detached
       // inside recordToLedger, so the toast is not delayed by this.
-      try { await recordToLedger(clips, placement, r.results || []); } catch (e) { /* non-fatal */ }
+      // Still fail-open — the clips are filed by now and a ledger problem must never undo that — but
+      // no longer SILENT. A rejection means the Projects index won't list this run and same-shoot
+      // detection won't offer the project next import: learned work quietly degrading. Logged rather
+      // than toasted, because the run itself succeeded and a warning here would be noise.
+      try { await recordToLedger(clips, placement, r.results || []); } catch (e) { logIssue('Organize', `Filed, but the project memory wasn’t updated: ${(e && e.message) || e}`); }
       aiActivityDone(`Filed ${okN}${failN ? `, ${failN} failed` : ''} into your Projects tree ✓`);
       // Offer the undo RIGHT HERE. projects:move already records everything needed to reverse the
       // run (config.lastOrganize, main-mod/02-media.js:427) and undoLastOrganize() has always

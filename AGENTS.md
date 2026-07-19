@@ -322,6 +322,55 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19aq — the last two swallowed failures. THE QUEUE IS EMPTY AGAIN.
+
+**"Remember this direction"** — the user TICKS A BOX asking the app to keep the steering they typed,
+and the save had no `.ok` check and no toast either way. It ranked last precisely because there was no
+false ✓; but that cuts both ways — no signal at all means a failure surfaces months later as the AI
+simply not behaving that way. Now it answers explicitly in both directions, and the in-memory push is
+gated on the outcome so memory and disk can't diverge.
+
+**The ledger write after a successful filing run** keeps swallowing — the clips are filed and a ledger
+problem must never undo that — but no longer silently. A rejection means the Projects index won't list
+the run and same-shoot detection won't offer the project next import. **Logged, deliberately not
+toasted:** the run succeeded, so a warning would be noise. That asymmetry is the point — the two fixes
+above toast because the user was told something false; this one only records, because nothing the user
+believes is wrong.
+
+`test/silent-remember-and-ledger.test.mjs`, 6 tests; each part proven with **asserted** breaks. Two
+guard the other direction: the ledger write still never rethrows, and still doesn't shout.
+
+Same loose-assertion slip once more (a bare `/showToast\(/` matched either of two branches, so
+deleting the success confirmation left it green) — fixed by naming both toasts. **Six occurrences this
+session; the rule is in PROMPT.md §8c and I applied the asserted-break helper from `ap` here, which is
+what caught it.**
+
+Both tiers green: vm **999/918/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — undeployed,
+**~73 commits**.
+
+---
+
+## STATE: the WSL-safe queue is EMPTY. Read this before starting work.
+
+Everything from the `2026-07-19ae` and `2026-07-19al` sweeps is closed. Seven axes have now been swept
+and each is recorded as done: sibling-path, three-axis (first-run/happy-path/create-update), store
+invariants, write-vs-read normalisation, main-vs-renderer guards, delete/evict paths, undo/inverse
+pairs, swallowed failures, and re-entrancy.
+
+**THE HIGHEST-VALUE ACTION IS THE DEPLOY.** ~73 commits are green and undelivered, including fixes for
+several ways typed names, trained faces and AI memories were silently lost. It is blocked ONLY by the
+app running (PID 7104 all session). Deploy the moment it closes — the recipe is in PROMPT.md §9.
+
+**ONE ITEM REMAINS, and it is a real change rather than a sweep finding:** `projects:move` has no
+`.xmp` sidecar fallback, while its twin `finalize:run` falls back to a sidecar when the embed fails
+("an XMP sidecar is a real, standard carrier — digiKam and Lightroom both read it"). This writes files
+BESIDE THE FOOTAGE, so it needs its own change, its own tests, and care — it is not a cleanup.
+
+**If a further sweep comes back empty, SAY SO PLAINLY.** Do not manufacture churn; a short honest
+report is the correct output. Untried angles, if one is wanted: what happens when a store file is
+deleted mid-session; behaviour when the AI model is missing/renamed mid-run; and the photo path
+treated as a first-class twin of video (PROMPT.md §2 lists it as a standing parity obligation).
+
 ### 2026-07-19ap — a consolidation erased rules taught while it was thinking (new-queue item 6)
 
 `maybeAutoConsolidate` is a read-modify-replace across the longest await in the app: it snapshots

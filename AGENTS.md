@@ -358,6 +358,23 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19d — face review: the store write per click (`7a87415`)
+
+`render()` persisted the whole faces store on EVERY click, including selection-only clicks that
+change `s._sel` — which `_serializePending` drops, so the write was a full re-serialize for zero net
+change. Now `render({persist:false})` on exactly the two selection-only paths.
+
+**Pattern worth carrying:** audit #67 fixed this for the SCAN phase (coalesce to 8s while scanning)
+and left the identical cost in the REVIEW phase. The scan is when the app writes; the review is when
+the USER clicks. **When a perf fix targets one phase, check its twin** — the same shape as the
+"sibling paths that never got a guard" weak point in PROMPT.md §5.
+
+**Verified already-fixed, not touched:** #26/#27 (tagClips already sends every clipKey through
+`tagPersonOnClips`) and #67's scan half. **That is 8 stale entries found in this backlog** — roughly
+1 in 4 pulled from it is already done or misdescribed. Keep confirming the harm before fixing.
+
+---
+
 ### 2026-07-19c — #58 was MY regression, not pre-existing (corrected, `edbc9e1`)
 
 **Read this before adding another IPC guard.** I reported the `#58` e2e failure as pre-existing

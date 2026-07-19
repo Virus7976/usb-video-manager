@@ -358,6 +358,31 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19x — person-rename collision FIXED (`425fde5`). ONE finding left, UI-grade.
+
+Renaming a person onto an existing name created a DUPLICATE record — splitting that person's
+enrolment faces so recognition got WORSE, which is the opposite of what the rename was for. Both
+CREATE paths deduped case-insensitively; `people:rename` did not. Now refuses with
+`{ ok:false, reason:'name-exists', existingId, name }` and the renderer offers the MERGE that
+actually fixes it (confirmed, never automatic — merge deletes the source record). A person's own
+record never counts as a collision, so a casing correction still works.
+
+**REMAINING FINDING — UI-grade, `src/mod/10-boot.js`.** The compress dialog is restored for retry on
+the THROW path (`:167-170` re-enables `.cmp-pick/.cmp-preset/#cmpSkip/#cmpSelAll/.cmp-cb` and unhides
+`#cmpRun`) but NOT after a run that resolved — which covers **cancelled runs and runs with per-file
+failures**. The `finally` at `:161-166` only unsubscribes, clears the task and swaps Cancel→Close, and
+the rows are patched in place via `data-stat`/`data-fill` rather than re-rendered, so nothing else
+rebuilds them. Cancel a 50-clip run at clip 3 and the checkboxes, preset picker, output picker and
+Compress button are all dead; the only way to retry the remainder is to close and reopen, losing the
+selection and preset. **Not data loss.** Reproducing it needs ffmpeg present.
+
+**After that, the WSL-safe queue is empty again.** Both historical lists are worked through, the
+sibling-PATH sweep is closed, and the 3-axis sweep is now down to that one UI item. Axis B (happy
+path vs retry) was the weak one — it expected gaps in the ADB retry and the face-scan latch and found
+both already handled; drop B before A or C if sweeping again.
+
+---
+
 ### 2026-07-19w — 3-axis sweep: 3 findings, 1 fixed (`3ec4a09`). TWO LEFT, both WSL-safe.
 
 A sweep on **first-run vs resume**, **happy path vs retry**, and **create vs update** (the twin-PATH

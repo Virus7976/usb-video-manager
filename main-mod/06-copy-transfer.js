@@ -420,8 +420,24 @@ ipcMain.handle('copy:start', async (evt, payload) => {
   const dest = intakeFolder || config.intakeFolder;
   const sender = evt.sender;
 
+  // Stills do NOT belong in the video intake (Gitea #2). That folder is a watch-folder — Tdarr picks
+  // up whatever lands there and tries to compress it — so a JPG/HEIC copied off a card was queued as
+  // if it were footage. Photos have their own home, and the PHONE path already routes them there
+  // (main-mod/05-windows-phone.js, src/mod/09-phone-finalize.js); the card path never got the same
+  // treatment. The scan already tells us which is which: walkForVideos tags every entry
+  // `kind: 'video' | 'photo'`, and deliberately re-tags an iPhone Live Photo `.MOV` as a photo so the
+  // 2-3s motion clips ride with their stills instead of flooding the compress queue.
+  //
+  // Falls back to the intake when no Photos Temp is configured: a still in the wrong folder is a
+  // nuisance, but a still the user believes was copied and cannot find is footage loss. Fail toward
+  // the old behaviour, never toward "copied nowhere".
+  const photoDest = String(config.photosTempFolder || '').trim() || dest;
+  const destFor = (f) => ((f && f.kind === 'photo') ? photoDest : dest);
+  const anyPhotos = files.some((f) => f && f.kind === 'photo');
+
   try {
     await ensureDir(dest);
+    if (anyPhotos && photoDest !== dest) await ensureDir(photoDest);
   } catch (err) {
     return { ok: false, error: `Cannot create intake folder: ${err.message}` };
   }
@@ -481,7 +497,7 @@ ipcMain.handle('copy:start', async (evt, payload) => {
     copyTask.currentIndex = i;
     copyTask.currentName = targetName;
     try {
-      destPath = await uniqueDest(dest, targetName);
+      destPath = await uniqueDest(destFor(f), targetName);   // stills → Photos Temp (#2)
       emit('copying');
       let lastEmit = 0;
       await copyFileWithProgress(f.sourcePath, destPath, (n) => {

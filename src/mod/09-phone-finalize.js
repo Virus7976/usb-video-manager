@@ -1684,7 +1684,12 @@ async function finRunScan() {
   finRenderList();
 }
 
-function finMatched() { return finScan.files.filter((f) => f.matched); }
+// EVERY clip is fileable, not just the ones the AI has described. This used to return only
+// `f.matched` rows — clips with a stored record — which combined with finalize:run's own filter meant
+// a clip the AI had never got to could not be filed AT ALL. On his store that was 4263 of 4594 clips,
+// and it is why the Projects ledger sat at 0: he could only ever file the fraction he had finished
+// naming, and the rest was not even offered. An unnamed clip now files to `<date>/_unsorted`.
+function finMatched() { return finScan.files.slice(); }
 function finSelected() { return finMatched().filter((f) => f.selected); }
 
 let finQuery = '';

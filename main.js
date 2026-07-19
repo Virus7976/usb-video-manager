@@ -8380,7 +8380,19 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
   const sender = evt.sender;
   const { items, options, dir } = payload || {};
   const opts = options || {};
-  const list = Array.isArray(items) ? items.filter((it) => it && it.meta) : [];
+  // FILING MUST NOT REQUIRE THE AI TO HAVE FINISHED. This used to drop every clip without a stored
+  // record — and combined with the Organize screen only listing `matched` rows, it meant a clip the
+  // AI had never described could not be filed AT ALL. On his real store that is 4263 of 4594 clips:
+  // 93% of his footage, structurally unfileable, which is why he has a project ledger of 0 after
+  // months of use. A dated folder on disk beats a card he never empties.
+  //
+  // An unnamed clip is carried with a MINIMAL synthesised record so the rest of this function has
+  // something to work with — `_noMeta` marks it so the embed and the finalMeta bookkeeping below can
+  // skip it. It is not a real record and must never be treated as one.
+  const list = (Array.isArray(items) ? items : []).filter(Boolean).map((it) => {
+    if (it.meta) return it;
+    return { ...it, meta: { _noMeta: true }, _noMeta: true };
+  });
   // Per-run choices come from the payload (the Organize screen), falling back to
   // the saved config.
   const dest = payload.organizeDest || config.organizeDest || '';
@@ -8456,9 +8468,19 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     // NOT slugFolder. `rel` is a path the user (or the AI, choosing from his real tree) picked —
     // "2026 - Client Work/Gourgess Lawns". Slugging it files into `2026-client-work/gourgess-lawns`,
     // a brand-new folder beside his real one, forking his project tree a little more on every run.
-    const parts = relRaw
+    // An UNNAMED clip has no category/project to file under, so subdirParts would return nothing and
+    // it would land loose in the Projects root — worse than leaving it on the card. Give it the one
+    // thing it does have: its DATE. His shoots are batches and the date predicts the subject 88% of
+    // the time, so `<date>/_unsorted` is a folder he can actually use, and the `_unsorted` level says
+    // plainly that this one is unfinished.
+    let parts = relRaw
       ? relRaw.split(/[\\/]+/).map((x) => safeFolderName(x)).filter(Boolean)
       : subdirParts(levels, meta);
+    if (!relRaw && it._noMeta && !parts.length) {
+      let day = '';
+      try { day = new Date((await fsp.stat(it.sourcePath || it.path)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
+      parts = [safeFolderName(day || 'undated'), '_unsorted'].filter(Boolean);
+    }
     // Under a plan, a clip the user never placed has NO destination. Falling through to
     // subdirParts here would hand it an empty path — i.e. dump it in the ROOT of the Projects
     // tree, which is worse than leaving it alone. Skip its move; it still gets embed/CSV/NAS.

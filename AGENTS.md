@@ -322,6 +322,45 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bj — ⭐ TIER 1 #5+#9: unnamed clips could not be filed AT ALL. That is the whole diagnosis.
+
+The single most important finding of the session. **Filing was gated on the AI having already
+described the clip**, through three separate filters:
+
+1. `finalize:scan` → `matched: !!rec || !!f.isPhoto` — false for any clip with no stored record.
+2. `finMatched()` → `finScan.files.filter((f) => f.matched)` — the Organize screen only ever listed
+   matched rows, so an unnamed clip was **not even offered**.
+3. `finalize:run` → `items.filter((it) => it && it.meta)` — and dropped again on the way in.
+
+On his real store that is **4263 of 4594 clips — 93% of his footage, structurally unfileable.** This
+is why the project ledger reads 0 and final-meta reads 1 after months of use. He was never choosing
+not to file; the app could only ever offer him the 7% he had finished naming.
+
+**Everything in the toolness diagnosis follows from this.** "Front-loads effort and back-loads payoff"
+is not a UX opinion — it is this filter. The AI naming was a *precondition* for the payoff, so the
+payoff was unreachable for almost everything he shot.
+
+Fix: an unnamed clip is carried through with a minimal synthesised record (`_noMeta`) and files to
+**`<date>/_unsorted`**, the date taken from the file's own mtime.
+- **Date, because his shoots are batches** and the date predicts the subject 88% of the time — so that
+  folder is genuinely useful, not a dumping ground.
+- **`_unsorted` under it**, so it is obviously unfinished and never loose in the Projects root (the
+  standing "never dump to root" rule).
+- **Not embedded, not marked done in finalMeta** — there is nothing to embed, and marking a
+  non-existent record consumed is how a clip becomes un-organizable forever (`2026-07-19ai`).
+- **Named clips are completely unaffected** — same destination, same embed, guarded by a test.
+
+`test/file-without-a-name.test.mjs`, 8 tests, all three parts proven with asserted breaks (including
+that removing the date fallback would dump clips in the root). Guards the other direction: named clips
+unchanged, a mixed batch files BOTH, and the unnamed path does not mask a genuine failure.
+
+**One of my own tests was simply wrong and I fixed the test, not the code:** I asserted a run whose
+only clip is missing returns `ok: true`. It correctly returns `ok: false` — `didSomething` reports
+failure when a run achieves nothing and errors. Papering over that would have traded one silent
+failure for another.
+
+Both tiers green: vm **1067/974/93/0**, e2e **93/92/1/0**.
+
 ### 2026-07-19bi — TIER 1 #4: the home screen can finally see the work he abandoned
 
 First build against the toolness backlog. The finding is better than the backlog item assumed: a

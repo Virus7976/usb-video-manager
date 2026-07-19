@@ -295,7 +295,14 @@ function scanBalancedJson(text) {
 }
 
 let atomicWriteCounter = 0;
+// Machine-managed stores are written COMPACT; only the files a human might open stay indented.
+// `JSON.stringify(obj, null, 2)` adds 20-30% bytes and CPU to every write, and these are the
+// multi-MB ones (faces, people, observations) written on a debounce while the user is clicking —
+// so the indentation was being paid for repeatedly, on the main thread, for files nobody reads by
+// hand. config.json stays pretty: it IS hand-edited when something needs unpicking, and it is small.
+const PRETTY_FILES = new Set(['config.json']);
 function writeJsonAtomic(file, obj) {
+  const pretty = PRETTY_FILES.has(path.basename(file));
   // Unique temp name per write (pid + counter) so two concurrent writers can't
   // clobber a shared "<file>.tmp" and corrupt each other's output.
   const tmp = `${file}.${process.pid}.${atomicWriteCounter += 1}.tmp`;
@@ -304,7 +311,7 @@ function writeJsonAtomic(file, obj) {
     // can't leave the renamed file present but with unflushed (empty/old) bytes — cheap
     // durability insurance for irreplaceable data (the face DB, saved names).
     const fd = fs.openSync(tmp, 'w');
-    try { fs.writeSync(fd, JSON.stringify(obj, null, 2)); fs.fsyncSync(fd); }
+    try { fs.writeSync(fd, JSON.stringify(obj, pretty ? null : undefined, pretty ? 2 : undefined)); fs.fsyncSync(fd); }
     finally { fs.closeSync(fd); }
     fs.renameSync(tmp, file);
     // Flush the DIRECTORY entry too, so a crash/power-loss right after the rename (but before the dir

@@ -358,6 +358,37 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19m — #8 slice 2/3 DONE (`94ac02b`). Scope corrected: THREE stores, not five.
+
+**The audit was wrong that #8 spans five stores.** `finalMeta` is keyed by FILE NAME (lowercased),
+never by `clipKey` — checked directly. The migration is: **drafts (done), observations (done), faces
+`clipKeys`, then `copiedLog` LAST and alone.**
+
+Observations now go through `clipObsFor(clip)` (V2-then-legacy) and `noteClipObs(clip, obs)` (V2
+only), collapsing seven near-identical write blocks into one helper.
+
+**TWO MISTAKES WORTH INHERITING:**
+1. **A guard you haven't broken is not a guard.** My first leftover-site check inspected three named
+   functions and did NOT catch a deliberately reintroduced `clipObsCache[clipKey(x)]` — it was in a
+   fourth function. `test/clip-obs-accessor-guard.test.mjs` scans the SOURCE instead and does catch
+   it. Always break the fix and watch the test fail.
+2. **Renaming an access path breaks the source-extracting tests.** `analyze-resume.test.mjs` and
+   `ai-analyze-tools.test.mjs` pull functions out of `src/mod/*.js` and inject dependencies **by
+   name** (some POSITIONALLY, via a DEPS array). 11 tests failed with the new accessor undefined.
+   **If you rename or introduce a renderer-side accessor, grep `test/` for the old name and update
+   the injected deps** — the e2e tier will stay green and hide this.
+
+**NEXT — slice 3: the faces `clipKeys` sets** (`src/mod/08-people.js`, `faces-pending.json`). A
+cluster's `clipKeys` is a Set of clipKeys used to tag every clip a face appears in; a collision
+tags the wrong clip with a person. Note `tagClips`/`untagClips` send those keys to main
+(`clips:tagPerson`), so both sides must accept either key form during the transition.
+
+**THEN slice 4: `copiedLog`, alone.** It is what makes the Delete step reachable. `verifyCopyPair`
+re-verifies at delete time and fails closed, so a key miss degrades to "can't clear the card" rather
+than "deleted the wrong thing" — prove that with a test before relying on it.
+
+---
+
 ### 2026-07-19l — #8 slice 1/4 DONE (`27c4bc2`). THE QUEUE WAS NOT EMPTY — I was wrong.
 
 **Correction to the note below.** I declared the WSL-safe queue empty and stopped the loop. That was

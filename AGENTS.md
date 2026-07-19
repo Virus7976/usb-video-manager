@@ -358,6 +358,34 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19n — #8 slice 3 DONE (`d2f99f9`). ONLY `copiedLog` REMAINS — read this before it.
+
+Faces done: clusters key by `clipKeyV2`, `byKey` indexes all three forms (new key, legacy
+fingerprint, legacy path), and **`clipKeyMatches(a, b)` in `main-mod/08-finalize-feedback.js` handles
+the IPC boundary** for `clips:tagPerson` / `clips:untagPerson`.
+
+**The rule in `clipKeyMatches` is the part to understand before reusing it:** the legacy key is a
+PREFIX of the new one, so stem-matching everything would "work" — and would re-introduce the very
+collision the migration removes. So it requires EXACT equality when both keys carry an mtime, and
+falls back to the stem only when one genuinely lacks it. Undo had the same exact-match hole as
+tagging, and an untag that silently misses is worse than a tag that does — it leaves the tag on
+permanently.
+
+**FINAL SLICE — `copiedLog`. Do it alone, and read this first.**
+`copiedLog` records what has been copied off a card and where it landed; its own comment says that
+without it "the Delete step was a silent no-op and the only way to clear a card was to COPY THE WHOLE
+THING AGAIN". Renderer sends `clipKey(c)` at `src/mod/01-core.js:1013` (`getCopied`) and reads
+`log[clipKey(c)]` at `:1016`; main writes `store[String(e.key)]` (`08-finalize-feedback.js:946`) and
+deletes by key (`:993`).
+
+Approach: reuse `clipKeyMatches` on the main side for `getCopied`/the delete-by-key path, and send
+`clipKeyV2` from the renderer, exactly as slice 3 did. **The failure mode to test explicitly:** a key
+miss must degrade to "this clip looks un-copied, so the card can't be cleared" — annoying but safe —
+and NEVER to "a different clip looks copied". `verifyCopyPair` re-verifies at delete time and fails
+closed, so the gate itself is not at risk, but prove that with a test rather than trusting it.
+
+---
+
 ### 2026-07-19m — #8 slice 2/3 DONE (`94ac02b`). Scope corrected: THREE stores, not five.
 
 **The audit was wrong that #8 spans five stores.** `finalMeta` is keyed by FILE NAME (lowercased),

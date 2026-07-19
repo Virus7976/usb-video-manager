@@ -358,6 +358,33 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19i — #17 DONE (`347e997`) + an E2E TRAP THAT WILL WASTE YOUR TIME
+
+`adb pull` now judges success on COMPLETENESS (exact source size when known, non-empty only when the
+device reports no size) and unlinks a failed/short file so no later resume scan can adopt it. The
+right test already existed three lines above in the resume check; the MTP sibling had it too.
+
+**⚠ A LEAKED TEST ELECTRON BREAKS EVERY LATER E2E RUN, AND THE ERROR DOES NOT SAY SO.** A killed or
+timed-out e2e leaves `node_modules/electron/dist/electron` alive holding the single-instance lock on
+`~/.config/USB SD Auto-Action` (on Linux, `app.getPath('appData')` is `~/.config` — the harness's
+`APPDATA` override only redirects the app's own STORE_DIR, not Electron's userData). Every later
+launch then calls `app.quit()` immediately and Playwright reports:
+
+    electron.launch: Target page, context or browser has been closed
+
+which reads like a renderer crash. **Before diagnosing any e2e failure, check for orphans:**
+
+    pgrep -af 'node_modules/electron/dist/electron' | grep -v 'pgrep\|zsh -c'
+
+and kill them. This cost a full attribution detour this session: `drafts-quit-flush` failed at HEAD
+*and* at the previous commit, which looked like a pre-existing bug and was actually a stale process.
+After clearing them the whole suite was green with no code change.
+
+**Also worth noting:** `pgrep -c -f <pattern>` counts your own shell (the command line contains the
+pattern), so it over-reports. Use `pgrep -af … | grep -v 'pgrep\|zsh -c' | wc -l`.
+
+---
+
 ### 2026-07-19h — #69 DONE (`dec4706`); what's safe to take next
 
 Embed failure no longer strands a clip: falls back to an `<file>.xmp` sidecar and files either way,

@@ -322,6 +322,34 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ba — INSTALLER PRE-BUILT AT HEAD. The deploy is now a ~10-second install.
+
+Queue still empty and the app still running, so instead of reporting empty twice I removed the thing
+that would have made the deploy slow when it finally becomes possible.
+
+The installer was built at `f59b00f` — **29 commits stale**, predating today's entire data-loss batch.
+Rebuilt it at HEAD. **Building requires nothing of the running app** (only INSTALLING does), so this
+was always available and I should have done it earlier in the session rather than waiting.
+
+Synced `main.js`, `preload.js`, `package.json`, `CHANGELOG.md` and `src/` to
+`C:\Users\jakeg\Downloads\skool-downloader-chrome\usb-auto-action`, then ran
+`npx electron-builder --win --publish never` DIRECTLY (that checkout predates the `main-mod/` split,
+so `npm run build:win` dies on its missing prebuild hook). **Publishes nothing** — no release, no
+auto-update feed touched.
+
+`dist\USB-SD-Auto-Action-Setup-0.4.28.exe`, 2026-07-19 16:25, 135,281,963 bytes.
+
+**VERIFIED INSIDE THE PACKAGED ASAR** with `grep -ac` (grep -c reports 0 on a binary asar and makes a
+good build look stale — that has cost real confusion before). Markers from five separate fixes today:
+`NOT backed up to the NAS` (1) · `readError: true` (1) · `DRAFTS_CAP` (8) · `people:undoAssign` (2) ·
+`Not enough room: these photos` (1). The build genuinely contains this session's work.
+
+**THE DEPLOY IS NOW: close the app → `Start-Process` the dist .exe with `/S -Wait` → verify the
+markers in `%LOCALAPPDATA%\Programs\USB SD Auto-Action\resources\app.asar` with `grep -ac` →
+relaunch.** ~10 seconds, no build step.
+
+App still running (PID 7104) — **~82 commits undeployed, installer READY at HEAD.**
+
 ### 2026-07-19az — PROMPT.md refreshed; NO code work this iteration, and that is the honest output
 
 The sweep queue is empty, so instead of manufacturing a twelfth axis I did the loop's literal task and

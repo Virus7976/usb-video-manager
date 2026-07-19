@@ -505,7 +505,7 @@ observations, face clipKeys, copiedLog, aiQueue) and is **rewrite-free by design
 cleanup pass**. The sibling-path sweep (7 confirmed / 5 fixed), the three-axis sweep (3/3) and the
 store-invariant sweep are all closed; the re-audited backlog and the also-rans are worked through.
 What remains needs Jake's Ollama models, his Windows machine, a phone, or a labelled face fixture.
-**~81 commits are green and undeployed** — check `AGENTS.md` §7a for the current deploy state before
+**~82 commits are green and undeployed, with the installer PRE-BUILT AT HEAD and asar-verified** (see `AGENTS.md` 2026-07-19ba) — so the deploy is a ~10-second install with no build step. Check `AGENTS.md` §7a for the current deploy state before
 assuming anything is live._
 
 _**Final pass of 2026-07-19.** ELEVEN axes have now been swept and every finding is closed. In order

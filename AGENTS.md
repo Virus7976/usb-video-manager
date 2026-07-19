@@ -358,6 +358,23 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19e — #73 find & replace (`8f2ced3`); DEPLOY DEBT is now the top risk
+
+Edit → "Find & replace…" across the text fields the user owns. Literal find (metacharacters escaped),
+live match count, auto restore point at ≥8 clips, counts from state not the DOM. Never touches files.
+Test: `test/e2e/find-replace.e2e.mjs` (6).
+
+**⚠ 18 commits since `82f72ba` are green and UNDEPLOYED** — the app has been running with a large
+face review open for the whole session, so no rebuild was safe. PROMPT.md §5 already ranked deploying
+above the next fix; with this much accumulated that is now clearly the highest-leverage action.
+**The moment the app is not running: build per §9 and install.** Everything the owner reported
+(face-review lag, scroll jump, popup, scan durability) is fixed but unreachable until then.
+
+**e2e trap, re-confirmed the hard way:** `read(win, expr)` wraps in a NON-async arrow, so `await`
+inside it is a SyntaxError. A function returning a promise needs no `await` — Playwright resolves it.
+
+---
+
 ### 2026-07-19d — face review: the store write per click (`7a87415`)
 
 `render()` persisted the whole faces store on EVERY click, including selection-only clicks that

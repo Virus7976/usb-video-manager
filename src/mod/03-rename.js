@@ -639,3 +639,78 @@ function wireRowEditing(listEl) {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Find & replace across names (audit #73)
+// ---------------------------------------------------------------------------
+// The filter finds clips; nothing could CHANGE them in bulk. On a corpus of thousands that made a
+// whole class of edit impractical — you misspell a subject on a 400-clip shoot, or a project gets
+// renamed, and the only route was retyping it clip by clip or re-running the AI over the batch.
+//
+// Deliberately narrow: it edits the TEXT FIELDS the user owns (subject, description, location, and
+// any custom organize fields), never filenames on disk. Nothing here touches a file — the rename is
+// applied later by the existing copy path, so a bad replace is undone with the restore point below
+// rather than by moving footage back.
+const FR_FIELDS = [
+  { id: 'subject', label: 'Subject' },
+  { id: 'description', label: 'Description' },
+  { id: 'location', label: 'Location' },
+];
+function frTargetFields() {
+  // Custom organize fields are user-defined text too — excluding them would make this feel arbitrary
+  // on a setup that renamed "project" to something else.
+  const extra = (organizeFields || []).filter((f) => f && f.id && !FR_FIELDS.some((k) => k.id === f.id));
+  return [...FR_FIELDS, ...extra.map((f) => ({ id: f.id, label: f.label || f.id }))];
+}
+/** Clips this replace would touch, plus a per-field preview count. Pure — used for the live preview. */
+function frMatches(find, { fields, selectedOnly, matchCase, wholeWord }) {
+  const needle = String(find || '');
+  if (!needle) return { clips: [], hits: 0 };
+  const re = frRegex(needle, { matchCase, wholeWord });
+  const clips = []; let hits = 0;
+  for (const clip of state.scannedFiles) {
+    if (!clip) continue;
+    if (selectedOnly && !clip.selected) continue;
+    let n = 0;
+    for (const f of fields) {
+      const v = clip[f];
+      if (typeof v !== 'string' || !v) continue;
+      const m = v.match(re);
+      if (m) n += m.length;
+    }
+    if (n) { clips.push(clip); hits += n; }
+  }
+  return { clips, hits };
+}
+function frRegex(needle, { matchCase, wholeWord }) {
+  // Escape everything: this is a literal find, not a regex box. Users type things like "GX01" and
+  // "C:\Projects" — treating those as patterns would be a footgun, and a bad pattern could silently
+  // match nothing (or everything) across thousands of clips.
+  const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const body = wholeWord ? `\\b${esc}\\b` : esc;
+  return new RegExp(body, matchCase ? 'g' : 'gi');
+}
+async function applyFindReplace(find, replace, opts) {
+  const { clips } = frMatches(find, opts);
+  if (!clips.length) return 0;
+  // Same protection as batch-apply (#34): a replace across a big batch is exactly the irreversible
+  // bulk edit that restore points exist for. Honours the same auto-version preference.
+  if (clips.length >= 8 && uiPrefs.autoVersionOnAi !== false) {
+    await saveVersionPoint(`Before find & replace · ${clips.length} clips`, true);
+  }
+  const re = frRegex(find, opts);
+  const indices = [];
+  for (const clip of clips) {
+    for (const f of opts.fields) {
+      const v = clip[f];
+      if (typeof v !== 'string' || !v) continue;
+      clip[f] = v.replace(re, replace);
+    }
+    const i = state.scannedFiles.indexOf(clip);
+    if (i >= 0) indices.push(i);
+  }
+  syncRowInputs(indices);
+  refreshNames();
+  scheduleDraftSave();
+  return clips.length;
+}

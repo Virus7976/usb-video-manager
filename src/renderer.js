@@ -2545,6 +2545,81 @@ function wireRowEditing(listEl) {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Find & replace across names (audit #73)
+// ---------------------------------------------------------------------------
+// The filter finds clips; nothing could CHANGE them in bulk. On a corpus of thousands that made a
+// whole class of edit impractical — you misspell a subject on a 400-clip shoot, or a project gets
+// renamed, and the only route was retyping it clip by clip or re-running the AI over the batch.
+//
+// Deliberately narrow: it edits the TEXT FIELDS the user owns (subject, description, location, and
+// any custom organize fields), never filenames on disk. Nothing here touches a file — the rename is
+// applied later by the existing copy path, so a bad replace is undone with the restore point below
+// rather than by moving footage back.
+const FR_FIELDS = [
+  { id: 'subject', label: 'Subject' },
+  { id: 'description', label: 'Description' },
+  { id: 'location', label: 'Location' },
+];
+function frTargetFields() {
+  // Custom organize fields are user-defined text too — excluding them would make this feel arbitrary
+  // on a setup that renamed "project" to something else.
+  const extra = (organizeFields || []).filter((f) => f && f.id && !FR_FIELDS.some((k) => k.id === f.id));
+  return [...FR_FIELDS, ...extra.map((f) => ({ id: f.id, label: f.label || f.id }))];
+}
+/** Clips this replace would touch, plus a per-field preview count. Pure — used for the live preview. */
+function frMatches(find, { fields, selectedOnly, matchCase, wholeWord }) {
+  const needle = String(find || '');
+  if (!needle) return { clips: [], hits: 0 };
+  const re = frRegex(needle, { matchCase, wholeWord });
+  const clips = []; let hits = 0;
+  for (const clip of state.scannedFiles) {
+    if (!clip) continue;
+    if (selectedOnly && !clip.selected) continue;
+    let n = 0;
+    for (const f of fields) {
+      const v = clip[f];
+      if (typeof v !== 'string' || !v) continue;
+      const m = v.match(re);
+      if (m) n += m.length;
+    }
+    if (n) { clips.push(clip); hits += n; }
+  }
+  return { clips, hits };
+}
+function frRegex(needle, { matchCase, wholeWord }) {
+  // Escape everything: this is a literal find, not a regex box. Users type things like "GX01" and
+  // "C:\Projects" — treating those as patterns would be a footgun, and a bad pattern could silently
+  // match nothing (or everything) across thousands of clips.
+  const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const body = wholeWord ? `\\b${esc}\\b` : esc;
+  return new RegExp(body, matchCase ? 'g' : 'gi');
+}
+async function applyFindReplace(find, replace, opts) {
+  const { clips } = frMatches(find, opts);
+  if (!clips.length) return 0;
+  // Same protection as batch-apply (#34): a replace across a big batch is exactly the irreversible
+  // bulk edit that restore points exist for. Honours the same auto-version preference.
+  if (clips.length >= 8 && uiPrefs.autoVersionOnAi !== false) {
+    await saveVersionPoint(`Before find & replace · ${clips.length} clips`, true);
+  }
+  const re = frRegex(find, opts);
+  const indices = [];
+  for (const clip of clips) {
+    for (const f of opts.fields) {
+      const v = clip[f];
+      if (typeof v !== 'string' || !v) continue;
+      clip[f] = v.replace(re, replace);
+    }
+    const i = state.scannedFiles.indexOf(clip);
+    if (i >= 0) indices.push(i);
+  }
+  syncRowInputs(indices);
+  refreshNames();
+  scheduleDraftSave();
+  return clips.length;
+}
 // ---------------------------------------------------------------------------
 // Local AI suggestions (Ollama). Analyses a clip's frames and fills
 // subject/description (+ optional category). mode 'all' overwrites, 'empty'
@@ -6294,6 +6369,7 @@ function clipContextItems(i) {
     { sep: true },
     { label: 'Apply this name to selected', action: () => applyRowNameToSelected(i) },
     { label: 'Name selected as a batch… (Ctrl+B)', action: () => showBatchDialog() },
+    { label: 'Find & replace…', action: () => showFindReplace() },
     { label: 'Tag location on selected… (Ctrl+L)', action: () => showLocationTagPopup() },
     { label: 'Set date…', action: () => { const btn = document.querySelector(`.rename-card[data-i="${i}"] [data-date]`); if (btn) btn.click(); } },
     { sep: true },
@@ -7217,6 +7293,67 @@ function showOrganizeFields() {
 }
 
 // Local AI (Ollama) settings — fully offline metadata suggestions.
+
+// Find & replace across names (audit #73). Live preview before anything changes: on a corpus this
+// size "replace across 400 clips" is not something to run blind, and the count is the only honest
+// way to tell the user what they're about to do.
+function showFindReplace() {
+  const fields = frTargetFields();
+  const ov = document.createElement('div'); ov.className = 'modal-overlay';
+  ov.innerHTML = `<div class="modal-card modal-form" style="width:min(560px,94vw)">
+    <div class="ai-hd"><span class="ai-hd-icon">🔤</span><div class="ai-hd-text"><h3>Find &amp; replace</h3><p class="muted small">Across the names you've given clips — never the files on disk.</p></div></div>
+    <div class="pref-section">
+      <label class="pref-sec-t" for="frFind">Find</label>
+      <div class="pref-body"><input id="frFind" type="text" class="txt" autocomplete="off" placeholder="e.g. mowwing"></div>
+      <label class="pref-sec-t" for="frRepl">Replace with</label>
+      <div class="pref-body"><input id="frRepl" type="text" class="txt" autocomplete="off" placeholder="e.g. mowing"></div>
+      <div class="pref-sec-t">In</div>
+      <div class="pref-body fr-fields">${fields.map((f) => `<label class="fr-chk"><input type="checkbox" data-fld="${escapeAttr(f.id)}"${f.id === 'subject' || f.id === 'description' ? ' checked' : ''}> ${escapeHtml(f.label)}</label>`).join('')}</div>
+      <div class="pref-body fr-opts">
+        <label class="fr-chk"><input type="checkbox" id="frSel"> Only ticked clips</label>
+        <label class="fr-chk"><input type="checkbox" id="frCase"> Match case</label>
+        <label class="fr-chk"><input type="checkbox" id="frWord"> Whole word</label>
+      </div>
+    </div>
+    <p class="muted small fr-preview" aria-live="polite">Type something to find.</p>
+    <div class="modal-actions"><button type="button" class="btn fr-cancel">Cancel</button><button type="button" class="btn primary fr-go" disabled>Replace</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  const q = (s) => ov.querySelector(s);
+  const opts = () => ({
+    fields: [...ov.querySelectorAll('[data-fld]')].filter((c) => c.checked).map((c) => c.dataset.fld),
+    selectedOnly: q('#frSel').checked, matchCase: q('#frCase').checked, wholeWord: q('#frWord').checked,
+  });
+  const preview = () => {
+    const find = q('#frFind').value;
+    const o = opts();
+    if (!find || !o.fields.length) {
+      q('.fr-preview').textContent = find ? 'Pick at least one field.' : 'Type something to find.';
+      q('.fr-go').disabled = true; return;
+    }
+    const { clips, hits } = frMatches(find, o);
+    q('.fr-preview').textContent = clips.length
+      ? `${hits} match${hits !== 1 ? 'es' : ''} in ${clips.length} clip${clips.length !== 1 ? 's' : ''}.`
+      : 'No matches.';
+    q('.fr-go').disabled = !clips.length;
+  };
+  ov.addEventListener('input', preview);
+  ov.addEventListener('change', preview);
+  q('.fr-cancel').addEventListener('click', close);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  // withBusyBtn: applyFindReplace awaits saveVersionPoint, which can reject — without it a failure
+  // would leave the button stuck on "Replacing…" for the session (the async-cleanup rule).
+  q('.fr-go').addEventListener('click', () => {
+    const find = q('#frFind').value; const repl = q('#frRepl').value;
+    withBusyBtn(q('.fr-go'), 'Replacing…', async () => {
+      const n = await applyFindReplace(find, repl, opts());
+      close();
+      showToast(n ? `Replaced in ${n} clip${n !== 1 ? 's' : ''} — undo from History if that wasn't right` : 'Nothing to replace', 4500);
+    });
+  });
+  setTimeout(() => { try { q('#frFind').focus(); } catch { /* ignore */ } }, 0);
+}
 // Canonicalize a string to alnum-lowercase for loose comparison (distinct from slug()
 // which keeps hyphens). Single source — was declared identically inside two functions.
 const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();

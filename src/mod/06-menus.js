@@ -427,6 +427,7 @@ function clipContextItems(i) {
     { sep: true },
     { label: 'Apply this name to selected', action: () => applyRowNameToSelected(i) },
     { label: 'Name selected as a batch… (Ctrl+B)', action: () => showBatchDialog() },
+    { label: 'Find & replace…', action: () => showFindReplace() },
     { label: 'Tag location on selected… (Ctrl+L)', action: () => showLocationTagPopup() },
     { label: 'Set date…', action: () => { const btn = document.querySelector(`.rename-card[data-i="${i}"] [data-date]`); if (btn) btn.click(); } },
     { sep: true },
@@ -1350,3 +1351,64 @@ function showOrganizeFields() {
 }
 
 // Local AI (Ollama) settings — fully offline metadata suggestions.
+
+// Find & replace across names (audit #73). Live preview before anything changes: on a corpus this
+// size "replace across 400 clips" is not something to run blind, and the count is the only honest
+// way to tell the user what they're about to do.
+function showFindReplace() {
+  const fields = frTargetFields();
+  const ov = document.createElement('div'); ov.className = 'modal-overlay';
+  ov.innerHTML = `<div class="modal-card modal-form" style="width:min(560px,94vw)">
+    <div class="ai-hd"><span class="ai-hd-icon">🔤</span><div class="ai-hd-text"><h3>Find &amp; replace</h3><p class="muted small">Across the names you've given clips — never the files on disk.</p></div></div>
+    <div class="pref-section">
+      <label class="pref-sec-t" for="frFind">Find</label>
+      <div class="pref-body"><input id="frFind" type="text" class="txt" autocomplete="off" placeholder="e.g. mowwing"></div>
+      <label class="pref-sec-t" for="frRepl">Replace with</label>
+      <div class="pref-body"><input id="frRepl" type="text" class="txt" autocomplete="off" placeholder="e.g. mowing"></div>
+      <div class="pref-sec-t">In</div>
+      <div class="pref-body fr-fields">${fields.map((f) => `<label class="fr-chk"><input type="checkbox" data-fld="${escapeAttr(f.id)}"${f.id === 'subject' || f.id === 'description' ? ' checked' : ''}> ${escapeHtml(f.label)}</label>`).join('')}</div>
+      <div class="pref-body fr-opts">
+        <label class="fr-chk"><input type="checkbox" id="frSel"> Only ticked clips</label>
+        <label class="fr-chk"><input type="checkbox" id="frCase"> Match case</label>
+        <label class="fr-chk"><input type="checkbox" id="frWord"> Whole word</label>
+      </div>
+    </div>
+    <p class="muted small fr-preview" aria-live="polite">Type something to find.</p>
+    <div class="modal-actions"><button type="button" class="btn fr-cancel">Cancel</button><button type="button" class="btn primary fr-go" disabled>Replace</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  const q = (s) => ov.querySelector(s);
+  const opts = () => ({
+    fields: [...ov.querySelectorAll('[data-fld]')].filter((c) => c.checked).map((c) => c.dataset.fld),
+    selectedOnly: q('#frSel').checked, matchCase: q('#frCase').checked, wholeWord: q('#frWord').checked,
+  });
+  const preview = () => {
+    const find = q('#frFind').value;
+    const o = opts();
+    if (!find || !o.fields.length) {
+      q('.fr-preview').textContent = find ? 'Pick at least one field.' : 'Type something to find.';
+      q('.fr-go').disabled = true; return;
+    }
+    const { clips, hits } = frMatches(find, o);
+    q('.fr-preview').textContent = clips.length
+      ? `${hits} match${hits !== 1 ? 'es' : ''} in ${clips.length} clip${clips.length !== 1 ? 's' : ''}.`
+      : 'No matches.';
+    q('.fr-go').disabled = !clips.length;
+  };
+  ov.addEventListener('input', preview);
+  ov.addEventListener('change', preview);
+  q('.fr-cancel').addEventListener('click', close);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  // withBusyBtn: applyFindReplace awaits saveVersionPoint, which can reject — without it a failure
+  // would leave the button stuck on "Replacing…" for the session (the async-cleanup rule).
+  q('.fr-go').addEventListener('click', () => {
+    const find = q('#frFind').value; const repl = q('#frRepl').value;
+    withBusyBtn(q('.fr-go'), 'Replacing…', async () => {
+      const n = await applyFindReplace(find, repl, opts());
+      close();
+      showToast(n ? `Replaced in ${n} clip${n !== 1 ? 's' : ''} — undo from History if that wasn't right` : 'Nothing to replace', 4500);
+    });
+  });
+  setTimeout(() => { try { q('#frFind').focus(); } catch { /* ignore */ } }, 0);
+}

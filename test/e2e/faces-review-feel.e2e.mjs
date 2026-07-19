@@ -57,3 +57,20 @@ test('suggestion chips are ranked by use, not store order', { skip: !RUN }, asyn
   assert.match(src, /const others = rankedNames\(\)/, 'the CORRECTION chips are ranked too');
   assert.match(src, /recentNames/, 'session recency feeds the ranking');
 });
+
+test('a selection-only click does not write the faces store', { skip: !RUN }, async () => {
+  // render() called schedulePendingSave() unconditionally, so opening or closing the naming popup —
+  // which only toggles `s._sel`, a field _serializePending deliberately drops — queued a full
+  // re-serialize and disk write of the whole faces store for ZERO net change. With hundreds of
+  // clusters that is real main-thread work on every click, and it is part of why the screen felt
+  // like "every click takes forever to register". Audit #67 coalesced these during a SCAN; this is
+  // the same cost during the REVIEW, which that fix never covered.
+  assert.match(src, /function render\(opts\)/, 'render takes a persist flag');
+  assert.match(src, /const persist = !opts \|\| opts\.persist !== false/, 'defaulting to persist');
+  assert.match(src, /if \(persist\) \{ schedulePendingSave\(clusters\); saveFaceScenesNow\(\); \}/,
+    'the store write is gated');
+  // Both selection-only paths must opt out, and nothing else may.
+  const optOuts = src.match(/render\(\{ persist: false \}\)/g) || [];
+  assert.equal(optOuts.length, 2, 'exactly the two selection-only renders skip the write');
+});
+

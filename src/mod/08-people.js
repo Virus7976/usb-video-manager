@@ -827,7 +827,16 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     </div>`;
   }
 
-  function render() {
+  // `persist: false` means "this render changed only what the user is LOOKING at, not what we store".
+  // render() used to call schedulePendingSave() unconditionally, so opening or closing the naming
+  // popup — which only toggles `s._sel`, a field `_serializePending` deliberately drops — queued a
+  // full re-serialize and disk write of the entire faces store for ZERO net change. With hundreds of
+  // clusters that is real work on the main thread per click, and it is part of why the owner said
+  // "every click takes forever to register". Audit #67 coalesced these hard during a SCAN
+  // (PENDING_SAVE_MS); this is the same problem during the REVIEW, which that fix didn't cover.
+  // Anything that genuinely mutates a cluster (assign / reject / undo / skip) still saves.
+  function render(opts) {
+    const persist = !opts || opts.persist !== false;
     // Every click through this screen calls render(), which replaces `scroll.innerHTML` wholesale —
     // and replacing the contents of a scrolled container resets scrollTop to 0. The browser then
     // restores *something* as content reflows, which is why naming a face threw you to "a random
@@ -864,8 +873,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     // innerHTML swap and before any smooth-scroll runs, so the user never sees the intermediate
     // position — restoring it in a rAF instead would show a visible jump-then-snap.
     scroll.scrollTop = keepTop;
-    schedulePendingSave(clusters);   // persist the review after every change
-    saveFaceScenesNow();
+    if (persist) { schedulePendingSave(clusters); saveFaceScenesNow(); }   // see the note on render()
     const anySuggested = suggested.length > 0 || scenes.some((s) => s.cis.some((ci) => unresolved(ci) && clusters[ci].suggest && !clusters[ci].rejected));
     const btn = ov.querySelector('.fg-confirm-all');
     if (btn) btn.style.display = anySuggested ? '' : 'none';
@@ -886,7 +894,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
         if (clip && clip.sourcePath) { try { window.api.previewSet(clip.sourcePath, clip.name || '', { kind: 'photo' }); } catch { /* ignore */ } }
         const fi = Number(b.dataset.fi);
         s._sel = (s._sel === fi) ? null : fi;      // click the same face again to close it
-        render();
+        render({ persist: false });   // selection only — nothing to write (see render())
         // Bring the popup into view ONLY if it actually isn't. `block:'nearest'` already no-ops when
         // the element is visible, but `behavior:'smooth'` animated even that no-op — combined with
         // the scrollTop reset this read as being thrown to a random place on every click. Instant,
@@ -905,7 +913,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       w.addEventListener('mousedown', (e) => {
         if (e.target !== w) return;   // ignore clicks that land on the card itself
         for (const s of faceScenes) s._sel = null;
-        render();
+        render({ persist: false });   // dismissing the popup changes nothing we store
       });
     });
   }

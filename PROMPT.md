@@ -246,13 +246,13 @@ Prefer items you can **verify** this session over items you can't.
   one. Test media is **generated with ffmpeg at test time** (`test/fixtures.mjs`); no binary fixtures are
   committed, so some tests skip without ffmpeg on PATH.
 - **Two test tiers, both must stay green:**
-  - `npm test` — fast vm harness (**79 files** in `test/*.test.mjs`, shared `test/harness.mjs`). Loads the
+  - `npm test` — fast vm harness (**96 files** in `test/*.test.mjs`, shared `test/harness.mjs`). Loads the
     real `main.js` in a `vm` with a stubbed electron; invoke real IPC handlers with `app.invoke(...)`, read
     internals with `app.get(...)`, materialize vm values with `app.plain(...)` (**required** before
     `deepStrictEqual` — vm values have different prototypes and fail the prototype check otherwise).
-    **Verified 2026-07-19: 787 tests, 747 pass, 40 skipped, 0 fail, ~4.4 s.** That is the baseline — if you
+    **Verified 2026-07-19 (end of session): 897 tests, 823 pass, 74 skipped, 0 fail.** That is the baseline — if you
     see failures, they are yours.
-  - `npm run test:e2e` — real Playwright+Electron (**13 files** in `test/e2e/*.e2e.mjs`, opt-in via
+  - `npm run test:e2e` — real Playwright+Electron (**19 files**, 74 tests / 73 pass / 1 skipped, opt-in via
     `RUN_E2E=1`, serial via `--test-concurrency=1`). Drives the actual app + faces. Renderer/face changes
     belong here, not "verify on deploy." You **cannot stub `window.api`** (contextBridge props are
     non-writable) — seed store files via `launchApp({ seed: … })` instead. See `test/e2e/README.md` and
@@ -305,6 +305,70 @@ data-safety paths** or the **measured AI prompt/tool strings**, the reasonable c
 reproduction/verification test FIRST** (the e2e harness makes almost everything verifiable now). If it
 genuinely can't be verified this session, **defer it with a specific logged note** — never ship an
 unverified change to those paths. Everything else: decide, log, proceed.
+
+---
+
+## 8b. How to FIND work here (the techniques that actually produced bugs)
+
+Written after a long session in which the ranked backlog turned out ~1-in-3 already-fixed. These are
+ordered by what actually yielded confirmed, user-visible bugs.
+
+1. **THE SIBLING-PATH SWEEP — by far the highest yield.** Look for a guard, validation, fallback or
+   normalisation present on ONE path and absent on its TWIN. It found 7 confirmed gaps in one pass,
+   five of them real enough to fix, three touching footage:
+   - the phone import routed photos to Photos Temp; the card import dumped them in the Tdarr intake
+   - `phone:copyVideos` versioned a name collision; `phone:distribute` **overwrote a different photo**
+   - MTP verified a pull against source size; ADB accepted `size > 0`
+   - `finalize:run` refused to move off a card and preflighted free space; `projects:move` did neither
+   - the legacy analyze loop checked "card yanked"; all three batch loops did not
+   **The natural twins:** card/SD vs phone import · the two filing paths · video vs photo · tag/untag,
+   do/undo, save/delete · single-clip vs batch AI · main-side vs renderer-side validation of the same
+   value · first-run vs resume · happy path vs retry · create vs update.
+2. **Ask whether a "retry later" branch is really "never".** `#69`'s embed failure said "leave it for
+   a clean retry" — but every real instance (HEIC, odd codec, read-only) fails identically forever, so
+   the clip could never be filed.
+3. **Check which path is the DEFAULT.** `cardIsGone()` existed, but only on the fallback loop, and
+   `batched = multiPass || toolModelReady` makes the other one default — the guard was unreachable.
+4. **Grep for RAW accesses, not just the accessor.** When migrating a key, `isScanned` looked up draft
+   keys directly and would have silently re-scanned every clip.
+
+**And the counter-rule: an "obvious consistency fix" that changes ACCURACY is not obvious.**
+`people:reassignFace` dedups at `0.2` where its sibling uses `FACE_DEDUP_T` (0.35). That is a
+behaviour change to face matching, not a rename — it would enrol fewer faces and shift matching from
+then on. **Measure against real face data or leave it.** Same class as the AI tool strings.
+
+---
+
+## 8c. Testing traps in THIS repo (each of these cost real time)
+
+- **`Function.prototype.toString()` INCLUDES COMMENTS.** A test asserting the word "smooth" was gone
+  failed against correct code because the comment explaining the fix said "smooth". Match the CALL.
+- **A leaked test Electron breaks every later e2e run, and the error lies.** A killed run leaves a
+  process holding the single-instance lock on `~/.config/USB SD Auto-Action`; every later launch then
+  reports `electron.launch: Target page, context or browser has been closed`, which reads like a
+  renderer crash **and fails identically at every commit**, defeating "check the previous commit".
+  Always run `pgrep -af 'node_modules/electron/dist/electron' | grep -v 'pgrep\|zsh -c'` FIRST.
+- **A test can pass for the wrong reason.** A `copied:forget` case went green while forget did nothing,
+  because a broken `get` missed the legacy record too — empty for two different reasons is
+  indistinguishable. **Assert through the path that ISN'T under test.**
+- **A guard you haven't broken is not a guard.** A leftover-site check that inspected three named
+  functions missed a reintroduced lookup in a fourth. Scan the SOURCE, then break the code and watch
+  it fail.
+- **Existing tests assert the code SHAPE, not the property.** 14 broke on renames this session while
+  behaviour was unchanged. Rewrite them to assert the property.
+- **Source-extracting vm tests inject deps BY NAME** (`analyze-resume`, `ai-analyze-tools` — some
+  positionally via a `DEPS` array). Rename a renderer accessor and they fail **while e2e stays green**.
+  Grep `test/` for any name you rename.
+- **Testing a Windows-gated guard from WSL:** stub the helper in the vm —
+  `app.get('fnName = function () { return Promise.resolve(true); }')`, since hoisted function
+  declarations are assignable — and assert **the call is made and obeyed**, not that hardware existed.
+- Confirm a FUNCTION NAME before asserting against its source: `String(wrongName)` yields `''` and
+  every assertion fails at once, which looks like a real bug.
+- Use a GENEROUS window when asserting one call follows another — the explanatory comments here are
+  long enough to push the call past a 700-char slice.
+- `copy:start` LOWER-CASES the extension (`destNameFor`), so assert on
+  `path.dirname(r.copied[i].destPath)`, never a guessed filename.
+- vm store handlers MERGE, so give each test distinct fixture keys or one inherits another's state.
 
 ---
 
@@ -383,12 +447,23 @@ unverified change to those paths. Everything else: decide, log, proceed.
 
 ---
 
-_Last reviewed: **2026-07-19**. This pass: added §3 (data-safety / no-staging / release-is-production) as a
-first-class section and renumbered §4–§9; corrected §9's deploy notes (**"deploy is a folder copy" was
-stale** — there is now a real `npm run release` → GitHub → `electron-updater` pipeline); recorded the
-verified test baseline (787 tests / 747 pass / 40 skipped / 0 fail) and the fact that **CI does not run
-tests**; documented the two `.claude/hooks/`; and added explicit mappings so a generic `/loop` prompt's
-website / database / staging / `memory.md` / TODO-file assumptions resolve to what actually exists here._
+_Last reviewed: **2026-07-19** (end of a long autonomous session)._
 
-_If you changed bundling, the store engine, the AI tool protocol, the test harness, or the release process,
-re-read this file and update the affected sections before you finish._
+_This pass added §3 (data-safety / no-staging / release-is-production) and renumbered §4–§9;
+corrected §9's deploy notes (**"deploy is a folder copy" was stale** — there is a real
+`npm run release` → GitHub → `electron-updater` pipeline); recorded that **CI does not run tests**;
+documented the two `.claude/hooks/`; and added mappings so a generic `/loop` prompt's website /
+database / staging / `memory.md` / TODO-file assumptions resolve to what exists here._
+
+_A later pass added **§8b (how to find work)** and **§8c (testing traps)**, and refreshed the test
+baselines to **897 vm tests / 823 pass / 74 skipped / 0 fail** and **74 e2e / 73 pass / 1 skipped**._
+
+_**State at that point:** `#8` (the `clipKey` collision) is complete across all four stores and is
+**rewrite-free by design — do not add a cleanup pass**; the sibling-path sweep is closed; the
+re-audited backlog and the also-rans are both worked through. What remains needs Jake's Ollama
+models, his Windows machine, a phone, or a labelled face fixture. **~46 commits were green and
+undeployed, with a verified installer pre-built** — check `AGENTS.md` §7a for the current deploy
+state before assuming anything is live._
+
+_If you changed bundling, the store engine, the AI tool protocol, the test harness, or the release
+process, re-read this file and update the affected sections before you finish._

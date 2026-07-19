@@ -322,6 +322,40 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bd — READ-ONLY check of Jake's REAL store: 4594 drafts, 331 typed names, all intact
+
+Nothing left to build, so I inspected his actual `%APPDATA%` store read-only to answer the question
+today's fixes raise: **has the drafts truncation already cost him names?** Read only — no writes, no
+deletes, nothing touched.
+
+**What is on disk right now** (`drafts.json`, 1.85 MB, last written 08:50 today):
+- **4594 drafts**, of which **331 carry a typed subject/description** and 4263 are flag-only.
+- **All 4594 are LEGACY-keyed** (`name__size`), zero V2 — exactly as the rewrite-free #8 migration
+  intends. Nothing has been rewritten, and nothing needs to be.
+- **Every entry carries today's `ts`.** `writeDrafts` stamps `ts: now` on each entry it saves, and he
+  scanned that card today, so the whole store is same-day.
+
+**The build he is RUNNING (installed 07:37 today, before this session) contains the buggy slim** —
+`grep -ac "ents.length > 1000"` → 1, and `DRAFTS_CAP` → 0. So the truncating code path is live on his
+machine right now.
+
+**But his data is intact**, and the evidence is clean: a `ts`-sorted truncation to 1000 would have left
+only the newest 1000 entries, and all 4594 are still there with 0 named drafts missing from any
+plausible cut. So **it has not fired destructively in this session.** I could not determine from the
+packed asar whether the slim is reached at all in that build (the load-order may leave
+`config.renameDrafts` undefined when it runs, making it a no-op) — **stating that as unknown rather
+than guessing.**
+
+**Why it still matters, quantified:** because every entry shares today's `ts`, a truncation would sort
+on an effectively flat key and keep an arbitrary 1000 of 4594. His 331 typed names have **no
+protection at all in the old code** — the named-first rule is exactly what today's fix added. A
+truncation now would be expected to destroy **roughly 93% of his typed names**.
+
+**Upshot: the pre-built installer removes the code path entirely.** This is the concrete, measured
+reason the deploy is worth more than any remaining code work.
+
+App still running (PID 7104) — **~85 commits undeployed, installer READY at HEAD, changelog current.**
+
 ### 2026-07-19bc — the session's two most expensive lessons written to MEMORY, not just to PROMPT.md
 
 Everything is staged (queue empty, installer built at HEAD, changelog current), so this iteration

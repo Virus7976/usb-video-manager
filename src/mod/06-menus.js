@@ -608,6 +608,8 @@ function showCommandPalette() {
   let filtered = all.slice(0, 60); let active = 0;
   const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); cmdPaletteOpen = false; };
   function render() {
+    // scroll-reset-ok: this list is the RESULT OF A QUERY. Typing a new filter should land you on
+    // match #1, not at whatever offset the previous result set happened to leave behind.
     listEl.innerHTML = filtered.length ? filtered.map((c, i) => `<button type="button" class="cmdp-item${i === active ? ' active' : ''}" data-i="${i}"><span class="cmdp-label">${escapeHtml(typeof c.label === 'function' ? c.label() : c.label)}</span>${c.hint ? `<span class="cmdp-hint">${escapeHtml(c.hint)}</span>` : ''}</button>`).join('') : '<div class="cmdp-empty muted small">No matches</div>';
     listEl.querySelectorAll('.cmdp-item').forEach((b) => {
       b.addEventListener('click', () => run(Number(b.dataset.i)));
@@ -728,7 +730,10 @@ function showKeyboardShortcuts() {
         ${pending[a.id] ? `<button type="button" class="ksc-clear" data-clear="${a.id}" title="Unbind">✕</button>` : '<span class="ksc-clear-sp"></span>'}
       </div>`).join('');
     const fixedRows = KB_FIXED.map((f) => `<div class="ksc-row ksc-fixed"><div class="ksc-row-tx"><span class="ksc-row-label">${escapeHtml(f.label)}</span><span class="ksc-row-desc muted small">Built-in</span></div><span class="ksc-bind-fixed">${chip(f.combo)}</span><span class="ksc-clear-sp"></span></div>`).join('');
+    // Every bind/clear click re-renders the entire list — preserve the reading position.
+    const keepTop = list.scrollTop;
     list.innerHTML = `<div class="ksc-sec">Editable</div>${rows}<div class="ksc-sec">Built-in</div>${fixedRows}`;
+    list.scrollTop = keepTop;
     list.querySelectorAll('[data-bind]').forEach((b) => b.addEventListener('click', () => { capturingId = capturingId === b.dataset.bind ? null : b.dataset.bind; render(); }));
     list.querySelectorAll('[data-clear]').forEach((b) => b.addEventListener('click', () => { delete pending[b.dataset.clear]; render(); }));
   }
@@ -1295,6 +1300,9 @@ function showOrganizeFields() {
   ov.querySelector('.of-cancel').addEventListener('click', close);
   const listEl = ov.querySelector('.of-list');
   function render() {
+    // Adding/removing/reordering a field re-renders the list; keep the user where they were.
+    const keepTop = listEl.scrollTop;
+    setTimeout(() => { listEl.scrollTop = keepTop; }, 0);
     listEl.innerHTML = '';
     if (!fields.length) {
       const p = document.createElement('p'); p.className = 'muted small'; p.textContent = 'No fields yet — add one.';

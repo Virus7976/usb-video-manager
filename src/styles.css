@@ -1011,7 +1011,7 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 /* THE GROUP SHOT — the frame from the clip, with a clickable box on each face. The whole point is
    that you name people IN the shot they appear in, so the photo leads and the boxes sit on it; the
    selected face opens the ordinary face card underneath, unchanged. */
-.face-scene { position: relative; border: 2px solid var(--card-stroke); border-radius: var(--radius-xl); padding: 10px; background: var(--card-2, var(--subtle-hover)); margin-bottom: 12px; animation: fgc-in 0.26s ease; }
+.face-scene { position: relative; border: 2px solid var(--card-stroke); border-radius: var(--radius-xl); padding: 10px; background: var(--card-2, var(--subtle-hover)); margin-bottom: 12px; }
 .fsc-photo { position: relative; width: 100%; max-width: min(760px, 90vw); margin: 0 auto; border-radius: var(--radius-lg, 10px); overflow: hidden; background: #000; line-height: 0; }
 .fsc-photo img { width: 100%; height: auto; display: block; }
 .fsc-box { position: absolute; box-sizing: border-box; border: 2px solid var(--accent); border-radius: 6px; background: transparent; cursor: pointer; padding: 0; transition: box-shadow 0.16s, border-color 0.16s, transform 0.16s; }
@@ -1027,7 +1027,7 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .fsc-pop-wrap { position: absolute; inset: 0; z-index: 20; display: grid; place-items: center; padding: 12px; background: color-mix(in srgb, #000 55%, transparent); animation: fgc-in 0.16s ease; }
 .fsc-pop-wrap .face-grid-card-item { width: min(260px, 92%); box-shadow: 0 12px 44px rgba(0,0,0,0.6); }
 .fgc-facecrop { display: block; border-radius: 10px; }
-.face-grid-card-item { border: 2px solid var(--card-stroke); border-radius: var(--radius-xl); padding: 10px; display: flex; flex-direction: column; align-items: center; gap: 6px; background: var(--card-2, var(--subtle-hover)); transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s; animation: fgc-in 0.26s ease; }
+.face-grid-card-item { border: 2px solid var(--card-stroke); border-radius: var(--radius-xl); padding: 10px; display: flex; flex-direction: column; align-items: center; gap: 6px; background: var(--card-2, var(--subtle-hover)); transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s; min-height: 232px; justify-content: flex-start; }
 @keyframes fgc-in { from { opacity: 0; transform: translateY(6px) scale(0.97); } to { opacity: 1; transform: none; } }
 .face-grid-card-item.suggested { border-style: dashed; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
 .face-grid-card-item.confirmed { border-style: solid; border-color: var(--cat-personal, #45c07a); }
@@ -2899,3 +2899,16 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .cl-body .cl-list li { margin: 6px 0; font-size: 13px; }
 .cl-body code { padding: 1px 5px; border-radius: 4px; background: var(--menu-solid, #2a2a2a); font-size: 12px; }
 .cl-body strong { font-weight: 650; }
+
+/* Face review at scale: render() rebuilds the whole list on EVERY click, so an entrance animation
+   on these nodes replayed across every card each time — the single biggest source of the "it all
+   glitches / stuff shifts around" the owner hit on a 4500-clip pass. The popup keeps its animation
+   because it genuinely IS mounted fresh on each open. This also just restores the documented motion
+   policy (restrained, no delight flourishes) to a file the calm-motion pass missed.
+   `.face-grid-card-item` gets a min-height so confirming one face can't resize its whole grid row —
+   the three card states (fresh / suggested / confirmed) have different body heights. */
+.face-grid { grid-auto-rows: 1fr; }
+/* Reserve the scene photo's box before it decodes. Without an aspect ratio the recreated <img> is
+   0px tall until layout resolves, so everything under it jumped on every re-render. */
+.fsc-photo { aspect-ratio: var(--fsc-ar, 3 / 2); }
+.fsc-photo img { width: 100%; height: 100%; object-fit: contain; display: block; }

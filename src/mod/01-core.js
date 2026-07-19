@@ -1408,6 +1408,10 @@ function showVersionHistory() {
 
   function render() {
     const list = ov.querySelector('.vh-list');
+    // Restoring/deleting a save point re-renders this whole list; without this you lose your place
+    // and get thrown to the top. Same bug as the face review (see renderer-rerender-guard).
+    const keepTop = list ? list.scrollTop : 0;
+    if (list) setTimeout(() => { list.scrollTop = keepTop; }, 0);
     if (!versionsCache.length) { list.innerHTML = `<li class="dlg-empty"><span class="illo">${ILLO_HISTORY}</span><p class="dlg-empty-tx">No save points yet</p><p class="muted small">A snapshot is saved before each AI run — restore any naming you change your mind about.</p></li>`; return; }
     list.innerHTML = '';
     for (const v of versionsCache) {

@@ -1444,6 +1444,7 @@ async function showProjectsIndex() {
       const hay = [m.name, m.category, m.summary, ...(m.keywords || []), ...(m.subjects || []), ...(m.people || []), ...(m.locations || [])].filter(Boolean).join(' ').toLowerCase();
       return hay.includes(ql);
     });
+    // scroll-reset-ok: this list is the RESULT OF A SEARCH — a new query should start at the top.
     if (!items.length) {
       listEl.innerHTML = list.length
         ? `<div class="pidx-empty muted small">No projects match that search.</div>`
@@ -1558,6 +1559,9 @@ async function showRoutingRules(folderPaths, onChange, clipsForExamples, pending
 
   function render() {
     const list = q('.rules-list');
+    // Deleting or editing a rule re-renders the whole list — don't lose the user's place.
+    const keepTop = list ? list.scrollTop : 0;
+    if (list) setTimeout(() => { list.scrollTop = keepTop; }, 0);
     if (!routesCache.length) { list.innerHTML = `<li class="dlg-empty"><span class="illo">${ILLO_FILES}</span><p class="dlg-empty-tx">No filing rules yet</p><p class="muted small">Add one — e.g. “skating → Social Media/Skate Project, new folder each day”, or “vlog is just a label, not its own project”.</p></li>`; return; }
     list.innerHTML = '';
     routesCache.forEach((r, idx) => {

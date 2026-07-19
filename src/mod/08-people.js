@@ -593,6 +593,33 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   try { people = await window.api.getPeople(); } catch { people = []; }
   await ensureFaceScenes();   // the group shots — reopening a saved review must show them too
   return new Promise((resolveGrid) => {
+  // The suggestion chips used to be `people.map(p => p.name).slice(0, 8)` — raw store order, which is
+  // insertion order, which is effectively arbitrary. So the same eight names sat there forever no
+  // matter who you were actually naming, and the people you use constantly could be off the end of
+  // the list entirely. Rank them instead:
+  //   1. whoever you've named in THIS session, most recent first — he shoots a family across
+  //      hundreds of clips in one sitting, so the last person named is overwhelmingly likely next;
+  //   2. then by enrolment strength (`faces.length`), which is how many confirmed faces that person
+  //      has accumulated — a real "how often do I use this person" signal, not a guess;
+  //   3. then name, so ties are stable and chips don't reshuffle under the cursor between renders.
+  const recentNames = [];   // session order, most-recently-named LAST
+  function noteNameUsed(n) {
+    const s = String(n || '').trim(); if (!s) return;
+    const i = recentNames.indexOf(s); if (i >= 0) recentNames.splice(i, 1);
+    recentNames.push(s);
+  }
+  function rankedNames() {
+    const strength = new Map(people.map((p) => [p.name, (p.faces && p.faces.length) || 0]));
+    const all = people.map((p) => p.name);
+    for (const n of recentNames) if (!all.includes(n)) all.push(n);
+    return all.slice().sort((a, b) => {
+      const ra = recentNames.indexOf(a); const rb = recentNames.indexOf(b);
+      if (ra !== rb) return rb - ra;                                   // recent first (-1 sorts last)
+      const sa = strength.get(a) || 0; const sb = strength.get(b) || 0;
+      if (sa !== sb) return sb - sa;
+      return String(a).localeCompare(String(b));
+    });
+  }
   const names = people.map((p) => p.name);
   // Resolve a cluster's clipKeys back to clips by BOTH the stable fingerprint and the absolute
   // path: clusters written before the key fix are still sitting in faces-pending.json keyed by
@@ -646,6 +673,13 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     rememberSubject && rememberSubject(name);
     cl.done = true; cl.assignedName = name;
     if (!names.includes(name)) names.push(name);
+    // Naming a face FINISHES it, so the popup has no reason to stay open — and leaving it open was
+    // actively costly: the next click anywhere re-rendered with the popup still selected, so you
+    // were dragged back to it and had to remember to dismiss it by hand every single time. Every
+    // naming path (suggestion chip, typed name, Enter, confirm-all) funnels through assign(), so
+    // clearing the selection here closes it once for all of them.
+    noteNameUsed(name);   // ranks this person to the front of the chips for the rest of the session
+    for (const s of faceScenes) s._sel = null;
     render();
   }
   // A tight crop of a SPECIFIC face out of the group photo, done in pure CSS (a background sprite) —
@@ -673,7 +707,9 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       </div>`;
     }
     if (cl.suggest && !cl.rejected) {
-      const others = names.filter((n) => n.toLowerCase() !== cl.suggest.name.toLowerCase()).slice(0, 8);
+      // Same ranking as the "who is this?" chips — this is the CORRECTION list, so when the
+      // suggestion is wrong the people you actually name most need to be the ones offered.
+      const others = rankedNames().filter((n) => n.toLowerCase() !== cl.suggest.name.toLowerCase()).slice(0, 8);
       const othChips = others.map((n) => `<button class="fgc-chip" data-name="${escapeHtml(n)}">${escapeHtml(n)}</button>`).join('');
       return `<div class="face-grid-card-item suggested" data-i="${cl._i}">
         <div class="fgc-photo">${thumb}</div>
@@ -684,7 +720,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
         ${othChips ? `<div class="fgc-chips compact">${othChips}</div>` : ''}
       </div>`;
     }
-    const chips = names.slice(0, 8).map((n) => `<button class="fgc-chip" data-name="${escapeHtml(n)}">${escapeHtml(n)}</button>`).join('');
+    const chips = rankedNames().slice(0, 8).map((n) => `<button class="fgc-chip" data-name="${escapeHtml(n)}">${escapeHtml(n)}</button>`).join('');
     return `<div class="face-grid-card-item fresh" data-i="${cl._i}">
       <div class="fgc-photo">${thumb}</div>
       <div class="fgc-sub muted small">${seen}</div>
@@ -714,7 +750,18 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       .map((s) => ({ ...s, cis: (s.faces || []).map((f) => clusterOf(f.descriptor)) }))
       // Two or more faces we can still act on, at least one of them unnamed. Once they are ALL named
       // the shot has done its job and drops away, leaving the tidy grid he already likes.
-      .filter((s) => s.cis.filter((ci) => ci >= 0).length >= 2 && s.cis.some(unresolved));
+      .filter((s) => s.cis.filter((ci) => ci >= 0).length >= 2 && s.cis.some(unresolved))
+      // Scenes were left in the order the SCAN happened to finish them — which is async, so it looked
+      // random ("all the photos are out of order"). Reviewing a shoot means moving through it in the
+      // order it was shot, so sort by capture date, then by name so same-date shots keep a stable,
+      // repeatable order (an unstable sort here would reshuffle the list under the cursor mid-review).
+      .sort((a, b) => {
+        const ca = byKey[a.clipKey]; const cb = byKey[b.clipKey];
+        const da = String((ca && (ca.date || ca.capturedAt)) || '');
+        const db = String((cb && (cb.date || cb.capturedAt)) || '');
+        if (da !== db) return da < db ? -1 : 1;
+        return String((ca && ca.name) || a.clipKey).localeCompare(String((cb && cb.name) || b.clipKey));
+      });
   }
 
   function sceneCardHTML(s, si) {
@@ -743,13 +790,20 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     // The popup anchors to the whole .face-scene (not inside .fsc-photo, which is overflow:hidden and
     // would clip the card on a wide/short group shot). Backdrop dims the scene; card centres over it.
     return `<div class="face-scene">
-      <div class="fsc-photo"><img src="${escapeAttr(s.img)}" alt=""/>${boxes}</div>
+      <div class="fsc-photo"${s.w && s.h ? ` style="--fsc-ar:${s.w} / ${s.h}"` : ''}><img src="${escapeAttr(s.img)}" alt=""/>${boxes}</div>
       <div class="fsc-bar muted small">${escapeHtml(s.name || 'this shot')} · ${s.cis.filter((ci) => ci >= 0).length} people · ${left ? `${left} still to name — click a face` : 'all named ✓'}</div>
       ${pop}
     </div>`;
   }
 
   function render() {
+    // Every click through this screen calls render(), which replaces `scroll.innerHTML` wholesale —
+    // and replacing the contents of a scrolled container resets scrollTop to 0. The browser then
+    // restores *something* as content reflows, which is why naming a face threw you to "a random
+    // spot near the top" and why the whole screen felt like it glitched on every click. On a
+    // 4500-clip review that is the difference between a usable pass and an unusable one.
+    // Capture the position before the rebuild and put it back after — see the restore below.
+    const keepTop = scroll.scrollTop;
     const scenes = liveScenes();
     // A face being named ON the group shot must not ALSO sit in the grid below as a loose head — one
     // person, one place to name them.
@@ -775,6 +829,10 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     if (!scenes.length && !live.length) scroll.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">All faces handled ✓</p>';
     wire();
     wireScenes(scenes);
+    // Put the viewport back exactly where it was (see keepTop above). Assigned straight after the
+    // innerHTML swap and before any smooth-scroll runs, so the user never sees the intermediate
+    // position — restoring it in a rAF instead would show a visible jump-then-snap.
+    scroll.scrollTop = keepTop;
     schedulePendingSave(clusters);   // persist the review after every change
     saveFaceScenesNow();
     const anySuggested = suggested.length > 0 || scenes.some((s) => s.cis.some((ci) => unresolved(ci) && clusters[ci].suggest && !clusters[ci].rejected));
@@ -798,11 +856,16 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
         const fi = Number(b.dataset.fi);
         s._sel = (s._sel === fi) ? null : fi;      // click the same face again to close it
         render();
-        // Bring the popup fully into view if the photo is taller than the scroll viewport. rAF:
-        // render() just replaced innerHTML.
+        // Bring the popup into view ONLY if it actually isn't. `block:'nearest'` already no-ops when
+        // the element is visible, but `behavior:'smooth'` animated even that no-op — combined with
+        // the scrollTop reset this read as being thrown to a random place on every click. Instant,
+        // and only when genuinely off-screen, so a click near the top of a long list stays put.
         if (s._sel != null) requestAnimationFrame(() => {
           const pop = scroll.querySelector('.fsc-pop-wrap');
-          if (pop) pop.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          if (!pop) return;
+          const pr = pop.getBoundingClientRect();
+          const sr = scroll.getBoundingClientRect();
+          if (pr.top < sr.top || pr.bottom > sr.bottom) pop.scrollIntoView({ block: 'nearest' });
         });
       });
     });

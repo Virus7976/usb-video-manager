@@ -358,6 +358,41 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19y — ALL SWEEP FINDINGS CLOSED (`0bb75b5`). The WSL-safe queue is empty.
+
+The compress dialog now re-enables its inputs in the `finally` rather than only in the `if (err)`
+branch, so a CANCELLED or partly-failed run leaves a usable dialog instead of forcing a
+close-and-reopen that loses the selection and preset. Unhiding Run stayed conditional — that asks
+whether there is WORK LEFT, which is a different question from whether the controls should respond.
+
+**The test passed for the wrong reason first**, sliding a fixed window past the `finally` into the
+`if (err)` branch that already re-enabled. **That trap is written in PROMPT.md §8c and I hit it two
+iterations after writing it down** — the fixed-window shortcut is genuinely seductive; slice to the
+END of the block.
+
+**EVERYTHING WSL-SAFE IS NOW DONE.** Across this session: the re-audited backlog, the also-rans, the
+sibling-PATH sweep (7 confirmed / 5 fixed / 1 documented-not-changed / 1 cleared), and the three-axis
+sweep (3 confirmed, all 3 now fixed). Both historical lists were ~1-in-3 stale and are reconciled.
+
+**WHAT IS LEFT, honestly:**
+1. **THE DEPLOY.** ~51 commits green and unreachable, including FOUR footage-handling fixes: photo
+   backups overwriting each other, photos routed into the Tdarr video intake, `projects:move`
+   stripping clips off a card, and AI questions answering the WRONG clip after a phone pull. The
+   pre-built installer is STALE again — re-sync and rebuild, then install.
+2. **Needs the owner's Ollama models:** #25, #35, and any AI tool-definition change (measured input).
+3. **Needs Windows / hardware:** #92 (unsigned auto-update — the highest-severity thing not fixed),
+   #98, #5-MTP, #20, #85, #12, #7. **Needs a labelled face fixture:** #13, and the
+   `people:reassignFace` 0.2-vs-0.35 threshold.
+4. **Large and phone-gated:** #3 source-abstraction refactor.
+
+**If a future session sweeps again:** axes A (first-run vs resume) and C (create vs update) each
+produced a real bug; axis B (happy path vs retry) produced one UI-grade item and two false leads.
+Untried: a guard in `main-mod/` absent in `src/mod/` for the same value; an invariant enforced on one
+STORE but not its siblings; a normalisation applied on write but not on read. **If it comes back
+empty, say so — that is the honest answer, not a prompt to invent work.**
+
+---
+
 ### 2026-07-19x — person-rename collision FIXED (`425fde5`). ONE finding left, UI-grade.
 
 Renaming a person onto an existing name created a DUPLICATE record — splitting that person's

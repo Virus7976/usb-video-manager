@@ -215,7 +215,7 @@ sweep it recommended is now closed (7 confirmed / 5 fixed). Current real weak po
 1. **The AI generates instead of decides** — unchanged, still the north star, and still the one thing
    that CANNOT be validated from WSL: it changes measured model behaviour, so it needs a run against
    Jake's real Ollama models first. Everything else on this list is verifiable here.
-2. **The DEPLOY backlog is the biggest concrete risk.** ~57 commits across many batches are built,
+2. **The DEPLOY backlog is the biggest concrete risk.** ~81 commits across many batches are built,
    tested and *still unshipped*, several of them fixing ways footage or typed work could be lost. The
    longer it grows the more a single deploy can surprise him, and none of it helps until it lands.
    **Deploying (when he is not mid-scan) is worth more than the next fix.**
@@ -249,13 +249,13 @@ Prefer items you can **verify** this session over items you can't.
   one. Test media is **generated with ffmpeg at test time** (`test/fixtures.mjs`); no binary fixtures are
   committed, so some tests skip without ffmpeg on PATH.
 - **Two test tiers, both must stay green:**
-  - `npm test` — fast vm harness (**98 files** in `test/*.test.mjs`, shared `test/harness.mjs`). Loads the
+  - `npm test` — fast vm harness (**119 files** in `test/*.test.mjs`, shared `test/harness.mjs`). Loads the
     real `main.js` in a `vm` with a stubbed electron; invoke real IPC handlers with `app.invoke(...)`, read
     internals with `app.get(...)`, materialize vm values with `app.plain(...)` (**required** before
     `deepStrictEqual` — vm values have different prototypes and fail the prototype check otherwise).
-    **Verified 2026-07-19: 913 tests, 832 pass, 81 skipped, 0 fail.** That is the baseline — if you
+    **Verified 2026-07-19 (end of session): 1045 tests, 952 pass, 93 skipped, 0 fail.** That is the baseline — if you
     see failures, they are yours.
-  - `npm run test:e2e` — real Playwright+Electron (**20 files**, 81 tests / 80 pass / 1 skipped, opt-in via
+  - `npm run test:e2e` — real Playwright+Electron (**22 files**, 93 tests / 92 pass / 1 skipped, opt-in via
     `RUN_E2E=1`, serial via `--test-concurrency=1`). Drives the actual app + faces. Renderer/face changes
     belong here, not "verify on deploy." You **cannot stub `window.api`** (contextBridge props are
     non-writable) — seed store files via `launchApp({ seed: … })` instead. See `test/e2e/README.md` and
@@ -492,8 +492,8 @@ staging / `memory.md` / TODO-file assumptions resolve to what exists here; and a
 work) and §8c (testing traps)._
 
 _This pass re-verified every figure in the file against the repo rather than carrying it forward:
-test tiers are **98 vm files → 913 tests / 832 pass / 81 skipped / 0 fail** and **20 e2e files →
-81 tests / 80 pass / 1 skipped**; **57 commits** are undeployed. It refreshed the §5 ranked weak
+test tiers are **119 vm files → 1045 tests / 952 pass / 93 skipped / 0 fail** and **22 e2e files →
+93 tests / 92 pass / 1 skipped**; **81 commits** are undeployed. It refreshed the §5 ranked weak
 points (the 2026-07-18 list was superseded — the sibling-path sweep it recommended is closed), added
 the store-invariant axis that has since proven itself, added two new §8c traps (negative source-shape
 assertions; behavioural-over-structural for load-time code) and the §9 bundling TDZ rule, and
@@ -505,8 +505,17 @@ observations, face clipKeys, copiedLog, aiQueue) and is **rewrite-free by design
 cleanup pass**. The sibling-path sweep (7 confirmed / 5 fixed), the three-axis sweep (3/3) and the
 store-invariant sweep are all closed; the re-audited backlog and the also-rans are worked through.
 What remains needs Jake's Ollama models, his Windows machine, a phone, or a labelled face fixture.
-**~57 commits are green and undeployed** — check `AGENTS.md` §7a for the current deploy state before
+**~81 commits are green and undeployed** — check `AGENTS.md` §7a for the current deploy state before
 assuming anything is live._
+
+_**Final pass of 2026-07-19.** ELEVEN axes have now been swept and every finding is closed. In order
+of yield: sibling-path (7 confirmed), store invariants (produced the worst data-loss bug of the
+session), photo/video parity (found the card being WRITTEN to), state-changing-under-the-app (found a
+durable false negative and a silent NAS disable), swallowed failures, undo/inverse pairs,
+delete/evict paths, write-vs-read normalisation, main-vs-renderer guards, re-entrancy, and the
+three-axis pass. **The queue is empty and the deploy is the only high-value action left.** If a
+twelfth sweep comes back empty, say so plainly — after eleven, that is the likeliest and most useful
+answer._
 
 _If you changed bundling, the store engine, the AI tool protocol, the test harness, or the release
 process, re-read this file and update the affected sections before you finish._

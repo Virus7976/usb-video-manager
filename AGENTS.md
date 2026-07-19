@@ -322,6 +322,42 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19az — PROMPT.md refreshed; NO code work this iteration, and that is the honest output
+
+The sweep queue is empty, so instead of manufacturing a twelfth axis I did the loop's literal task and
+re-verified PROMPT.md against the repo. **Every figure in it had drifted:** vm test files 98→**119**,
+e2e files 20→**22**, the vm baseline 913/832/81→**1045/952/93**, e2e 81/80/1→**93/92/1**, undeployed
+commits ~57→**81**. A future session reading it would have been misled about all of them — the exact
+failure the file's own header says to prevent.
+
+Also recorded the eleven swept axes in PROMPT.md with their yields, so a twelfth session doesn't
+re-run a closed one, and stated plainly that an empty sweep is now the likeliest and most useful
+answer.
+
+**Deliberately no code change.** After eleven axes with every finding closed, inventing work would be
+worse than reporting the queue is empty — and the honest report is itself the deliverable.
+
+App still running (PID 7104) — undeployed, **~82 commits**.
+
+---
+
+## STATE FOR THE NEXT SESSION
+
+**THE DEPLOY IS THE ONLY HIGH-VALUE ACTION.** ~82 commits, green, blocked all session by the app
+running. Recipe in PROMPT.md §9. Several of those commits fix ways typed names, trained faces, AI
+memories or a second copy were silently lost — none of it protects him until it ships.
+
+**Eleven axes swept, all findings closed.** Highest-yield first: sibling-path · store invariants ·
+photo/video parity · state-changing-under-the-running-app · swallowed failures · undo/inverse pairs ·
+delete/evict paths · write-vs-read normalisation · main-vs-renderer guards · re-entrancy · three-axis
+(first-run/happy-path/create-update).
+
+**The one lesson worth carrying forward above all others**, paid for ~8 times today: a structural
+assertion must **name the exact expression that would go missing, bind to the GUARD rather than any
+mention, strip comments first, slice to a real boundary, and be proven by breaking each part
+separately — with the break itself asserted to have applied.** Every variant of "match an identifier
+somewhere nearby" produced a test that passed while the thing it guarded was deleted.
+
 ### 2026-07-19ay — a dead NAS silently disabled the second copy and the import reported success
 
 The second dangerous finding from the `ax` sweep, now fixed. **This is a footage-safety bug, not a

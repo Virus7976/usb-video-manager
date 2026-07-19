@@ -65,6 +65,18 @@ test('the phone finalize run seeds and persists too', { skip: !RUN }, async () =
   assert.match(phoneSrc, /savePendingNow\(faceClusters\)/, 'persisted on both branches');
 });
 
+test('a scan from the Finalize screen persists its scanned flag', { skip: !RUN }, async () => {
+  // The draft save walks only state.scannedFiles, so a Finalize-screen scan wrote the flag to
+  // nothing and the whole card re-scanned next session. finalMeta is keyed by file NAME, which is
+  // what survives the rename.
+  const collect = await read(app.win, 'String(collectClipFaces)');
+  assert.match(collect, /persistScannedFlag\(r\)/, 'the collect path records it');
+  const helper = await read(app.win, 'String(persistScannedFlag)');
+  assert.match(helper, /saveFinalMeta/, 'via finalMeta, which survives the rename');
+  assert.match(helper, /r\.meta\.facesScanned = true/, 'writing the field currentSelectedClips already reads');
+  assert.match(scanSrc, /persistScannedFlag\(/, 'and the review scan records it too');
+});
+
 test('the auto-tag pass no longer marks clips as review-scanned', { skip: !RUN }, async () => {
   // scanFacesAuto auto-tags but never clusters and never persists. Marking clips with the SHARED
   // `_facesScanned` flag made the real review scan skip them, so "Scan faces" found nothing to scan

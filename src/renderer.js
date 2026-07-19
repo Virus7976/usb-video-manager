@@ -9498,7 +9498,26 @@ async function collectClipFaces(clip, clusters, keys) {
     }
   }
   r._facesScanned = true;
+  persistScannedFlag(r);
   return 0;
+}
+
+// Persist "this clip's faces have been scanned" for a clip that did NOT come from the rename screen.
+//
+// flushDraftSave() -> buildDraftMap() walks ONLY state.scannedFiles, and bails when it is empty. A
+// scan started from the Organize/Finalize screen works on finScan.files, already RENAMED — so
+// clipKey (`name__size`) no longer matches the source-scan key, the lookup misses, and the flag is
+// written to nothing. Next session the whole card re-scans; at 4594 clips that is hours of GPU time.
+//
+// finalMeta is the right carrier: keyed by FILE NAME (which is what survives the rename), it already
+// spans the long copy -> Tdarr -> organize gap, and finalMeta:save MERGES, so adding a flag cannot
+// clobber the description/people the analyze pass just wrote. currentSelectedClips() has always READ
+// `f.meta.facesScanned` — nothing ever wrote it, so that read was dead until now.
+function persistScannedFlag(r) {
+  if (!r || !r.meta || !r.name) return;   // rename-screen clips are covered by the draft save
+  if (r.meta.facesScanned) return;        // already recorded — don't re-write the whole record
+  r.meta.facesScanned = true;
+  try { window.api.saveFinalMeta({ [r.name]: { ...r.meta } }); } catch { /* non-fatal; the draft path may still catch it */ }
 }
 
 // SILENT auto face-tag (Auto mode): detect faces and, for any that MATCH someone you've
@@ -9774,6 +9793,7 @@ async function scanFacesForClips(clipList, opts = {}) {
         // and PERSIST it now so a mid-stream cutoff still remembers what's done.
         clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
         const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
+        persistScannedFlag(clip._ref || clip);   // Finalize-screen clips: finalMeta, not drafts (see above)
         flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
       }
       for (const f of res.faces) {

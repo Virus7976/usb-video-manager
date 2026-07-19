@@ -956,6 +956,12 @@ ipcMain.handle('finalMeta:save', (_evt, map) => {
     for (const [k, val] of Object.entries(v)) {
       if (k === 'ts') continue;
       if (k === 'keywords' || k === 'people' || k === 'peopleAuto' || k === 'tags') rec[k] = Array.isArray(val) ? val : [];
+      // Booleans are kept AS booleans. Everything else here is text, and blanket-stringifying was
+      // fine while this store held only text — but it is a trap the moment a flag lands in it:
+      // `String(false)` is `'false'`, which is TRUTHY, so a `false` written here would read back as
+      // `true` forever. `facesScanned` is the first such flag (it is what lets a scan started from
+      // the Finalize screen be remembered), and it must be able to say "no".
+      else if (typeof val === 'boolean') rec[k] = val;
       else rec[k] = (val == null ? '' : String(val));
     }
     if (!Array.isArray(rec.keywords)) rec.keywords = [];

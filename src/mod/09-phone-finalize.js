@@ -507,6 +507,12 @@ async function enterRenameWithPhoneFiles(staged) {
   // Restore any naming/tags from a prior session (drafts are keyed by filename+size), so
   // a re-pull or a crash+relaunch doesn't lose your batching work.
   try { const drafts = await window.api.getDrafts(); const restored = applyDraftsToClips(drafts || {}); if (restored) showToast(`Restored your names on ${restored} clip${restored !== 1 ? 's' : ''} ✓`, 4000); } catch { /* ignore */ }
+  // Re-bind the AI question queue, exactly as the CARD scan does after it builds scannedFiles.
+  // Every pending question carries a clipIndex INTO that array, and we have just replaced it — so
+  // without this, questions asked about card clips render (and APPLY) against whichever PHONE clip
+  // now sits at that index. Silent misnaming of footage, with no error anywhere.
+  // Questions whose clip isn't here are dropped; the queue is cleared even if nothing was saved.
+  await restoreAiQuestions();
   buildRenameStep();
   // The staged files live on disk in the temp folders — naming + the final copy both run
   // off those, NOT the phone. Remember this as a resumable session so you can carry on

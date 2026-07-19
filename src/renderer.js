@@ -3174,7 +3174,7 @@ function saveAiQuestions() {
   try {
     window.api.saveAiQueue(aiQuestions.map((q) => {
       const clip = typeof q.clipIndex === 'number' ? state.scannedFiles[q.clipIndex] : null;
-      return { type: q.type, clipKey: clip ? clipKey(clip) : '', field: q.field || '', suggested: q.suggested || '', rule: q.rule || '' };
+      return { type: q.type, clipKey: clip ? clipKeyV2(clip) : '', field: q.field || '', suggested: q.suggested || '', rule: q.rule || '' };   // #8: collision-free key
     }));
   } catch { /* non-fatal — the in-memory queue still drives this session */ }
 }
@@ -3184,11 +3184,16 @@ function saveAiQuestions() {
 async function restoreAiQuestions() {
   let saved = [];
   try { saved = await window.api.getAiQueue() || []; } catch { return; }
-  if (!saved.length) return;
-  const byKey = new Map();
-  state.scannedFiles.forEach((c, i) => byKey.set(clipKey(c), i));
-
+  // Clear FIRST, and even when nothing is saved. This runs whenever state.scannedFiles has been
+  // replaced, so an in-memory queue left over from the previous card is about clips that are no
+  // longer loaded — and every question carries a clipIndex INTO that array. "Nothing saved" has to
+  // mean "nothing pending", not "keep what you had".
   aiQuestions = [];
+  if (!saved.length) { renderAiHazard(); return; }   // refresh the ⚠ badge so it doesn't keep the old count
+  // Index BOTH key forms (#8): entries written before the collision-free key carry `name__size`,
+  // new ones carry `name__size__mtime`. Resolving only one silently drops half the queue.
+  const byKey = new Map();
+  state.scannedFiles.forEach((c, i) => { byKey.set(clipKeyV2(c), i); if (!byKey.has(clipKey(c))) byKey.set(clipKey(c), i); });
   for (const q of saved) {
     if (q.clipKey && !byKey.has(q.clipKey)) continue;                     // that clip isn't here any more
     const clipIndex = q.clipKey ? byKey.get(q.clipKey) : undefined;
@@ -11899,6 +11904,12 @@ async function enterRenameWithPhoneFiles(staged) {
   // Restore any naming/tags from a prior session (drafts are keyed by filename+size), so
   // a re-pull or a crash+relaunch doesn't lose your batching work.
   try { const drafts = await window.api.getDrafts(); const restored = applyDraftsToClips(drafts || {}); if (restored) showToast(`Restored your names on ${restored} clip${restored !== 1 ? 's' : ''} ✓`, 4000); } catch { /* ignore */ }
+  // Re-bind the AI question queue, exactly as the CARD scan does after it builds scannedFiles.
+  // Every pending question carries a clipIndex INTO that array, and we have just replaced it — so
+  // without this, questions asked about card clips render (and APPLY) against whichever PHONE clip
+  // now sits at that index. Silent misnaming of footage, with no error anywhere.
+  // Questions whose clip isn't here are dropped; the queue is cleared even if nothing was saved.
+  await restoreAiQuestions();
   buildRenameStep();
   // The staged files live on disk in the temp folders — naming + the final copy both run
   // off those, NOT the phone. Remember this as a resumable session so you can carry on

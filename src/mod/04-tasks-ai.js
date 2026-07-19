@@ -510,7 +510,7 @@ function saveAiQuestions() {
   try {
     window.api.saveAiQueue(aiQuestions.map((q) => {
       const clip = typeof q.clipIndex === 'number' ? state.scannedFiles[q.clipIndex] : null;
-      return { type: q.type, clipKey: clip ? clipKey(clip) : '', field: q.field || '', suggested: q.suggested || '', rule: q.rule || '' };
+      return { type: q.type, clipKey: clip ? clipKeyV2(clip) : '', field: q.field || '', suggested: q.suggested || '', rule: q.rule || '' };   // #8: collision-free key
     }));
   } catch { /* non-fatal — the in-memory queue still drives this session */ }
 }
@@ -520,11 +520,16 @@ function saveAiQuestions() {
 async function restoreAiQuestions() {
   let saved = [];
   try { saved = await window.api.getAiQueue() || []; } catch { return; }
-  if (!saved.length) return;
-  const byKey = new Map();
-  state.scannedFiles.forEach((c, i) => byKey.set(clipKey(c), i));
-
+  // Clear FIRST, and even when nothing is saved. This runs whenever state.scannedFiles has been
+  // replaced, so an in-memory queue left over from the previous card is about clips that are no
+  // longer loaded — and every question carries a clipIndex INTO that array. "Nothing saved" has to
+  // mean "nothing pending", not "keep what you had".
   aiQuestions = [];
+  if (!saved.length) { renderAiHazard(); return; }   // refresh the ⚠ badge so it doesn't keep the old count
+  // Index BOTH key forms (#8): entries written before the collision-free key carry `name__size`,
+  // new ones carry `name__size__mtime`. Resolving only one silently drops half the queue.
+  const byKey = new Map();
+  state.scannedFiles.forEach((c, i) => { byKey.set(clipKeyV2(c), i); if (!byKey.has(clipKey(c))) byKey.set(clipKey(c), i); });
   for (const q of saved) {
     if (q.clipKey && !byKey.has(q.clipKey)) continue;                     // that clip isn't here any more
     const clipIndex = q.clipKey ? byKey.get(q.clipKey) : undefined;

@@ -322,6 +322,45 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19aa — renameDrafts had TWO caps that contradicted each other. Typed names were lost.
+
+Found by sweeping a new axis: *an invariant enforced on one store but not its siblings*. It produced
+the worst data-loss finding of the session, and it was live on the owner's machine.
+
+`writeDrafts` (`main-mod/08-finalize-feedback.js`) caps `renameDrafts` at 10000 and sorts
+**named-first**, with a comment spelling out why: *"NEVER evict a NAMED draft to make room for a
+flag-only one."* The boot "slim" block in `main-mod/01-core.js` capped **the same store** at **1000**,
+sorted by `ts` **alone** — ten times stricter, with the one rule that mattered inverted. Every launch
+undid what the previous session had deliberately kept, and a recent flag-only write (a `facesScanned`
+or `selected` update, which *every face scan produces*) evicted an older hand-typed name.
+
+It really bit, and this is the part worth remembering: `renameDrafts` is **not** in `LAZY_STORES`, so
+`loadStores()` has already read `drafts.json` into `config.renameDrafts` before the slim runs. The
+truncation is in memory, and `freshStore()` only re-reads when the file's mtime/size differ from OUR
+last write — which they don't, because boot recorded them. So `currentDrafts()` returned the truncated
+map and the next `drafts:save` persisted 1000 entries over the original file. The owner has ~4600
+clips on one card. **An in-memory "slim" is a disk write the moment anything saves.**
+
+Second bug in the same function: the 60-day **age** filter also evicted named drafts, while its
+sibling `finalMeta:save` deliberately exempts unconsumed work from its age filter, and `01-core.js`
+states the contract outright — *"Drafts are only removed by `drafts:clear` (when the footage is
+copied)."* A card named but left uncopied for two months lost those names, and since the prune runs on
+**every** `writeDrafts` call, editing one clip today deleted another clip's older name.
+
+Fix: one `DRAFTS_CAP` (declared in `01-core.js`, because the boot slim is top-level bundle code and a
+`const` in `08-` would still be in the temporal dead zone there); the boot slim now sorts named-first
+via `draftIsNamed`; the age filter exempts named drafts. It still sheds old flag-only records.
+
+`test/drafts-cap-conflict.test.mjs`, 4 tests, both guards proven by breaking them. **One of those
+tests first passed for the wrong reason** — it asserted the old sort *expression* was absent from the
+source, so disabling the named-first rule with `if (false)` left it green. Rewritten to seed
+`drafts.json` over the cap and let the real boot slim run on it via `loadMain({ userData })`. A
+negative source-shape assertion cannot detect a change that doesn't restore the old text; when the
+code under test runs at load, seed the store and boot it.
+
+Both tiers green: vm **913/832/81/0** (was 909/828), e2e **81/80/1/0**. App was running (PID 7104), so
+this is committed and undeployed like the ~54 before it.
+
 ### 2026-07-19 — the repo is COMMITTED and the backlog is DEPLOYED (both were not true before)
 
 Two long-standing risks closed this session. Read this before assuming the old state.

@@ -18,6 +18,12 @@ const { pipeline: streamPipeline } = require('node:stream/promises');
 // (no native modules — packages cleanly, nothing to compile).
 const DETECTION_ENABLED = process.platform === 'win32';
 
+// The one cap on renameDrafts. It lives HERE, not next to writeDrafts, because 01-core.js runs its
+// boot slim as top-level bundle code — a const declared in 08-finalize-feedback.js would still be in
+// the temporal dead zone at that point. Two independent caps on this store is exactly the bug this
+// replaced. ~230B per draft → ~2.3MB in its own file, which is fine.
+const DRAFTS_CAP = 10000;
+
 // SINGLE canonical video-extension list for the whole main process. Everything that
 // decides "is this a video" (config default, VIDEO_EXTS, the ADB scan predicate + regex)
 // derives from THIS — so the sets can never disagree again (they used to: some paths
@@ -597,11 +603,27 @@ if (!Array.isArray(config.ai.styleCorrections)) config.ai.styleCorrections = [];
 // open and every save heavy. Trim to sane caps in memory (newest kept); the next normal
 // save persists it. No write here — avoids a second-instance race before the lock check.
 try {
+  // Drafts: the SAME cap and the SAME rule as writeDrafts (main-mod/08-finalize-feedback.js).
+  //
+  // This used to cap at 1000 sorted by `ts` ALONE, while writeDrafts caps at DRAFTS_CAP and sorts
+  // named-first — ten times stricter, with the one rule that matters inverted. So every launch threw
+  // away what the previous session had deliberately kept, and a recent FLAG-ONLY write (a
+  // facesScanned or selected update, which every scan produces) evicted an older HAND-TYPED name.
+  //
+  // It really bit: renameDrafts is not in LAZY_STORES, so loadStores() has already read drafts.json
+  // into config.renameDrafts before this runs. The truncation is in-memory, and freshStore() only
+  // re-reads when the file's mtime/size differ from OUR last write — which they don't, because boot
+  // recorded them. So currentDrafts() returned the truncated map and the next drafts:save persisted
+  // it over the original file. On a 4500-clip card that is thousands of typed names, silently.
   if (config.renameDrafts && typeof config.renameDrafts === 'object') {
     const ents = Object.entries(config.renameDrafts);
-    if (ents.length > 1000) {
-      ents.sort((a, b) => ((b[1] && b[1].ts) || 0) - ((a[1] && a[1].ts) || 0));
-      config.renameDrafts = Object.fromEntries(ents.slice(0, 1000));
+    if (ents.length > DRAFTS_CAP) {
+      ents.sort((a, b) => {
+        const na = draftIsNamed(a[1]); const nb = draftIsNamed(b[1]);
+        if (na !== nb) return na ? -1 : 1;            // a typed name outranks a flag-only record
+        return ((b[1] && b[1].ts) || 0) - ((a[1] && a[1].ts) || 0);
+      });
+      config.renameDrafts = Object.fromEntries(ents.slice(0, DRAFTS_CAP));
     }
   }
   if (Array.isArray(config.renameVersions) && config.renameVersions.length > 12) config.renameVersions = config.renameVersions.slice(0, 12);
@@ -7036,16 +7058,22 @@ function writeDrafts(map) {
   for (const [k, v] of additions) drafts[k] = { ...mergeDraft(drafts[k], v), ts: now };
   // Prune: drop entries older than 60 days; cap generously (users have thousands of
   // clips) and — crucially — NEVER evict a NAMED draft to make room for a flag-only one.
+  // The AGE filter must exempt NAMED drafts, exactly as finalMeta:save exempts unconsumed work
+  // ("An entry is only evictable once finalize:run has actually FILED that clip"). A typed name for
+  // footage that hasn't been copied yet is the same kind of unconsumed work, and 01-core.js states
+  // the intended contract outright: "Drafts are only removed by drafts:clear (when the footage is
+  // copied)." Without the exemption, a card named but left uncopied for two months lost those names
+  // — and because this prune runs on EVERY writeDrafts call, editing one clip today deleted another
+  // clip's older name. The filter still sheds old FLAG-ONLY records, which carry no user work.
   const MAX_AGE = 60 * 24 * 3600 * 1000;
-  const CAP = 10000;   // each draft is ~230B → ~2.3MB in its own file; fine
-  let entries = Object.entries(drafts).filter(([, v]) => v && (now - (v.ts || 0)) < MAX_AGE);
-  if (entries.length > CAP) {
+  let entries = Object.entries(drafts).filter(([, v]) => v && (draftIsNamed(v) || (now - (v.ts || 0)) < MAX_AGE));
+  if (entries.length > DRAFTS_CAP) {
     entries.sort((a, b) => {
       const na = draftIsNamed(a[1]); const nb = draftIsNamed(b[1]);
       if (na !== nb) return na ? -1 : 1;              // named drafts are kept over flag-only ones
       return (b[1].ts || 0) - (a[1].ts || 0);         // then most-recent
     });
-    entries = entries.slice(0, CAP);
+    entries = entries.slice(0, DRAFTS_CAP);
   }
   config.renameDrafts = Object.fromEntries(entries);
   saveStore('renameDrafts');

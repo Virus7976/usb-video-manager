@@ -887,16 +887,22 @@ function writeDrafts(map) {
   for (const [k, v] of additions) drafts[k] = { ...mergeDraft(drafts[k], v), ts: now };
   // Prune: drop entries older than 60 days; cap generously (users have thousands of
   // clips) and — crucially — NEVER evict a NAMED draft to make room for a flag-only one.
+  // The AGE filter must exempt NAMED drafts, exactly as finalMeta:save exempts unconsumed work
+  // ("An entry is only evictable once finalize:run has actually FILED that clip"). A typed name for
+  // footage that hasn't been copied yet is the same kind of unconsumed work, and 01-core.js states
+  // the intended contract outright: "Drafts are only removed by drafts:clear (when the footage is
+  // copied)." Without the exemption, a card named but left uncopied for two months lost those names
+  // — and because this prune runs on EVERY writeDrafts call, editing one clip today deleted another
+  // clip's older name. The filter still sheds old FLAG-ONLY records, which carry no user work.
   const MAX_AGE = 60 * 24 * 3600 * 1000;
-  const CAP = 10000;   // each draft is ~230B → ~2.3MB in its own file; fine
-  let entries = Object.entries(drafts).filter(([, v]) => v && (now - (v.ts || 0)) < MAX_AGE);
-  if (entries.length > CAP) {
+  let entries = Object.entries(drafts).filter(([, v]) => v && (draftIsNamed(v) || (now - (v.ts || 0)) < MAX_AGE));
+  if (entries.length > DRAFTS_CAP) {
     entries.sort((a, b) => {
       const na = draftIsNamed(a[1]); const nb = draftIsNamed(b[1]);
       if (na !== nb) return na ? -1 : 1;              // named drafts are kept over flag-only ones
       return (b[1].ts || 0) - (a[1].ts || 0);         // then most-recent
     });
-    entries = entries.slice(0, CAP);
+    entries = entries.slice(0, DRAFTS_CAP);
   }
   config.renameDrafts = Object.fromEntries(entries);
   saveStore('renameDrafts');

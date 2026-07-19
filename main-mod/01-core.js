@@ -704,18 +704,59 @@ function migrateStores() {
 
 // Persist ONE sidecar store atomically — cheap, only that file is rewritten. Unknown
 // keys fall back to a whole-config save so a typo can't silently drop data.
+// PERSISTENCE FAILURES MUST REACH THE USER.
+//
+// saveStore/saveConfig can refuse (the store failed to read this launch, or a lazy store was never
+// loaded) or throw (disk full, EPERM). Every one of those was console-only, while the IPC handlers
+// above them went on returning `{ ok: true }`. So a corrupt sidecar at launch latched
+// `storeReadFailed`, and the user could spend an evening naming faces and typing descriptions —
+// each with a ✓ — and lose all of it on restart. The condition was recorded via logCrash into
+// crash.log, which is precisely where he will never look. That is this app's north star inverted:
+// it makes him re-check its work.
+//
+// The refusals themselves are CORRECT and stay exactly as they are — writing the empty in-memory
+// default over a real file is the disaster they prevent. This only makes the silence audible.
+//
+// Reported ONCE per store: these fire on every keystroke-driven save, and a toast per save would
+// train him to dismiss the one warning that matters. The record persists so a window opened later
+// can still ask (stores:persistFailures).
+const storePersistFailed = {};
+function notePersistFailure(key, why) {
+  const k = String(key || 'config');
+  const prev = storePersistFailed[k];
+  const first = !prev;
+  // `seen` counts every failure, `notified` only the ones we actually told the user about. Keeping
+  // them separate is what makes the once-per-store rule testable: if the dedup regresses, notified
+  // climbs with seen instead of staying at 1.
+  storePersistFailed[k] = {
+    key: k,
+    why: String(why || 'unknown'),
+    ts: Date.now(),
+    seen: (prev ? prev.seen : 0) + 1,
+    notified: (prev ? prev.notified : 0) + (first ? 1 : 0),
+  };
+  console.error(`[store] ${k}: ${why}`);
+  if (!first) return;
+  // mainWindow is declared later in the bundle, so a boot-time failure would hit its temporal dead
+  // zone. The record is what matters; the push is best-effort and the renderer asks at startup too.
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('store:persist-failed', storePersistFailed[k]);
+  } catch { /* no window yet — stores:persistFailures covers it */ }
+}
+ipcMain.handle('stores:persistFailures', () => Object.values(storePersistFailed));
+
 function saveStore(key) {
   const file = STORE_FILES[key];
   if (!file) { saveConfig(); return; }
   if (config_readFailed) return;   // same guard as saveConfig — don't clobber unread data
   // The sidecar itself was present but unparseable this launch: our in-memory value is the
   // empty default, NOT the user's data. Writing it would destroy the face DB / saved names.
-  if (storeReadFailed[key]) { console.error(`Skipping save of store "${key}" (its file failed to read this launch).`); return; }
+  if (storeReadFailed[key]) { notePersistFailure(key, `its file could not be read this launch, so nothing can be saved to it (the existing file is left untouched)`); return; }
   // A deferred store that was never loaded cannot have been mutated (every path to its data
   // goes through an accessor that calls ensureStore first), so there is nothing to persist —
   // and writing the un-loaded in-memory value would overwrite the real sidecar with a default.
   if (LAZY_STORES.has(key) && !storeLoaded[key]) {
-    console.error(`Refusing to save store "${key}": it was never loaded this launch (no accessor ran).`);
+    notePersistFailure(key, 'it was never loaded this launch, so there is nothing to persist');
     return;
   }
   try {
@@ -728,7 +769,7 @@ function saveStore(key) {
     // remembering to call it — the sibling-path failure this codebase keeps hitting.
     if (key === 'ai.people') { try { invalidateConfirmedFaces(); } catch { /* defined later in the bundle */ } }
     try { const st = fs.statSync(file); storeSelfMtimeMs[key] = st.mtimeMs; storeSelfSizeBytes[key] = st.size; } catch { /* ignore */ }
-  } catch (err) { console.error(`Could not save store ${key}:`, err.message); }
+  } catch (err) { notePersistFailure(key, err.message); }
 }
 
 // Return a sidecar store, re-reading from disk ONLY if something else changed the file
@@ -817,7 +858,7 @@ function pathsEqual(a, b) { return pathKey(a) === pathKey(b); }
 function saveConfig() {
   // Guard: if we failed to read an existing config this launch, don't clobber it
   // with our defaults-only in-memory copy.
-  if (config_readFailed) { console.error('Skipping config save (read had failed this launch).'); return; }
+  if (config_readFailed) { notePersistFailure('config', 'the settings file could not be read this launch, so nothing can be saved to it'); return; }
   try {
     fs.mkdirSync(path.dirname(USER_CONFIG), { recursive: true });
     // The sidecar stores persist to their own files (saveStore) — strip them here (incl.
@@ -825,7 +866,7 @@ function saveConfig() {
     // drafts/versions/meta/ledger/face-descriptors.
     writeJsonAtomic(USER_CONFIG, stripStoresForWrite());
   } catch (err) {
-    console.error('Could not save config:', err.message);
+    notePersistFailure('config', err.message);
   }
 }
 

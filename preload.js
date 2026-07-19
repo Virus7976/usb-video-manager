@@ -228,6 +228,12 @@ contextBridge.exposeInMainWorld('api', {
 
   // People / face recognition (descriptors computed in the renderer via face-api.js)
   getPeople: () => ipcRenderer.invoke('people:get'),
+  storePersistFailures: () => ipcRenderer.invoke('stores:persistFailures'),
+  onStorePersistFailed: (cb) => {
+    const listener = (_e, info) => cb(info);
+    ipcRenderer.on('store:persist-failed', listener);
+    return () => ipcRenderer.removeListener('store:persist-failed', listener);
+  },
   savePerson: (payload) => ipcRenderer.invoke('people:save', payload),
   undoAssignPerson: (receipt) => ipcRenderer.invoke('people:undoAssign', receipt),
   getPendingFaces: () => ipcRenderer.invoke('faces:getPending'),

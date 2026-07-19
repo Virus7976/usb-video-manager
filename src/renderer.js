@@ -14143,3 +14143,32 @@ function escapeAttr(s) { return escapeHtml(s); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', begin);
   else begin();
 })();
+
+// ---------------------------------------------------------------------------
+// PERSISTENCE FAILURES — say them out loud.
+//
+// saveStore/saveConfig can refuse (the file failed to read this launch, so writing our empty
+// in-memory default would destroy it) or throw (disk full, EPERM). Those were console-only while
+// every handler above them kept returning ok:true, so the app went on accepting work it could not
+// keep: an evening of naming faces and typing descriptions, each with a ✓, gone on restart. The
+// condition reached crash.log, which is not somewhere anyone looks.
+//
+// Reported once per store by main, so this cannot become a toast storm. Asked for at startup too,
+// because the failure can happen before this window exists.
+// ---------------------------------------------------------------------------
+(() => {
+  const seen = new Set();
+  const say = (info) => {
+    if (!info || !info.key || seen.has(info.key)) return;
+    seen.add(info.key);
+    const what = info.key === 'config' ? 'Settings' : `Saved data (${info.key})`;
+    const msg = `${what} can’t be saved — ${info.why}. Anything you change now will be lost when the app closes.`;
+    try { showToast(msg, 15000); } catch { /* toast may not exist yet */ }
+    try { logIssue('Storage', msg); } catch { /* ignore */ }
+  };
+  try { window.api.onStorePersistFailed(say); } catch { /* ignore */ }
+  // A failure during boot happens before the listener above is attached.
+  setTimeout(async () => {
+    try { (await window.api.storePersistFailures() || []).forEach(say); } catch { /* ignore */ }
+  }, 1500);
+})();

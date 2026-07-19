@@ -322,6 +322,72 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19al — the app could accept work it could not save, all evening, and never say so
+
+New queue exhausted → two NEW axes swept in parallel (swallowed failures the user needs to know
+about; re-entrancy/overlap). Both produced real findings. Fixed the worst — a TOTAL-loss path — and
+logged the rest below.
+
+**Fixed: every store-write failure was console-only while the handlers returned `ok: true`.**
+`saveStore` has three refusal branches and one catch; `saveConfig` matches it. The refusals are
+CORRECT and unchanged — if `people.json` was present-but-unparseable at launch, the in-memory value
+is the empty default and writing it would destroy the face DB. The defect is that the app then goes
+on accepting work it cannot keep: the user names faces and types descriptions for an evening, every
+card shows a ✓, and on restart the lot is gone. The condition WAS recorded — `logCrash` into
+`crash.log` — which is precisely where a videographer will never look. That is this app's north star
+inverted: it makes him re-check its work.
+
+Now: `notePersistFailure(key, why)` records it, pushes `store:persist-failed` to the renderer, and
+exposes `stores:persistFailures` for a window that wasn't open when it happened (a boot-time failure
+predates the listener). The renderer toasts it for 15 s and `logIssue`s it. **Reported once per
+store** — these fire on every keystroke-driven save, and a toast per save would train him to dismiss
+the one warning that matters.
+
+`test/store-persist-failure.test.mjs`, 7 tests, each part proven by breaking it. Two guard the other
+direction: a healthy save records nothing, and **a refusal still never becomes a write** — reporting
+must not turn a safe no-op into the destructive save it exists to prevent.
+
+**A test-design note worth copying:** the once-per-store dedup was initially UNTESTABLE — I wrote the
+counter so it could not increment, so breaking the dedup left the test green. Fixed by splitting
+`seen` (every failure) from `notified` (only what we told the user); now a dedup regression makes
+notified climb with seen. **If breaking a guard doesn't move a number, the number is not a test.**
+
+Both tiers green: vm **969/888/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — undeployed,
+~68 commits.
+
+**NEW QUEUE from these two sweeps, priority order:**
+1. **`projects:move` records a per-clip embed failure nothing reads.** `main-mod/02-media.js:605-622`
+   composes `embedError` explicitly so the caller can say "filed, but metadata didn't write"; the
+   renderer reads only `.ok`, and an embed failure still has `ok:true`. Unlike `finalize:run` there is
+   **no sidecar fallback**, so the AI's observations/typed description/people exist only in finalMeta,
+   which the prune later treats as consumed. Same shape as the bug fixed in `2026-07-19ad`, one level
+   deeper.
+2. **Per-clip move errors are counted but never shown or logged.** Same call site: "Filed 37, 3
+   failed ✓" with no way to learn WHICH three or why. The twin renders `summary.errors` into a
+   visible list (`src/mod/10-boot.js`), so this is sibling divergence, not a design choice.
+3. **`facesPending` lost-update.** `loadPendingFaces()` → long await → `savePendingNow()`, where the
+   main handler is a wholesale `config.ai.facesPending = list` replace. Two entry points do this and
+   can clobber each other; what's lost is trained/named faces.
+4. **"🧠 AI learned N things" toasts outside its try/catch** (`src/mod/04-tasks-ai.js:450-453`), and
+   the in-memory push is INSIDE it — so on failure nothing was learned anywhere and he was told it
+   was. Headline learning feature.
+5. **Face enrolment failure still renders a green ✓ "tagged" card** (`src/mod/08-people.js:740-743`):
+   `cl.done = true` is unconditional and `people:save`'s `{ok:false}` is never read. Tags survive;
+   the ENROLMENT doesn't, so the recognizer never suggests that person.
+6. **`_autoConsolidating` guards only itself** — five other writers to `config.ai.memories` exist, and
+   `ai:addMemories` (which often triggers the consolidation) is one of them. The flag's presence reads
+   as "handled".
+7. LOW: "Remember this direction" fails silently with no toast either way; a ledger-write rejection
+   after a successful file run degrades learned work with no `logIssue`.
+
+**Judged correctly-silent, do not re-litigate:** the delete/verify/copy spine (`delete:source`,
+`verifyCopyPair`, `verifyCopies` fail-closed, `copy:start` aborting on first error), `finalize:run`'s
+sidecar fallback + `metaLanded` gating, `organize:undo`'s deliberately fail-open `clearFinalMetaDone`
+and `reverseLastLedger`, both free-space preflights, `writeJsonAtomic` rethrowing, and the
+copied-log's non-authoritative fire-and-forget writes. Also verified properly guarded for re-entrancy:
+`copy:start`, `aiAutoEnhance`, `runCompress`, phone pull, the modal-overlay-protected organize/move/
+delete buttons, and all timers.
+
 ### 2026-07-19ak — the ledger write raced the Undo beside it, and its try/catch caught nothing (item 6)
 
 `try { recordToLedger(...) } catch { /* non-fatal */ }` on an **async** function, immediately followed

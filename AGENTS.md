@@ -358,6 +358,44 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19w — 3-axis sweep: 3 findings, 1 fixed (`3ec4a09`). TWO LEFT, both WSL-safe.
+
+A sweep on **first-run vs resume**, **happy path vs retry**, and **create vs update** (the twin-PATH
+axis being exhausted). One genuine finding per axis, plus an explicit list of what it checked and
+found already hardened.
+
+**FIXED — AI questions answered the WRONG clip after a phone pull.** The card scan re-binds the
+question queue by stable key after rebuilding `scannedFiles`; `enterRenameWithPhoneFiles` (fresh pull
+AND resume) replaced that array and restored drafts only, so pending questions rendered — and
+APPLIED — against whichever phone clip now sat at the old index. Reading it turned up two more:
+`restoreAiQuestions()` early-returned on an empty saved queue, leaving a stale in-memory one; and
+**`aiQueue` was the FIFTH clip-keyed store, missed by the #8 migration** — now writes `clipKeyV2` and
+resolves both forms, same rewrite-free shape as the other four.
+
+**STILL OPEN — both confirmed by reading both sides, both WSL-verifiable:**
+1. **A person's name is deduped case-insensitively on CREATE but not on RENAME.**
+   `people:save` upserts via `people.find((x) => x.name.toLowerCase() === name.toLowerCase())`
+   (`main-mod/08-finalize-feedback.js:221`), and `people:reassignFace` does the same at `:277`. But
+   `people:rename` (`:298`) writes the name with no collision check, and the renderer caller
+   (`src/mod/08-people.js:1157`) only checks non-empty-and-changed. Renaming "Sara" → "Sarah" when a
+   "Sarah" exists — the exact fix-a-typo case the People dashboard invites — creates TWO records with
+   the same name: the dashboard shows two indistinguishable cards, the enrolment faces stay split so
+   recognition gets WORSE, and later `people:save` upserts land on whichever `find` hits first.
+   `people:merge` exists but the user must first notice. **Fully WSL-testable: invoke `people:save`
+   twice then `people:rename`.**
+2. **The compress dialog is restored for retry on the THROW path but not after a cancelled or
+   partially-failed run.** `src/mod/10-boot.js:167-170` re-enables the inputs and unhides Run in the
+   error branch; the resolved path (which covers cancelled runs and per-file failures) never undoes
+   the disable at `:122` / hide at `:120`, and the `finally` only unsubscribes and swaps Cancel→Close.
+   Cancel a 50-clip run at clip 3 and the checkboxes, preset picker and Compress button are all dead
+   — the only way to retry is to close and reopen, losing the selection. UI-annoyance grade, not data
+   loss. Needs ffmpeg present to reproduce.
+
+**Axis B is the weak one** — the sweep expected gaps in the ADB retry and the face-scan latch and
+found both already handled. If an axis gets dropped next time, drop B.
+
+---
+
 ### 2026-07-19v — INSTALLER IS PRE-BUILT AND VERIFIED. Deploy is a 10-second install.
 
 `dist/USB-SD-Auto-Action-Setup-0.4.28.exe` in the Windows checkout was rebuilt at the current HEAD

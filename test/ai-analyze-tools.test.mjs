@@ -43,7 +43,11 @@ function extractFn(relFile, name, injected = []) {
   return new Function(...injected, `${src.slice(start, end)}; return ${name};`);
 }
 
+// #8: observations are reached through clipObsFor/noteClipObs now, so the extracted code needs them
+// in scope. The fixtures carry no mtimeMs, so clipKeyV2 falls back to the legacy key and the stubs
+// below address the same entries they always did.
 const DEPS = ['state', 'aiToolModelReady', 'aiToolModelName', 'subjectsCache', 'clipObsCache', 'clipKey',
+  'clipObsFor', 'noteClipObs',
   'markClipAnalyzing', 'aiCallGuard', 'window', 'aiCfg', 'runContext'];
 
 /** Build aiNameWithTools with a controllable world around it. Returns the fn + a call log. */
@@ -61,6 +65,8 @@ function build({ toolReady = true, subjects = ['lawn-mowing', 'skiing'], obsCach
   const fn = extractFn('src/mod/04-tasks-ai.js', 'aiNameWithTools', DEPS)(
     state, toolReady, 'qwen3:8b', subjects, obsCache,
     (c) => `${c.name}__${c.size}`,
+    (c) => obsCache[`${c.name}__${c.size}`],                                   // clipObsFor (#8)
+    (c, obs) => { obsCache[`${c.name}__${c.size}`] = { obs, ts: 0 }; fullApi.saveClipObs({ key: `${c.name}__${c.size}`, obs }); },  // noteClipObs (#8)
     () => {},                       // markClipAnalyzing — DOM, not under test
     (p) => p,                       // aiCallGuard — passthrough
     { api: fullApi },

@@ -1155,7 +1155,7 @@ function saveFlowFinalMeta(clips) {
 let autoAnalyzeRunning = false;
 async function autoAnalyzeAfterCopyRun(clips) {
   if (autoAnalyzeRunning || !aiReady()) return;
-  const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsCache[clipKey(c)] && clipObsCache[clipKey(c)].obs) || '';
+  const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsFor(c) && clipObsFor(c).obs) || '';
   const need = clips.filter((c) => c && c.sourcePath && !obsOf(c));
   if (!need.length) return;
   autoAnalyzeRunning = true; aiAborted = false;
@@ -1180,7 +1180,7 @@ async function autoAnalyzeAfterCopyRun(clips) {
       try { if (i >= 0) await aiSuggestClip(i, 'empty', { quiet: true }); } catch { /* keep going */ }
       if (sample) {
         const obs = obsOf(c);
-        for (const sib of (groups[key(c)] || [])) { if (sib !== c && obs && !obsOf(sib)) { sib.observation = obs; try { clipObsCache[clipKey(sib)] = { obs, ts: Date.now() }; window.api.saveClipObs({ key: clipKey(sib), obs }); } catch { /* ignore */ } } }
+        for (const sib of (groups[key(c)] || [])) { if (sib !== c && obs && !obsOf(sib)) { sib.observation = obs; noteClipObs(sib, obs); } }
       }
       done += 1;
     }
@@ -1830,7 +1830,7 @@ async function finAnalyzeSelected() {
       if (r.shotType) f.meta.shotType = r.shotType;
       if (r.category && aiCfg.suggestCategory && !f.meta.category) f.meta.category = r.category;
       if (Array.isArray(r.tags) && r.tags.length) f.meta.tags = [...new Set([...(f.meta.tags || []), ...r.tags.filter(Boolean)])];
-      if (r.observation) { f.meta.observation = r.observation; try { clipObsCache[clipKey(f)] = { obs: r.observation, ts: Date.now() }; window.api.saveClipObs({ key: clipKey(f), obs: r.observation }); } catch { /* non-fatal */ } }
+      if (r.observation) { f.meta.observation = r.observation; noteClipObs(f, r.observation); }
       f.matched = true; f.matchType = 'saved';
       f._aiAnalyzed = true; f.meta.aiAnalyzed = true;
       try { window.api.saveFinalMeta({ [f.name]: { ...f.meta } }); } catch { /* non-fatal */ }

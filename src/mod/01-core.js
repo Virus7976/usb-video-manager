@@ -1332,6 +1332,20 @@ let versionsCache = [];
 let appVersionStr = '';   // real app version (from main) for the About box
 let routesCache = [];      // standing filing rules (subject → folder, by-day)
 let clipObsCache = {};     // clipKey → { obs, ts } prior AI observations
+
+// Read/write the observation store through ONE pair of helpers (audit #8, slice 2). Before this,
+// seven near-identical write blocks and eight reads each spelled out `clipObsCache[clipKey(x)]`,
+// which is exactly how a key migration ends up half-applied — one forgotten site silently loses a
+// clip's AI observation, and nothing reports it.
+//
+// Reads go V2-then-legacy via clipEntry, so every observation already on disk keeps resolving.
+// Writes use V2 only. Nothing is deleted or rewritten.
+function clipObsFor(clip) { return clipEntry(clipObsCache, clip); }
+function noteClipObs(clip, obs) {
+  const key = clipKeyV2(clip);
+  clipObsCache[key] = { obs, ts: Date.now() };
+  try { window.api.saveClipObs({ key, obs }); } catch { /* non-fatal — the in-memory cache still has it */ }
+}
 // Is a model that can actually CALL TOOLS available, and which one? Latched by renderAiHealth() at
 // boot and after every fix. A vision model cannot call tools, so without this the analyze flow must
 // not try. The NAME matters too: the run loop has to name the model it wants resident in VRAM.

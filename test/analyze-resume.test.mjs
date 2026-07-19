@@ -50,7 +50,15 @@ const CLIP = (over = {}) => ({ name: 'GX010023.MP4', size: 12345, subject: '', d
 function loadPredicate(cache) {
   return loadFns('src/mod/04-tasks-ai.js', {
     names: ['aiAlreadyAnalyzed'],
-    injected: { clipObsCache: cache, clipKey: (c) => `${c.name}__${c.size}` },
+    // #8: the code now reads observations through clipObsFor(clip) rather than
+    // clipObsCache[clipKey(clip)]. These fixtures deliberately carry no mtimeMs, so clipKeyV2 falls
+    // back to the legacy key and both spellings address the same entry — which is exactly the
+    // backward-compatibility this stub is standing in for.
+    injected: {
+      clipObsCache: cache,
+      clipKey: (c) => `${c.name}__${c.size}`,
+      clipObsFor: (c) => cache[`${c.name}__${c.size}`],
+    },
   }).aiAlreadyAnalyzed;
 }
 

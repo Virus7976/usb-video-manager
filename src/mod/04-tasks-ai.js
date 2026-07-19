@@ -743,7 +743,7 @@ async function offerRetryFailed() {
 // whose naming didn't — that one still has work left.
 function aiAlreadyAnalyzed(clip) {
   if (!clip) return false;
-  const o = clipObsCache[clipKey(clip)];
+  const o = clipObsFor(clip);
   return !!(o && o.obs && String(clip.subject || '').trim() && String(clip.description || '').trim());
 }
 
@@ -845,7 +845,7 @@ async function aiImproveSelected() {
   if (!requireAi()) return;
   const sel = state.scannedFiles.map((c, i) => (c.selected ? i : -1)).filter((i) => i >= 0);
   const targets = sel.length ? sel : state.scannedFiles.map((c, i) => i);
-  const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsCache[clipKey(c)] && clipObsCache[clipKey(c)].obs) || '';
+  const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsFor(c) && clipObsFor(c).obs) || '';
   const withObs = targets.filter((i) => obsOf(state.scannedFiles[i]));
   if (!withObs.length) { showToast('Analyze these clips first — Improve refines the saved analysis'); return; }
   if (uiPrefs.autoVersionOnAi !== false) saveVersionPoint(`Before AI improve · ${withObs.length} clip${withObs.length !== 1 ? 's' : ''}`, true);
@@ -945,7 +945,7 @@ function applyNamesToDescriptions() {
 // A clip the user never touched carries no signal — its name IS the AI's output. A clip the user
 // CORRECTED is the one piece of ground truth in the entire system, so that's all we learn from.
 async function reflectFromClips(idxs, { manual = false } = {}) {
-  const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsCache[clipKey(c)] && clipObsCache[clipKey(c)].obs) || '';
+  const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsFor(c) && clipObsFor(c).obs) || '';
   const samples = (idxs || []).map((i) => {
     const c = state.scannedFiles[i]; if (!c) return null;
     if (!c._userNamed) return null;                 // the AI's own output teaches it nothing
@@ -982,7 +982,7 @@ function scheduleReflectFromNaming(indices) {
   if (!aiCfg.enabled || aiCfg.learnFromEdits === false) return;
   const obsIdxs = (indices || []).filter((i) => {
     const c = state.scannedFiles[i]; if (!c || !(c.subject || c.description)) return false;
-    return !!((c.observation && c.observation.trim()) || (clipObsCache[clipKey(c)] && clipObsCache[clipKey(c)].obs));
+    return !!((c.observation && c.observation.trim()) || (clipObsFor(c) && clipObsFor(c).obs));
   });
   if (obsIdxs.length < 2) return;   // nothing the AI has both seen AND you've named
   clearTimeout(reflectBatchTimer);
@@ -1002,7 +1002,7 @@ async function aiAutoEnhance() {
   aiFollow = true; aiAborted = false; showFollowBtn(false);
   if (uiPrefs.autoVersionOnAi !== false) saveVersionPoint('Before AI auto-enhance', true);
   showToast('AI is enhancing your clips in the background…', 3500);
-  const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsCache[clipKey(c)] && clipObsCache[clipKey(c)].obs) || '';
+  const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsFor(c) && clipObsFor(c).obs) || '';
   try {
     // 1) name any clips that have no subject yet
     const unnamed = all.filter((i) => !((state.scannedFiles[i].subject || '').trim()));
@@ -1171,7 +1171,7 @@ async function aiNameWithTools(i, opts = {}) {
 
   // Reuse a cached observation if we have one — re-watching footage we've already seen is the single
   // most expensive thing the app can do.
-  let obs = (opts.observation || '').trim() || (clipObsCache[clipKey(clip)] || {}).obs || '';
+  let obs = (opts.observation || '').trim() || (clipObsFor(clip) || {}).obs || '';
   if (!obs) {
     // A BATCH RUN MUST NEVER LAND HERE. Perceiving inside the naming step means loading the vision
     // model, then the tool model, then the vision model again — a full VRAM swap PER CLIP. On a
@@ -1190,9 +1190,7 @@ async function aiNameWithTools(i, opts = {}) {
   }
   if (obs) {
     clip.observation = obs;
-    const key = clipKey(clip);
-    clipObsCache[key] = { obs, ts: Date.now() };
-    try { window.api.saveClipObs({ key, obs }); } catch { /* non-fatal */ }
+    noteClipObs(clip, obs);
   }
 
   markClipAnalyzing(i, 'naming');
@@ -1257,9 +1255,7 @@ async function aiSuggestClip(i, mode = 'all', opts = {}) {
     const obs = (opts.observation || res.observation || '').trim();
     if (obs) {
       clip.observation = obs;
-      const key = clipKey(clip);
-      clipObsCache[key] = { obs, ts: Date.now() };
-      try { window.api.saveClipObs({ key, obs }); } catch { /* non-fatal */ }
+      noteClipObs(clip, obs);
     }
     return applyAiResult(i, res, mode);
   } catch (err) {
@@ -1382,7 +1378,7 @@ async function aiAnalyzeSelected(preset = null) {
     const c = state.scannedFiles[i];
     return c.subject || c.description || organizeFields.some((f) => c[f.id]);
   });
-  const cachedCount = idxs.filter((i) => { const o = clipObsCache[clipKey(state.scannedFiles[i])]; return o && o.obs; }).length;
+  const cachedCount = idxs.filter((i) => { const o = clipObsFor(state.scannedFiles[i]); return o && o.obs; }).length;
   const dlg = preset
     ? { mode: preset.mode || 'all', direction: preset.direction || aiRunDirection || '', remember: false, reuse: preset.reuse !== false }
     : await showAnalyzeDialog({ count: idxs.length, hasContent, cachedCount });
@@ -1468,11 +1464,11 @@ async function aiAnalyzeSelected(preset = null) {
     for (const i of idxs) {
       if (aiAborted) break;
       const clip = state.scannedFiles[i];
-      const key = clipKey(clip);
       // Reuse a prior observation of this exact clip when the user opted in — no
       // need to look again, and it keeps results consistent run-to-run.
-      if (dlg.reuse && clipObsCache[key] && clipObsCache[key].obs) {
-        observations[i] = clipObsCache[key].obs;
+      const prior = clipObsFor(clip);
+      if (dlg.reuse && prior && prior.obs) {
+        observations[i] = prior.obs;
         setTask('ai', aiModelLabel(), done + 1, idxs.length, 'reusing', clip.name);
         done += 1; continue;
       }
@@ -1482,8 +1478,7 @@ async function aiAnalyzeSelected(preset = null) {
       const r = await aiCallGuard(window.api.aiPerceive({ sourcePath: clip.sourcePath, model: aiCfg.model, context: runContext(clip), people: Array.isArray(clip.people) ? clip.people : [] }), 200000);
       if (r && r.ok) {
         observations[i] = r.observation; if (r.note) visionNote = r.note; if (r.switchedTo) aiCfg.model = r.switchedTo;
-        clipObsCache[key] = { obs: r.observation, ts: Date.now() };
-        window.api.saveClipObs({ key, obs: r.observation });   // remember for next time
+        noteClipObs(clip, r.observation);   // remember for next time
       } else if (r && r.error) lastErr = r.error;
       markClipAnalyzing(i, false);
       done += 1;
@@ -1531,7 +1526,7 @@ async function aiAnalyzeSelected(preset = null) {
       // used to be read in exactly ONE place — inside the multiPass branch — and multiPass is
       // OFF by default, so for a default install the "Reuse earlier analysis of N clips
       // (faster)" checkbox did literally nothing. It reuses now in both modes.
-      const cached = dlg.reuse ? (clipObsCache[clipKey(clip)] || {}).obs || '' : '';
+      const cached = dlg.reuse ? (clipObsFor(clip) || {}).obs || '' : '';
       setTask('ai', aiModelLabel(), done + 1, idxs.length, cached ? 'reusing' : 'analyzing', clip.name);
       markClipAnalyzing(i, cached ? 'reusing' : 'analyzing');
       // eslint-disable-next-line no-await-in-loop

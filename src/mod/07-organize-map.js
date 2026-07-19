@@ -900,7 +900,7 @@ async function showDestinationMap(rawClips, opts = {}) {
             if (res.description) { c.description = res.description; r.description = res.description; }
             if (Array.isArray(res.tags) && res.tags.length) r.tags = [...new Set([...(r.tags || []), ...res.tags])];
             const obs = res.observation || '';
-            if (obs) { c.observation = obs; r.observation = obs; try { clipObsCache[clipKey(r)] = { obs, ts: Date.now() }; window.api.saveClipObs({ key: clipKey(r), obs }); } catch { /* non-fatal */ } }
+            if (obs) { c.observation = obs; r.observation = obs; noteClipObs(r, obs); }
             ok += 1;
           }
         } catch { /* keep going */ }
@@ -912,7 +912,7 @@ async function showDestinationMap(rawClips, opts = {}) {
           const sr = sib._ref || sib;
           if (c.observation && !String(sr.observation || sib.observation || '').trim()) {
             sib.observation = c.observation; sr.observation = c.observation;
-            try { clipObsCache[clipKey(sr)] = { obs: c.observation, ts: Date.now() }; window.api.saveClipObs({ key: clipKey(sr), obs: c.observation }); } catch { /* non-fatal */ }
+            noteClipObs(sr, c.observation);
           }
           if (Array.isArray(c.people) && c.people.length) { const u = [...new Set([...(sib.people || []), ...c.people])]; sib.people = u; sr.people = u; }
         }
@@ -935,7 +935,7 @@ async function showDestinationMap(rawClips, opts = {}) {
   }
   async function ensureAnalyzedFirst(targets) {
     if (!aiReady()) return 'proceed';
-    const obsOf = (c) => { const r = c._ref || {}; const m = r.meta || {}; return (r.observation && String(r.observation).trim()) || (clipObsCache[clipKey(r)] && clipObsCache[clipKey(r)].obs) || (m.observation || '') || ''; };
+    const obsOf = (c) => { const r = c._ref || {}; const m = r.meta || {}; return (r.observation && String(r.observation).trim()) || (clipObsFor(r) || {}).obs || (m.observation || '') || ''; };
     // A clip counts as analyzed if it has an AI observation OR was marked analyzed by the
     // Match-screen Analyze (aiAnalyzed). Faces don't gate placement (placement uses the
     // subject/description), so we no longer re-prompt just because faces aren't scanned.

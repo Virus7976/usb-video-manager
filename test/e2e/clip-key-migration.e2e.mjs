@@ -78,3 +78,28 @@ test('#8 two same-name clips no longer share one draft entry', { skip: !RUN }, a
   assert.deepEqual(subjects, ['mowing', 'skating'], 'both survive as separate drafts');
   assert.equal(Object.keys(map).length, 2, 'two entries, not one overwriting the other');
 });
+
+test('#8 slice 2: observations read V2-then-legacy and write V2', { skip: !RUN }, async () => {
+  await run(app.win, `clipObsCache = {
+    'GX010042.MP4__4096': { obs: 'legacy observation', ts: 1 },
+    'GX010099.MP4__50__1700000000000': { obs: 'v2 observation', ts: 2 }
+  };`);
+  const legacy = await read(app.win, `(clipObsFor({ name: 'GX010042.MP4', size: 4096, mtimeMs: 1700000000000 }) || {}).obs`);
+  assert.equal(legacy, 'legacy observation', 'an observation written before the fix still resolves');
+  const v2 = await read(app.win, `(clipObsFor({ name: 'GX010099.MP4', size: 50, mtimeMs: 1700000000000 }) || {}).obs`);
+  assert.equal(v2, 'v2 observation', 'and new-key entries resolve directly');
+});
+
+test('#8 slice 2: two same-name clips keep SEPARATE observations', { skip: !RUN }, async () => {
+  // The collision that mattered here: the AI's description of one shoot leaking onto another
+  // card's identically-named clip, which then drives its name and its filing.
+  await run(app.win, `clipObsCache = {};`);
+  await run(app.win, `noteClipObs({ name: 'GX010042.MP4', size: 4096, mtimeMs: 1700000000000 }, 'mowing the front lawn');`);
+  await run(app.win, `noteClipObs({ name: 'GX010042.MP4', size: 4096, mtimeMs: 1700000999000 }, 'skating at the park');`);
+  const keys = await read(app.win, `Object.keys(clipObsCache).length`);
+  assert.equal(keys, 2, 'two entries, not one overwriting the other');
+  const a = await read(app.win, `clipObsFor({ name: 'GX010042.MP4', size: 4096, mtimeMs: 1700000000000 }).obs`);
+  const b = await read(app.win, `clipObsFor({ name: 'GX010042.MP4', size: 4096, mtimeMs: 1700000999000 }).obs`);
+  assert.equal(a, 'mowing the front lawn');
+  assert.equal(b, 'skating at the park');
+});

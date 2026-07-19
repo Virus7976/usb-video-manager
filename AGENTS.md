@@ -322,6 +322,47 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ak — the ledger write raced the Undo beside it, and its try/catch caught nothing (item 6)
+
+`try { recordToLedger(...) } catch { /* non-fatal */ }` on an **async** function, immediately followed
+by the Undo toast. Two defects, not one — the sweep named the first, I found the second while fixing:
+
+1. **The race.** `ledgerRecord` stamps `config.lastLedger`, and `reverseLastLedger` is its only
+   consumer. Undo before that IPC lands → the reversal sees no delta and returns 0 → `organize:undo`
+   clears `lastOrganize`, destroying the second chance → the late write lands for clips that are no
+   longer filed, leaving a phantom project whose dates/subjects keep scoring future imports. Exactly
+   what audit #37 removed, re-created through a timing hole.
+2. **The try/catch was decorative.** Wrapping an UN-awaited async call cannot catch its rejection —
+   the call returns a promise immediately and the rejection surfaces later as an unhandled rejection.
+   The `/* non-fatal */` comment promised something that wasn't true.
+
+Fix: `await recordToLedger(...)`. Cheap by construction — the only awaited work inside is the single
+`ledgerRecord` IPC; the slow per-project AI summaries are already detached in a fire-and-forget IIFE,
+and a test now guards that they STAY detached, since awaiting the record is only acceptable while
+they aren't.
+
+`test/ledger-undo-order.test.mjs`, 4 tests, guard proven by breaking it.
+
+**⚠ THIS TEST TOOK THREE TRIES AND EVERY FAILURE WAS MINE, NOT THE CODE'S** — worth reading before
+writing another source-shape assertion:
+- `indexOf('recordToLedger(clips')` matched the **function definition**, not the call — the
+  definition starts with the same text. Anchor on something only the CALL has (`r.results`).
+- Slicing to the `'Undo'` **argument** meant the slice always contained the `showToastAction(` that
+  introduces it, so the between-check could never pass. Anchor on the START of the call.
+- The remaining span contained a **comment** mentioning `undoLastOrganize()`, which matched. Same
+  "source text includes comments" trap the repo documents for `Function.prototype.toString()` — strip
+  comments before asserting on code.
+
+Both tiers green: vm **962/881/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — undeployed,
+~67 commits.
+
+**QUEUE — only LOW-confidence items remain; the `2026-07-19ae` queue is now EXHAUSTED.** 7a memory-inbox
+`slice(-300)` keeps the TAIL, so a >300-line inbox drop evicts the user's oldest hand-taught rules
+(only bites with a huge inbox; the 300 cap is otherwise consistent everywhere). 7b `ledgerFind`
+compares `p.rel === key` case-sensitively while the written folder is case-normalised against disk —
+needs a hand-typed destination to diverge. **Do not act on either without evidence.** Next iteration
+should pick a NEW axis, or deploy if the app is closed.
+
 ### 2026-07-19aj — "Ignore this face" was advertised as reversible and destroyed the enrolment (queue item 5)
 
 `faces:ignore` splices a face OFF a person and pushes the bare `{d, t, confirmed}` into the bin — **no

@@ -8855,7 +8855,18 @@ async function showDestinationMap(rawClips, opts = {}) {
       const failN = (r && r.results || []).length - okN;
       // Remember every filed clip in the project ledger (powers same-shoot detection
       // + the per-project AI summary), then refresh summaries for touched projects.
-      try { recordToLedger(clips, placement, r.results || []); } catch (e) { /* non-fatal */ }
+      //
+      // AWAITED, and it has to be, for two reasons. `ledgerRecord` is what stamps
+      // `config.lastLedger`, and `reverseLastLedger` is its only consumer — so an Undo clicked before
+      // this landed reversed nothing, and `organize:undo` then cleared `lastOrganize` and destroyed
+      // the second chance, while the late write created a phantom project that kept scoring future
+      // imports (the very thing audit #37 removed). And a try/catch around an UN-awaited async call
+      // catches nothing: the rejection surfaces later as an unhandled rejection, so the "non-fatal"
+      // promise below was not actually being kept.
+      //
+      // The cost is one IPC. The slow part — an AI summary per touched project — is already detached
+      // inside recordToLedger, so the toast is not delayed by this.
+      try { await recordToLedger(clips, placement, r.results || []); } catch (e) { /* non-fatal */ }
       aiActivityDone(`Filed ${okN}${failN ? `, ${failN} failed` : ''} into your Projects tree ✓`);
       // Offer the undo RIGHT HERE. projects:move already records everything needed to reverse the
       // run (config.lastOrganize, main-mod/02-media.js:427) and undoLastOrganize() has always

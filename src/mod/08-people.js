@@ -245,9 +245,20 @@ async function collectClipFaces(clip, clusters, keys) {
   try { await noteFaceScene(clip, fr && fr.scene); } catch { /* the group shot is a bonus, never a blocker */ }
   const nFaces = (fr && fr.faces || []).length;
   pushActivity(nFaces ? `Detected ${nFaces} face${nFaces !== 1 ? 's' : ''} in ${clip.name}` : `No faces in ${clip.name}`, 'face');
-  for (const f of (fr && fr.faces) || []) {
-    let m = null;
-    try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ }
+  // One IPC for the whole clip's faces instead of one per face (audit #75). The backend builds the
+  // enrolled set once for the batch; the verdict per descriptor is unchanged (see
+  // people-match-batch.test.mjs). Falls back to the single-shot call so an older main process — or a
+  // rejected batch — still names faces rather than silently matching nothing.
+  const _faces = (fr && fr.faces) || [];
+  let _matches = [];
+  try {
+    const br = await window.api.matchPeopleBatch({ descriptors: _faces.map((f) => f.descriptor), threshold: FACE_SUGGEST_DIST });
+    _matches = (br && br.results) || [];
+  } catch { _matches = []; }
+  for (let _i = 0; _i < _faces.length; _i += 1) {
+    const f = _faces[_i];
+    let m = _matches[_i] || null;
+    if (!m) { try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ } }
     const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
     const matched = !!(m && m.match);   // backend already applied the strict gate
     // Cluster the face (recognized or not) for the Review grid — never auto-apply.
@@ -313,9 +324,16 @@ async function scanFacesAuto(clipList) {
     let fr = null;
     try { fr = await detectFacesForClip({ sourcePath: clip.sourcePath }, () => {}); } catch { fr = null; }
     const names = new Set();
-    for (const f of (fr && fr.faces) || []) {
-      let m = null;
-      try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ }
+    const _af = (fr && fr.faces) || [];
+    let _am = [];
+    try {
+      const br = await window.api.matchPeopleBatch({ descriptors: _af.map((f) => f.descriptor), threshold: FACE_SUGGEST_DIST });
+      _am = (br && br.results) || [];
+    } catch { _am = []; }
+    for (let _j = 0; _j < _af.length; _j += 1) {
+      const f = _af[_j];
+      let m = _am[_j] || null;
+      if (!m) { try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ } }
       // Auto mode tags SILENTLY, so only act on CONFIDENT matches (close + unambiguous +
       // vote-backed). A mere suggestion is left for the Review grid, never auto-applied.
       if (m && m.match && m.confident && m.match.name) {

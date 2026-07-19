@@ -703,6 +703,10 @@ function saveStore(key) {
     const cur = storeGet(key);
     const val = (cur === undefined || cur === null) ? STORE_DEFAULT[key]() : cur;
     writeJsonAtomic(file, val);
+    // One place owns cache invalidation for the enrolled-face set (audit #75). Hanging it off the
+    // persist step means every one of the eleven people-mutating handlers is covered without each
+    // remembering to call it — the sibling-path failure this codebase keeps hitting.
+    if (key === 'ai.people') { try { invalidateConfirmedFaces(); } catch { /* defined later in the bundle */ } }
     try { const st = fs.statSync(file); storeSelfMtimeMs[key] = st.mtimeMs; storeSelfSizeBytes[key] = st.size; } catch { /* ignore */ }
   } catch (err) { console.error(`Could not save store ${key}:`, err.message); }
 }
@@ -6422,11 +6426,51 @@ ipcMain.handle('people:match', (_e, payload) => {
   const cfgT = Number(config.ai && config.ai.faceThreshold);
   const suggestT = Math.min(Number(payload && payload.threshold) || FACE_SUGGEST_T,
     (isFinite(cfgT) && cfgT > 0) ? cfgT : FACE_SUGGEST_T);
-  const confirmed = [];
-  for (const p of aiPeople()) { for (const f of (p.faces || [])) { if (f.d && f.confirmed) confirmed.push({ id: p.id, name: p.name, d: f.d }); } }
-  const r = faceDecide(desc, confirmed, aiIgnoredFaces(), suggestT);
+  const r = faceDecide(desc, confirmedFaceSet(), aiIgnoredFaces(), suggestT);
   return { ok: true, ...r };
 });
+
+// Match MANY descriptors in one call (audit #75). The renderer detects several faces per clip and
+// used to `await` one IPC per face inside a loop — so a scan paid a round-trip per face on top of
+// rebuilding the enrolled set each time. Same decision function, same inputs, once per descriptor:
+// this is purely about how many times we cross the bridge and rebuild the set, never about the
+// verdict. `people-match-batch.test.mjs` pins that equivalence.
+ipcMain.handle('people:matchBatch', (_evt, payload) => {
+  const list = Array.isArray(payload && payload.descriptors) ? payload.descriptors : [];
+  const cfgT = Number(config.ai && config.ai.faceThreshold);
+  const suggestT = Math.min(Number(payload && payload.threshold) || FACE_SUGGEST_T,
+    (isFinite(cfgT) && cfgT > 0) ? cfgT : FACE_SUGGEST_T);
+  const set = confirmedFaceSet();          // built ONCE for the whole batch
+  const ignored = aiIgnoredFaces();
+  const results = list.map((desc) => (Array.isArray(desc)
+    ? { ok: true, ...faceDecide(desc, set, ignored, suggestT) }
+    : { ok: true, match: null, dist: Infinity }));
+  return { ok: true, results };
+});
+
+// The flattened set of CONFIRMED enrolment faces — the only ones that vote (audit #75).
+//
+// This was rebuilt by walking every person x every face on EVERY match call, and the renderer calls
+// match once per detected face, so a scan of a few thousand clips rebuilt it thousands of times.
+//
+// Invalidation is deliberately NOT sprinkled across the eleven places that mutate people — that is
+// exactly how a sibling path gets missed. Two mechanisms cover it between them:
+//   - identity: `aiPeople()` returns a NEW array whenever the store is re-read from disk, so an
+//     external/rewritten store invalidates itself here;
+//   - `saveStore('ai.people')` calls invalidateConfirmedFaces(), which catches in-place mutations
+//     (pushing a face onto an existing person keeps the same array identity).
+// Anything that changes people and does NOT persist would be a bug on its own terms.
+let _confirmedFaces = null;
+let _confirmedFacesFrom = null;   // the exact array identity the cache was built from
+function invalidateConfirmedFaces() { _confirmedFaces = null; _confirmedFacesFrom = null; }
+function confirmedFaceSet() {
+  const people = aiPeople();
+  if (_confirmedFaces && _confirmedFacesFrom === people) return _confirmedFaces;
+  const out = [];
+  for (const p of people) { for (const f of (p.faces || [])) { if (f.d && f.confirmed) out.push({ id: p.id, name: p.name, d: f.d }); } }
+  _confirmedFaces = out; _confirmedFacesFrom = people;
+  return out;
+}
 
 // Extract a single large frame (960px wide) for face detection — much better than a
 // contact-sheet grid where faces are tiny. Cached separately from the poster.

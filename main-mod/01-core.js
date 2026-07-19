@@ -701,6 +701,10 @@ function saveStore(key) {
     const cur = storeGet(key);
     const val = (cur === undefined || cur === null) ? STORE_DEFAULT[key]() : cur;
     writeJsonAtomic(file, val);
+    // One place owns cache invalidation for the enrolled-face set (audit #75). Hanging it off the
+    // persist step means every one of the eleven people-mutating handlers is covered without each
+    // remembering to call it — the sibling-path failure this codebase keeps hitting.
+    if (key === 'ai.people') { try { invalidateConfirmedFaces(); } catch { /* defined later in the bundle */ } }
     try { const st = fs.statSync(file); storeSelfMtimeMs[key] = st.mtimeMs; storeSelfSizeBytes[key] = st.size; } catch { /* ignore */ }
   } catch (err) { console.error(`Could not save store ${key}:`, err.message); }
 }

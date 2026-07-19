@@ -234,6 +234,7 @@ contextBridge.exposeInMainWorld('api', {
   renamePerson: (payload) => ipcRenderer.invoke('people:rename', payload),
   deletePerson: (id) => ipcRenderer.invoke('people:delete', id),
   matchPerson: (payload) => ipcRenderer.invoke('people:match', payload),
+  matchPeopleBatch: (payload) => ipcRenderer.invoke('people:matchBatch', payload),
   facesImage: (payload) => ipcRenderer.invoke('faces:image', payload),
   facesFrames: (payload) => ipcRenderer.invoke('faces:frames', payload),
   personDetail: (id) => ipcRenderer.invoke('people:detail', id),

@@ -6190,7 +6190,25 @@ async function maybeAutoConsolidate() {
       // and no history for this store; a snapshot at least makes a bad consolidation recoverable by
       // hand from config.json instead of simply lost.
       config.ai.memoriesPrev = mems.map((m) => ({ text: m.text, example: m.example || '', ts: m.ts || 0 }));
-      config.ai.memories = merged.map((r) => ({ id: newMemId(), text: r.text, example: r.example || '', ts: now }));
+      // CARRY FORWARD ANYTHING TAUGHT WHILE WE WERE THINKING. `mems` is a snapshot taken before an
+      // await that can last three minutes (the ollamaGenerate timeout is 180 s), and this line
+      // REPLACES the store wholesale. Every other writer here — ai:addMemories, the feedback
+      // handlers, the memory-inbox ingest — pushes synchronously in the meantime, and the
+      // "AI learned from your edits" flow calls aiAddMemories, so correcting a clip mid-consolidation
+      // added a rule that this then overwrote out of existence. `_autoConsolidating` does not cover
+      // it: that flag stops a second CONSOLIDATION, nothing else, and its presence reads as though
+      // the store were guarded.
+      //
+      // Identified by id, not by text: a late arrival that happens to duplicate a merged rule is
+      // dropped rather than added twice.
+      const knownIds = new Set(mems.map((m) => m && m.id).filter(Boolean));
+      const mergedTexts = new Set(merged.map((r) => String(r.text || '').toLowerCase().trim()));
+      const arrivedLate = (config.ai.memories || []).filter((m) => m && m.text
+        && !knownIds.has(m.id)
+        && !mergedTexts.has(String(m.text || '').toLowerCase().trim()));
+      config.ai.memories = merged
+        .map((r) => ({ id: newMemId(), text: r.text, example: r.example || '', ts: now }))
+        .concat(arrivedLate);
       saveConfig();
       if (mainWindow && !mainWindow.isDestroyed()) { try { mainWindow.webContents.send('ai:memory-updated', { memories: config.ai.memories, consolidated: true }); } catch { /* ignore */ } }
     }

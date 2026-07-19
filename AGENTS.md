@@ -322,6 +322,43 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ap — a consolidation erased rules taught while it was thinking (new-queue item 6)
+
+`maybeAutoConsolidate` is a read-modify-replace across the longest await in the app: it snapshots
+`ai.memories`, awaits `ollamaGenerate` with a **180-second timeout**, then replaces the store
+wholesale from that snapshot. Every other writer — `ai:addMemories`, the feedback handlers, the
+memory-inbox ingest — pushes synchronously in the meantime, and the "AI learned from your edits" flow
+calls `aiAddMemories`. So correcting a clip mid-consolidation taught a rule that the consolidation
+then overwrote out of existence. **Three minutes is not a window you need luck to hit.**
+
+`_autoConsolidating` is exactly what makes this easy to miss: it is a real, correct flag, cited as the
+good example — and it guards this function only against a second copy of ITSELF. It says nothing
+about the five other writers to the same store, and its presence reads as "handled". **A flag proves
+what it guards, not what you assume it guards.**
+
+Fix: after the await, re-read the store and carry forward anything whose id wasn't in the snapshot,
+deduped by text against the merged set so a late arrival that also appears in the merge is kept once.
+The consolidation itself is unchanged.
+
+`test/memory-consolidate-lost-update.test.mjs`, 5 tests; both parts proven by breaking them. Two
+guard the other direction (the merge still applies; no concurrent write means no stray entry).
+
+**⚠ A TEST THAT PASSED FOR THE WRONG REASON — and only caught because I re-broke the code.** Test 5
+returned a 2-rule merge against a 20-rule set, which the FLOOR from `2026-07-19ag` refuses outright,
+so the consolidation never applied and the dedup under test never ran. It was green with the dedup
+deleted. Fixed by returning a 12-rule merge that clears the floor.
+
+**And a tooling failure worth fixing in the workflow:** my throwaway `prove()` shell helper used
+`python3 -c` WITHOUT asserting the replacement matched, so a non-matching break silently did nothing
+and looked like "the test survived the break". **Every break must assert `s.count(old) == 1` — a
+silent no-op break is indistinguishable from a passing guard.**
+
+vm **993/912/81/0**. e2e not run — `main-mod/` only. App still running — undeployed, ~72 commits.
+
+**QUEUE:** 7 LOW: "Remember this direction" fails silently with no toast either way; a ledger-write
+rejection after a successful file run has no `logIssue` · 8 `projects:move` has no `.xmp` sidecar
+fallback (its twin does) — writes files beside footage, so it needs its own change and tests.
+
 ### 2026-07-19ao — two screens confirmed success that hadn't happened (new-queue items 4 + 5)
 
 Same shape, different screens, so done together.

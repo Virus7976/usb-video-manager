@@ -369,6 +369,13 @@ then on. **Measure against real face data or leave it.** Same class as the AI to
   reports `electron.launch: Target page, context or browser has been closed`, which reads like a
   renderer crash **and fails identically at every commit**, defeating "check the previous commit".
   Always run `pgrep -af 'node_modules/electron/dist/electron' | grep -v 'pgrep\|zsh -c'` FIRST.
+- **PROVE A BREAK ACTUALLY APPLIED.** A scripted break that silently fails to match looks exactly
+  like a guard that held. Assert the replacement hit (`s.count(old) == 1`) before concluding the test
+  survived — a throwaway helper without that assertion produced a false "the break didn't fail it"
+  twice in one session.
+- **A flag proves what it guards, not what you assume it guards.** `_autoConsolidating` correctly
+  prevents a second consolidation and nothing else, while five other writers touch the same store —
+  and its presence reads as "this is handled". Check what the flag is actually checked BY.
 - **A test can pass for the wrong reason.** A `copied:forget` case went green while forget did nothing,
   because a broken `get` missed the legacy record too — empty for two different reasons is
   indistinguishable. **Assert through the path that ISN'T under test.**

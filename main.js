@@ -3827,6 +3827,46 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   // back to clips with `landed.has(p.sourcePath)` to decide which photos may be cleared off the card,
   // and a staging path there would break that match.
   for (const j of jobs) { if (j && staged.has(j.src)) { j.origSrc = j.src; j.src = staged.get(j.src); } }
+  // WILL EACH DESTINATION HOLD IT? Video has two layers of this — the renderer's spaceTargets and
+  // copy:start's per-destination statfs with 2 GB of headroom — and phone:pull has one. This path,
+  // which every card still goes through, had none, while a photo fans out FURTHER than a clip:
+  // Photos Temp + the computer folder + the phone NAS + the card NAS + a routed Projects folder. A
+  // card of stills could run a disk to ENOSPC mid-fan-out with nothing refusing it in advance.
+  //
+  // PER DESTINATION, not whole-run. copy:start refuses everything when any destination is short,
+  // which is right when there is one destination; here it would let a full NAS block the Photos Temp
+  // and computer copies too. Jobs that cannot fit are failed with a reason and skipped; the rest
+  // proceed. That is safe because distributeFlowPhotos only lets a photo be cleared off the card once
+  // at least ONE destination has verified.
+  //
+  // A source we cannot stat counts as 0, and an unreadable volume skips the check — fail OPEN, as the
+  // video twin does: refusing to back up because statfs threw would turn a diagnostic into a
+  // data-safety problem.
+  const shortDirs = new Map();   // destination dir -> the message explaining the refusal
+  {
+    const needBy = new Map();
+    for (const j of jobs) {
+      if (!j || !j.dest) continue;
+      const dir = path.dirname(j.dest);
+      let sz = 0;
+      // eslint-disable-next-line no-await-in-loop
+      try { sz = (await fsp.stat(j.src)).size || 0; } catch { sz = 0; }
+      needBy.set(dir, (needBy.get(dir) || 0) + sz);
+    }
+    for (const [dir, need] of needBy) {
+      if (need <= 0) continue;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const st = await fsp.statfs(await nearestExistingDir(dir));
+        const free = Number(st.bavail) * Number(st.bsize);
+        const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
+        if (need + 2e9 > free) {
+          shortDirs.set(dir, `Not enough room: these photos need ${GB(need)} but only ${GB(free)} is free on that drive.`);
+        }
+      } catch { /* unreadable volume — don't block the backup over it */ }
+    }
+  }
+
   // PER-JOB results, not just a tally. The caller needs to know WHICH photo landed WHERE:
   // without that, a photo has no recorded destination, which is why photos could never enter
   // state.copied and therefore could never be cleared off the card — and why their AI metadata
@@ -3834,6 +3874,14 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   const results = [];
   for (const j of jobs) {
     let ok = false; let error = '';
+    const shortMsg = shortDirs.get(path.dirname(j.dest || ''));
+    if (shortMsg) {
+      // Skipped, not attempted: writing until the volume fills is the failure this exists to prevent.
+      errors.push(shortMsg);
+      results.push({ src: j.origSrc || j.src, dest: j.dest, ok: false, error: shortMsg });
+      try { sender.send('phone:copy-progress', { done, total, name: path.basename(j.dest) }); } catch { /* ignore */ }
+      continue;
+    }
     try {
       // COLLISION, before the copy — the same guard phone:copyVideos has had for a while, which the
       // photo twin never got. `recomputeVersions()` only de-duplicates `_v#` within the CURRENT

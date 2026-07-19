@@ -322,6 +322,41 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19av — the photo fan-out had no free-space preflight at all
+
+Video has TWO layers (the renderer's `spaceTargets`, plus `copy:start`'s per-destination `statfs` with
+2 GB headroom) and `phone:pull` has one. `phone:distribute` — which every card still goes through —
+had **none**: straight from the embed loop to `copyFileVerified` per job. And a photo fans out FURTHER
+than a clip: Photos Temp + computer + phone NAS + card NAS + a routed Projects folder, up to five
+writes per still. A card of stills could run a disk to ENOSPC mid-fan-out with nothing refusing it.
+Adding the card NAS in `au` made this worse, not better.
+
+**Deliberately NOT the twin's shape.** `copy:start` refuses the WHOLE run when any destination is
+short — right when there is one destination, wrong here, where it would let a full NAS block the
+Photos Temp and computer copies too. So this refuses PER DESTINATION: jobs that cannot fit are failed
+with a reason and skipped, and the rest proceed.
+
+**That is only safe because of how the caller already works**, which I checked before choosing it:
+`distributeFlowPhotos` builds `landed` from ok results and adds a photo to `state.copied` only if at
+least one destination verified — so a photo that fits nowhere never becomes eligible for deletion from
+the card. A partial fan-out still yields one ok row, so a genuinely backed-up photo stays deletable.
+
+Fails OPEN on an unreadable volume and counts an unstattable source as 0, matching the video twin.
+
+`test/photo-distribute-preflight.test.mjs`, 6 tests; all three properties proven with asserted breaks
+(including that the fail-open path is itself guarded — breaking it into a refusal turns test 5 red).
+Three guard the other direction: destinations that fit are still written, plenty of room refuses
+nothing, and a photo that landed somewhere is still reported.
+
+Both tiers green: vm **1028/941/87/0**, e2e **87/86/1/0**. App still running (PID 7104) — undeployed,
+**~78 commits**.
+
+**QUEUE — one photo-parity item left, LOW:** photos never enter the import index or get drafts
+cleared, so re-inserting a card re-offers and re-copies every still. Costs time, not data — the
+collision guard full-hashes and skips byte-identical destinations.
+
+**THE DEPLOY remains the highest-value action.** ~78 commits, blocked all session by the app running.
+
 ### 2026-07-19au — card photos were excluded from the NAS backup every clip on the same card gets
 
 Videos imported from a card are mirrored inside `copy:start` using `config.nasBackup.{enabled,path}`

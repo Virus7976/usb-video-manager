@@ -322,6 +322,33 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bc — the session's two most expensive lessons written to MEMORY, not just to PROMPT.md
+
+Everything is staged (queue empty, installer built at HEAD, changelog current), so this iteration
+captured what a future session would otherwise re-learn the hard way. PROMPT.md §8c already carries
+the testing rules, but memory is what reaches a session in ANOTHER worktree or after a context reset —
+and both of these cost hours today.
+
+**`usb-app-structural-assertions`** — the single most expensive mistake of the session, hit **eight
+times**: a source-shape assertion that passed while the guard it checked had been deleted. All the
+rules that actually worked, each with the specific break that defeated the weaker version: bind to the
+GUARD not a mention; strip comments first (this codebase's comments quote the identifiers you're
+matching); name the exact expression, and note that counting occurrences is not a substitute; slice to
+a real boundary, never a fixed window; break each part separately AND assert the break applied; a
+negative assertion is not a guard. Plus the framing that matters — **a test that cannot fail is worse
+than no test, because it is counted as coverage.**
+
+**`usb-app-installer-build-vs-install`** — I treated "he has the app open" as blocking the whole
+deploy and sat on a 29-commit-stale installer for hours. Only the INSTALL needs the app closed;
+the BUILD can run any time and publishes nothing. Pre-building turns his availability window from
+"a few minutes" into "ten seconds", which matters because that window is when he's between shoots.
+Includes the `grep -ac` rule and the case-sensitivity correction from `bb`.
+
+Both pointered in `MEMORY.md`. 22 memory files now.
+
+App still running (PID 7104) — **~84 commits undeployed, installer READY at HEAD (16:33), changelog
+current, nothing queued.**
+
 ### 2026-07-19bb — the in-app changelog was a WEEK stale. Today's work is in it now, and in the build.
 
 Jake asked for the changelog in the app *"so I can see what you're doing"*. `main-mod/02-media.js`

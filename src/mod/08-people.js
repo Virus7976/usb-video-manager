@@ -1192,7 +1192,7 @@ async function showPeopleManager() {
     };
     nameInp.addEventListener('blur', commitName);
     nameInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nameInp.blur(); } });
-    main.querySelector('.pd-del').addEventListener('click', async () => { removeClipPersonName(d.name); await window.api.deletePerson(selId); await reloadPeople(false); });
+    main.querySelector('.pd-del').addEventListener('click', async () => { const gone = d.name; removeClipPersonName(gone); await window.api.deletePerson(selId); await reloadPeople(false); offerRetagAffectedClips(gone, ''); });
     main.querySelector('.pd-merge').addEventListener('click', () => openMerge(d));
     main.querySelectorAll('.pd-faces').forEach((fc) => {
       fc.addEventListener('click', async (e) => {
@@ -1261,19 +1261,39 @@ function updateClipPeopleName(oldName, newName) {
 async function offerRetagAffectedClips(oldName, newName) {
   const from = String(oldName || '').trim(); const to = String(newName || '').trim();
   if (!from || from === to) return;
+  // An empty `to` is a REMOVAL — the person was deleted. clips:retagPerson has always handled it
+  // (`'' => remove the tag`), but delete never called this, so the name stayed on every filed clip
+  // and got re-embedded at the next organize. Rename and merge always offered; delete now does too.
+  const removing = !to;
   let hit = null;
   try { hit = await window.api.findClipsWithPerson(from); } catch { return; }
   if (!hit || !hit.total) return;
-  const ok = await confirmDialog('Re-tag affected clips?',
-    `${hit.total} saved clip${hit.total !== 1 ? 's are' : ' is'} tagged with "${from}". Re-tag ${hit.total !== 1 ? 'them' : 'it'} as "${to}" and update ${hit.total !== 1 ? 'their names' : 'its name'}/descriptions to match?`,
-    `Re-tag ${hit.total}`, 'Leave as is');
+  const many = hit.total !== 1;
+  const ok = removing
+    ? await confirmDialog('Remove the tag from saved clips?',
+      `${hit.total} saved clip${many ? 's are' : ' is'} still tagged with "${from}". Remove the tag from ${many ? 'them' : 'it'}? Their names and descriptions are left as you wrote them.`,
+      `Remove from ${hit.total}`, 'Leave as is')
+    : await confirmDialog('Re-tag affected clips?',
+      `${hit.total} saved clip${many ? 's are' : ' is'} tagged with "${from}". Re-tag ${many ? 'them' : 'it'} as "${to}" and update ${many ? 'their names' : 'its name'}/descriptions to match?`,
+      `Re-tag ${hit.total}`, 'Leave as is');
   if (!ok) return;
-  try { const r = await window.api.retagPerson({ from, to }); showToast(`Re-tagged ${(r && r.changed) || 0} clip${((r && r.changed) !== 1) ? 's' : ''} → "${to}" ✓`, 4000); }
-  catch { showToast('Couldn’t re-tag the clips', 3000); }
+  try {
+    const r = await window.api.retagPerson({ from, to });
+    const n = (r && r.changed) || 0;
+    showToast(removing
+      ? `Removed "${from}" from ${n} clip${n !== 1 ? 's' : ''} ✓`
+      : `Re-tagged ${n} clip${n !== 1 ? 's' : ''} → "${to}" ✓`, 4000);
+  } catch { showToast(removing ? 'Couldn’t remove the tag' : 'Couldn’t re-tag the clips', 3000); }
 }
+// The removal twin of updateClipPeopleName — and it must stay a twin. It used to filter `people`
+// only, leaving `peopleAuto` (the auto-tagged half) still naming a person who no longer exists, and
+// it never flushed, so even the in-memory edit was dropped on the next draft write.
 function removeClipPersonName(name) {
-  (state.scannedFiles || []).forEach((c) => { if (Array.isArray(c.people)) c.people = c.people.filter((n) => n !== name); });
-  if (typeof finScan !== 'undefined' && finScan && Array.isArray(finScan.files)) finScan.files.forEach((f) => { if (f.meta && Array.isArray(f.meta.people)) f.meta.people = f.meta.people.filter((n) => n !== name); });
+  const drop = (arr) => (Array.isArray(arr) ? arr.filter((n) => n !== name) : arr);
+  (state.scannedFiles || []).forEach((c) => { if (Array.isArray(c.people)) c.people = drop(c.people); if (Array.isArray(c.peopleAuto)) c.peopleAuto = drop(c.peopleAuto); });
+  if (typeof finScan !== 'undefined' && finScan && Array.isArray(finScan.files)) finScan.files.forEach((f) => { if (f.meta && Array.isArray(f.meta.people)) f.meta.people = drop(f.meta.people); if (f.meta && Array.isArray(f.meta.peopleAuto)) f.meta.peopleAuto = drop(f.meta.peopleAuto); });
+  flushDraftSave();
+  refreshNames && refreshNames();
 }
 // The clips currently in play to scan (rename grid selection, else all scanned).
 function currentSelectedClips() {

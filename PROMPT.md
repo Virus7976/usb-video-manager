@@ -344,6 +344,14 @@ then on. **Measure against real face data or leave it.** Same class as the AI to
 
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
+- **A STRUCTURAL ASSERTION MUST NAME THE THING THAT WOULD GO MISSING — and you must break each part
+  separately to prove it.** This cost real time five times in one session. `/undoAssign/` stayed green
+  when the call was made unreachable with `if (false)`, because the identifier was still in the text.
+  `/peopleAuto/` stayed green when one of two lines was deleted, because the other line still
+  contained the word. `count >= 2` stayed green for the same break, because the surviving line
+  mentions it twice. Only naming both concrete expressions caught it. Bare identifiers, word counts
+  and "the old text is absent" are **non-guards**. Bind the call to its guard, name each collection,
+  and prefer a behavioural test wherever a harness can reach the code.
 - **A NEGATIVE source-shape assertion cannot detect a break that doesn't restore the old text.** A
   test asserting "the old sort expression is absent from the source" stayed **green** when the rule it
   guarded was disabled with `if (false)` — the old text never came back, so the assertion held while

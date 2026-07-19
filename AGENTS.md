@@ -322,6 +322,42 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ah — deleting a person left their name on every filed clip (queue item 3)
+
+Rename and merge both end with `offerRetagAffectedClips` → `clips:retagPerson`, which reaches
+`finalMeta`, `renameDrafts` and `ai.clipObs`. Delete called neither. `clips:retagPerson` has ALWAYS
+supported removal (`to === ''` → `fixArr` filters the falsy value out) — the machinery existed and
+delete simply never used it. Its in-memory helper was half-done too: `removeClipPersonName` filtered
+`people` but not `peopleAuto`, and never called `flushDraftSave()`, so even the in-memory edit was
+dropped on the next draft write.
+
+So you'd delete a person because they shouldn't exist, the dashboard would go clean, and every filed
+and pending clip still carried the name — which then gets embedded into the file as
+PersonInImage/keywords at the next organize, and fed back into AI naming context via clipObs.
+
+Fix: delete now OFFERS the removal exactly as rename and merge do ("Always asks; never changes
+silently"), with removal-specific wording — the old copy would have read *re-tag them as ""*. The
+in-memory helper now matches its twin. A removal deliberately leaves the prose alone (`fixText` only
+runs with a replacement name; blanking a name out of a sentence would corrupt it).
+
+`test/person-delete-retag.test.mjs`, 6 tests; all parts proven by breaking them.
+
+**⚠ THE SOURCE-ASSERTION TRAP, TWICE MORE IN ONE TEST — five times this session now.** I asserted
+`/peopleAuto/` and the break survived, because the function touches TWO collections and the surviving
+line still contained the word. I then tried "count >= 2" — that survived too, because the surviving
+line mentions `f.meta.peopleAuto` twice. Only naming both collections separately
+(`/c\.peopleAuto\s*=/` AND `/f\.meta\.peopleAuto\s*=/`) caught either break.
+
+**THE RULE, now paid for five times — put it in PROMPT.md §8c if it isn't there:** a structural
+assertion must name *the specific thing that would go missing*, and you must break EACH part
+separately to prove it. A bare identifier, a word count, or "the old text is absent" are all
+non-guards. Prefer behavioural tests wherever a harness can reach the code.
+
+Both tiers green: vm **945/864/81/0**, e2e **81/80/1/0**. App still running — undeployed, ~64 commits.
+
+**QUEUE:** 4 `organize:undo` leaves `finalMeta.done` · 5 "Ignore this face" is not reversible ·
+6 ledger/undo race · 7 LOW: memory-inbox `slice(-300)`, `ledgerFind` case-sensitivity.
+
 ### 2026-07-19ag — the memory auto-consolidation had no FLOOR: 20 rules could become 1 (queue item 2)
 
 `maybeAutoConsolidate()` merges the AI preference rules in the background with no approval. Its only

@@ -1411,6 +1411,20 @@ async function showDestinationMap(rawClips, opts = {}) {
       } finally {
         btn.disabled = false; btn.textContent = 'Apply — file clips';
       }
+      // A REFUSAL IS NOT A COMPLETED RUN. projects:move returns `{ok:false, error}` with no
+      // `results` when it won't file (the destination is a removable card, or the drive is too
+      // full). Counting `r.results || []` turned that into okN=0/failN=0 and reported
+      // "Filed 0 into your Projects tree ✓" — with a tick — then closed the map, so the one clear
+      // actionable sentence main had already composed was thrown away and the user re-pressed Apply
+      // or went looking for clips that were never filed. Surface it and leave the map open, exactly
+      // as the twin does (src/mod/10-boot.js shows summary.error verbatim).
+      if (r && r.ok === false) {
+        const why = String(r.error || 'Filing was refused.');
+        aiActivityDone('Nothing was filed');
+        showToast(why, 10000);
+        logIssue('Organize', why);
+        return;   // no onApplied, no close() — the run did not happen
+      }
       const okN = (r && r.results || []).filter((x) => x.ok).length;
       const failN = (r && r.results || []).length - okN;
       // Remember every filed clip in the project ledger (powers same-shoot detection

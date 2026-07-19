@@ -322,6 +322,40 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ad — the map's Apply said "Filed 0 ✓" when it had REFUSED, and its preflight was dead code
+
+Cleared logged findings 1 and 2 from `2026-07-19ac`. Both on `projects:move`, both mine from an
+earlier session, and they hid each other.
+
+**The preflight could never fire.** `projects:move` summed caller-supplied `mv.size` and skipped the
+whole check when the total was 0 — but its only caller builds moves as `{from,toDir,rel,name,meta}`
+(`src/mod/07-organize-map.js:1375`) and the clips carry no `size` either. So `need` was always 0 and
+the block was **present, commented, and unreachable** — the same shape as the `cardIsGone` guard that
+sat on the non-default loop. I wrote that preflight *and* its "sizes come from the caller" caveat,
+which is precisely the trap PROMPT.md §8b item 3 describes. It now stats the sources itself, like the
+twin always did (`finalize:run`, `09-ipc-boot.js:578`) — never trust the caller for a safety input.
+
+**And the refusal was invisible.** Both refusals (removable card; not enough room) return
+`{ok:false, error}` with no `results`. The renderer read neither `r.ok` nor `r.error`: it counted
+`(r.results || [])`, got 0 and 0, and printed **"Filed 0 into your Projects tree ✓"** — with a tick —
+then called `close()`. Main composes a precise actionable sentence ("Point 'Compressed' at a folder
+on your computer first") and it was discarded. Note this did **not** add a new refusal, so it doesn't
+trip the "only guard a handler whose refusal is visible" counter-rule: the guard already refused, it
+just lied afterwards. The renderer now surfaces `r.error` via `showToast` + `logIssue` and returns
+**before** counting, leaving the map open so the placement work isn't torn down.
+
+`test/projects-move-preflight.test.mjs`, 5 tests, both sides proven by breaking them. Three of the
+five guard the OTHER direction — a run that fits proceeds, a move-within-a-volume is never blocked on
+space, and an unreadable volume fails OPEN — because this preflight is advisory and must never be the
+reason a real filing run is refused. Those three passed before the fix and still pass.
+
+Both tiers green: vm **923/842/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — undeployed,
+now ~60 commits.
+
+**Still logged, not fixed:** finding 3 from `ac` — `ledgerFind` (`main-mod/03-ai-ollama.js:15`)
+compares `p.rel === key` case-sensitively while the written folder is case-normalised against the
+disk. LOW confidence, needs a hand-typed destination to diverge; **do not act without evidence.**
+
 ### 2026-07-19ac — drafts were written under the V2 key and CLEARED under the legacy one. My #8 regression.
 
 Two new sweep axes run in parallel (write-vs-read normalisation; main-guard-vs-renderer-guard). Four

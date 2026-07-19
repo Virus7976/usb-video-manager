@@ -1632,28 +1632,36 @@ ipcMain.handle('projects:move', async (_e, payload) => {
   // ADVISORY, deliberately — it must never be the reason a real filing run is refused:
   //   - only when COPYING (a move within a volume consumes no new space, so refusing one would be
   //     nonsense — the twin gates on copyMode for the same reason),
-  //   - sizes come from the caller; a batch that declares none is not blocked,
+  //   - we STAT THE SOURCES OURSELVES rather than trusting caller-supplied `mv.size`. That was the
+  //     bug: the only caller (src/mod/07-organize-map.js) builds moves as `{from,toDir,rel,name,meta}`
+  //     with no `size`, so `need` was always 0 and this entire block was unreachable — present,
+  //     commented, and dead, exactly like the cardIsGone guard that sat on the non-default loop. The
+  //     twin never trusted the caller either (finalize:run stats each file, 09-ipc-boot.js:578).
+  //   - a file we cannot stat counts as 0 rather than blocking the run,
   //   - an unreadable volume skips the check entirely.
   if (copy) {
-    const need = moves.reduce((sum, mv) => sum + (Number(mv && mv.size) || 0), 0);
-    if (need > 0) {
-      // Every move in a batch can name a different folder, so check the volume each one lands on.
-      const byDir = new Map();
-      for (const mv of moves) {
-        const d = mv && mv.toDir;
-        if (d) byDir.set(d, (byDir.get(d) || 0) + (Number(mv.size) || 0));
+    // Every move in a batch can name a different folder, so check the volume each one lands on.
+    const byDir = new Map();
+    for (const mv of moves) {
+      const d = mv && mv.toDir;
+      if (!d) continue;
+      let sz = Number(mv && mv.size) || 0;
+      if (!sz && mv.from) {
+        // eslint-disable-next-line no-await-in-loop
+        try { sz = (await fsp.stat(mv.from)).size; } catch { sz = 0; }
       }
-      for (const [dir, bytes] of byDir) {
-        if (bytes <= 0) continue;
-        try {
-          const st = await fsp.statfs(await nearestExistingDir(dir));
-          const free = Number(st.bavail) * Number(st.bsize);
-          const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
-          if (bytes + 2e9 > free) {
-            return { ok: false, error: `Not enough room: this needs ${GB(bytes)} but only ${GB(free)} is free on that drive. File fewer shoots, or point the projects folder at a bigger disk.` };
-          }
-        } catch { /* if we genuinely cannot read the volume, don't block the run over it */ }
-      }
+      byDir.set(d, (byDir.get(d) || 0) + sz);
+    }
+    for (const [dir, bytes] of byDir) {
+      if (bytes <= 0) continue;
+      try {
+        const st = await fsp.statfs(await nearestExistingDir(dir));
+        const free = Number(st.bavail) * Number(st.bsize);
+        const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
+        if (bytes + 2e9 > free) {
+          return { ok: false, error: `Not enough room: this needs ${GB(bytes)} but only ${GB(free)} is free on that drive. File fewer shoots, or point the projects folder at a bigger disk.` };
+        }
+      } catch { /* if we genuinely cannot read the volume, don't block the run over it */ }
     }
   }
 

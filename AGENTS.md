@@ -322,6 +322,47 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bh — Jake: *"more like a tool, less like a visually appealing random thing I never use"*
+
+Measured his REAL store and interaction log before writing anything, and the numbers say something
+much more specific than "the UX needs work":
+
+| | | |
+|---|---|---|
+| drafts | 4594 | he scans constantly |
+| typed names | **331 (7%)** | naming rarely finishes |
+| clip-observations | 1084 | the AI did run |
+| faces-pending | **458** | face review started and ABANDONED |
+| **final-meta** | **1** | he has filed essentially nothing |
+| **project-ledger** | **0** | **he has NEVER completed a filing run** |
+| copied-log | 0 | the copy→verify→delete loop isn't completed either |
+
+Interaction log, 1487 clicks: 354 text inputs, **226 "✓ Yes" + 41 "✗ No" face confirmations**, 48
+"Select all", 18 "Analyze selected", name chips (Liam 33, Karis 23, Josiah 21, Mariah 13 — family).
+
+**He does an enormous amount of work in this app and never reaches the end.** 267 face decisions and
+354 typed fields, and zero projects filed. That is not indifference; it is a tool that front-loads
+effort and back-loads payoff, so none of his work ever pays him back.
+
+**This reframes the whole backlog.** The app is a good scanner/analyser and an unfinished filer, and
+**the back half has never been validated by real use** — 0 ledger entries means the filing UX is
+unproven, not done. Every polish item in the old backlog assumed he reaches screens he has never
+reached.
+
+Wrote **`memory/usb-app-toolness-100.md`** — 100 items in six tiers, ranked, each grounded in the
+above rather than in generic UX advice. Tier 1 (18 items) attacks the measured failure directly: make
+filing reachable from the first screen, auto-file on a rule, prove the whole path on ONE clip, resume
+banner on launch, partial filing, "good enough" filing into `<date>/_unsorted`.
+
+**The governing rule recorded with it:** *do not start Tier 2 (cut per-clip effort) until a shoot can
+go card→filed in one sitting* — reducing effort on a pipeline he never finishes just makes the
+abandonment faster.
+
+Also recorded the four design consequences: nothing should require finishing to be useful; payoff must
+move earlier; effort-per-clip is the enemy at 4594 clips; treat the back half as unproven.
+
+**Next session: work Tier 1 in order.** The bug queue is empty and this is now the highest-value work.
+
 ### 2026-07-19bg — ✅ DEPLOYED AND VERIFIED ON REAL DATA. The store is clean and the migration is complete.
 
 Second deploy of the session, carrying the supersede fix. App closed, installer run `/S -Wait`,

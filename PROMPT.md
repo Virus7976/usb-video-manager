@@ -250,7 +250,7 @@ Prefer items you can **verify** this session over items you can't.
     real `main.js` in a `vm` with a stubbed electron; invoke real IPC handlers with `app.invoke(...)`, read
     internals with `app.get(...)`, materialize vm values with `app.plain(...)` (**required** before
     `deepStrictEqual` — vm values have different prototypes and fail the prototype check otherwise).
-    **Verified 2026-07-19 (end of session): 897 tests, 823 pass, 74 skipped, 0 fail.** That is the baseline — if you
+    **Verified 2026-07-19: 913 tests, 832 pass, 81 skipped, 0 fail.** That is the baseline — if you
     see failures, they are yours.
   - `npm run test:e2e` — real Playwright+Electron (**19 files**, 74 tests / 73 pass / 1 skipped, opt-in via
     `RUN_E2E=1`, serial via `--test-concurrency=1`). Drives the actual app + faces. Renderer/face changes
@@ -456,7 +456,7 @@ documented the two `.claude/hooks/`; and added mappings so a generic `/loop` pro
 database / staging / `memory.md` / TODO-file assumptions resolve to what exists here._
 
 _A later pass added **§8b (how to find work)** and **§8c (testing traps)**, and refreshed the test
-baselines to **897 vm tests / 823 pass / 74 skipped / 0 fail** and **74 e2e / 73 pass / 1 skipped**._
+baselines to **913 vm tests / 832 pass / 81 skipped / 0 fail** and **81 e2e / 80 pass / 1 skipped**._
 
 _**State at that point:** `#8` (the `clipKey` collision) is complete across all four stores and is
 **rewrite-free by design — do not add a cleanup pass**; the sibling-path sweep is closed; the

@@ -358,6 +358,41 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19g — NEXT: #8 clipKey is a MIGRATION on the delete path. Read this before starting.
+
+`#100`'s remaining half is done (`eb3ab5c`: machine stores compact, `config.json` still pretty).
+**`#8` is the top-ranked open item and was deliberately NOT started** — not because it's unclear, but
+because of what it touches.
+
+`function clipKey(clip) { return \`${clip.name}__${clip.size}\`; }` (`src/mod/01-core.js:1154`), used
+at **40 call sites**, keys FIVE stores: `renameDrafts`, `finalMeta`, `ai.clipObs`, the faces
+`clipKeys`, and **`copiedLog`**. That last one is the problem: `copiedLog` is what makes the Delete
+step reachable at all — its own comment says that without it "the Delete step was a silent no-op and
+the only way to clear a card was to COPY THE WHOLE THING AGAIN". **So a key change lands on the
+copy/delete path, where the standing rule is "don't ship blind".**
+
+**The harm is real** (two GoPro `GX010042.MP4` of equal size from different cards collide; a rename
+orphans the draft) but it is NOT urgent enough to justify a rushed migration. Do it deliberately:
+
+1. **Keep `clipKey` as the LEGACY reader.** Add `clipKeyV2(clip)` — `name__size__mtimeMs` is enough
+   to break the collision and is available everywhere `size` is (`fs.stat`), no hashing needed.
+2. **Read new-then-old at EVERY read site** (`drafts[k2] ?? drafts[k1]`). Never delete an old key —
+   Jake's existing drafts/faces/copied history must keep resolving. This is the backward-read
+   compatibility the data-safety rule demands.
+3. **Write only the new key.** Old entries age out naturally; nothing is rewritten in place.
+4. **`copiedLog` LAST, and on its own.** Prove the other four first. `verifyCopyPair` re-verifies at
+   delete time and fails closed, so a key miss degrades to "can't clear the card" rather than
+   "deleted the wrong thing" — but confirm that with a test before relying on it.
+
+**Tests to write FIRST:** (a) two clips, same name, same size, different mtime → distinct keys and no
+draft bleed; (b) a store written with V1 keys still resolves after the change (load a fixture
+`drafts.json` with `name__size` keys and assert the draft still attaches); (c) `copiedLog` written
+under V1 still marks a clip copied, so the Delete step stays reachable across the upgrade.
+**Back up `%APPDATA%\USB SD Auto-Action\` to a timestamped sibling before running the app against a
+migrated store.**
+
+---
+
 ### 2026-07-19f — the backlog was re-audited; USE THE NEW SECTION, NOT THE TIER LISTS
 
 The tier lists in `memory/usb-app-audit-backlog-2026-07.md` are **~1-in-3 stale**. Ten entries were

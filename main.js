@@ -6272,7 +6272,7 @@ ipcMain.handle('people:save', (_e, payload) => {
     // confirmed (and refresh its crop) instead of skipping. Confirming a suggested face saves the SAME
     // descriptors that were auto-saved unconfirmed during the scan; skipping them meant the confirmed
     // set never grew and — since only confirmed faces vote — confirmations never improved matching.
-    const near = (p.faces || []).find((f) => f.d && faceDist(f.d, d) < 0.35);
+    const near = (p.faces || []).find((f) => f.d && faceDist(f.d, d) < FACE_DEDUP_T);
     if (near) { if (confirmed && !near.confirmed) { near.confirmed = true; if (thumb) near.t = thumb; } }
     else p.faces.push({ d, t: thumb, confirmed });
   }
@@ -6369,6 +6369,18 @@ const FACE_CONFIRM_T = 0.46;   // <= this AND unambiguous → CONFIDENT (safe to
 const FACE_SUGGEST_T = 0.54;   // <= this → worth SUGGESTING (ask the user); above → unknown
 const FACE_MARGIN = 0.04;      // the winner must beat the nearest OTHER person by this
 const FACE_KNN = 5;            // vote among the K nearest confirmed faces (robust to one outlier)
+// Two descriptors this close are the SAME face seen twice, not two views of a person — used when
+// saving a face onto a person, so an all-but-identical crop is de-duplicated instead of padding the
+// enrolment set (and, via #28, so confirming a suggestion promotes the existing unconfirmed copy
+// rather than being skipped as a duplicate). Much tighter than FACE_CONFIRM_T: this is "is this the
+// same photo of a face", not "is this the same person". It was a bare `0.35` at the one call site.
+const FACE_DEDUP_T = 0.35;
+
+// ⚠ THE RENDERER HAS ITS OWN COPY of the confirm/suggest values (src/mod/08-people.js:
+// FACE_CONFIRM_DIST / FACE_SUGGEST_DIST) because main and renderer are SEPARATE concatenated
+// bundles with no shared module — a single constant is not physically possible across the process
+// boundary. They must stay numerically identical, and `face-thresholds-parity.test.mjs` fails if
+// they drift. If you change one, change both.
 
 // PURE decision (no electron/config deps → unit-testable). Given a query descriptor,
 // a list of CONFIRMED enrolled faces `[{id,name,d}]`, the IGNORED faces `[{d}]`, and a

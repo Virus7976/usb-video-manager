@@ -410,6 +410,9 @@ function dmapFolderIcon(dated, depth) { return dated ? '📅' : (depth === 0 ? '
 // rest into SUGGESTED (tentative match to a known person) + NEW (unknown) groups
 // for the digiKam-style confirm grid. Confirming there grows each person so
 // recognition gets better the more you review (learns as it grows).
+// ⚠ MIRRORS main-mod/08-finalize-feedback.js (FACE_CONFIRM_T / FACE_SUGGEST_T). Main and renderer
+// are separate concatenated bundles with no shared module, so these values are duplicated by
+// necessity — `face-thresholds-parity.test.mjs` fails if the two sides drift apart. Change both.
 const FACE_CONFIRM_DIST = 0.46;   // <= this: auto-tag, very confident
 const FACE_SUGGEST_DIST = 0.54;   // ceiling passed to people:match; the backend applies
                                   // the strict digiKam-style vote/margin gate (see people:match)

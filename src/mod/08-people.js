@@ -755,7 +755,16 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     cl._enrol = enrol;
     tagClips(cl, name);
     rememberSubject && rememberSubject(name);
-    cl.done = true; cl.assignedName = name;
+    // Only a landed ENROLMENT counts as done. `cl.done = true` used to be unconditional, so a failed
+    // people:save still rendered the green ✓ "tagged" card — and enrolment is the half that teaches
+    // the recognizer (only confirmed descriptors vote). The user believed the person was known and
+    // the app never suggested them again. The clip TAGS above are separate, idempotent and useful on
+    // their own, so they stay; leaving `done` false just lets the naming be retried.
+    if (!enrol) {
+      showToast(`Tagged the clips, but couldn’t teach the app this face — try naming it again`, 7000);
+      logIssue('Faces', `Enrolment failed for "${name}" — the clips were tagged but no face was learned`);
+    }
+    cl.done = !!enrol; cl.assignedName = name;
     if (!names.includes(name)) names.push(name);
     // Naming a face FINISHES it, so the popup has no reason to stay open — and leaving it open was
     // actively costly: the next click anywhere re-rendered with the popup still selected, so you

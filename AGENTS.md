@@ -322,6 +322,48 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ao — two screens confirmed success that hadn't happened (new-queue items 4 + 5)
+
+Same shape, different screens, so done together.
+
+**"🧠 AI learned N things from your edits"** sat OUTSIDE its try while the in-memory push sat INSIDE
+it, and `.ok` was never read. A rejection lost everything — disk AND memory — and congratulated the
+user anyway. This is the headline learning feature: a false ✓ means he stops correcting and the AI
+keeps repeating the mistake. Now the outcome is captured (`learned`), the memory push and the toast
+both sit behind it, and both failure routes (a throw, and an `ok:false` return) toast honestly and
+`logIssue`.
+
+**The face-review card rendered a green ✓ "tagged" even when the ENROLMENT failed.** `cl.done = true`
+was unconditional and `people:save`'s `{ok:false}` was never read. The clip TAGS survive — separate,
+idempotent, genuinely useful — but enrolment is the half that teaches the recognizer, and only
+confirmed descriptors vote. So the user believed the person was known and the app never suggested
+them again. Now `cl.done = !!enrol`: the tags still apply, the failure is spoken and logged, and
+leaving `done` false lets the naming be retried.
+
+Both matter more since `2026-07-19al`: a refused store write now reports itself, and these two screens
+would have claimed success on top of that report.
+
+`test/false-success-confirmations.test.mjs`, 7 tests; all four parts proven by breaking them.
+
+**THREE more of my own test bugs — the tally for the session is now unmissable:**
+- Test 1 asserted the toast came BEFORE the catch. That encoded the OLD BROKEN SHAPE, so it failed
+  against the correct fix. **Assert the property (conditionality), never the layout you're replacing.**
+- Test 5 required the toast on the same LINE as `if (!enrol)`, but the body is multi-line. Sliced the
+  block to its closing brace instead. Lines beat windows; blocks beat lines when the body is multi-line.
+- Test 3 matched a bare `/logIssue\(/` while the code has TWO of them, so deleting one left it green.
+  Named both by their distinct messages.
+
+**The consolidated rule, now in PROMPT.md §8c:** strip comments, name the exact expression, slice to a
+real boundary, and break EACH part separately — if a break doesn't turn something red, the assertion
+is decoration.
+
+Both tiers green: vm **988/907/81/0**, e2e **81/80/1/0**. App still running — undeployed, ~71 commits.
+
+**QUEUE:** 6 `_autoConsolidating` guards only itself while five other writers touch
+`config.ai.memories` · 7 LOW: "Remember this direction" fails silently; a ledger-write rejection has
+no `logIssue` · 8 `projects:move` has no `.xmp` sidecar fallback (its twin does) — writes files beside
+footage, so it needs its own change and tests.
+
 ### 2026-07-19an — two overlapping face scans could erase a review (new-queue item 3)
 
 `scanFacesForClips` is a load-modify-replace across MINUTES of GPU work: `clusters = await

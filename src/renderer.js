@@ -3113,8 +3113,24 @@ function maybeFlushEdits(force) {
       // (no confirmation friction) and show it learned.
       const notes = r.proposed.map((p) => ({ text: p.text || p, example: p.example || '' })).filter((x) => x.text);
       if (notes.length) {
-        try { await window.api.aiAddMemories(notes); if (!Array.isArray(aiCfg.memories)) aiCfg.memories = []; aiCfg.memories.push(...notes); } catch { /* non-fatal */ }
-        showToast(`🧠 AI learned ${notes.length} thing${notes.length !== 1 ? 's' : ''} from your edits`);
+        // Only claim it learned if it actually did. The toast used to sit OUTSIDE this try while the
+        // in-memory push sat inside it, so a rejection lost the lot — disk AND memory — and still
+        // congratulated the user. This is the headline learning feature: a false ✓ here means he
+        // stops correcting and the AI keeps making the same mistake.
+        let learned = false;
+        try {
+          const rr = await window.api.aiAddMemories(notes);
+          learned = !(rr && rr.ok === false);
+        } catch (e) { learned = false; logIssue('AI', `Couldn’t save what the AI learned: ${(e && e.message) || e}`); }
+        if (learned) {
+          // Keep the in-memory list in step only when the write stuck, so the two cannot diverge.
+          if (!Array.isArray(aiCfg.memories)) aiCfg.memories = [];
+          aiCfg.memories.push(...notes);
+          showToast(`🧠 AI learned ${notes.length} thing${notes.length !== 1 ? 's' : ''} from your edits`);
+        } else {
+          showToast('The AI couldn’t save what it learned from your edits', 6000);
+          logIssue('AI', `aiAddMemories did not persist ${notes.length} note(s) from edits`);
+        }
       }
     }
   }).catch(() => { aiEditFlushing = false; });
@@ -10246,7 +10262,16 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     cl._enrol = enrol;
     tagClips(cl, name);
     rememberSubject && rememberSubject(name);
-    cl.done = true; cl.assignedName = name;
+    // Only a landed ENROLMENT counts as done. `cl.done = true` used to be unconditional, so a failed
+    // people:save still rendered the green ✓ "tagged" card — and enrolment is the half that teaches
+    // the recognizer (only confirmed descriptors vote). The user believed the person was known and
+    // the app never suggested them again. The clip TAGS above are separate, idempotent and useful on
+    // their own, so they stay; leaving `done` false just lets the naming be retried.
+    if (!enrol) {
+      showToast(`Tagged the clips, but couldn’t teach the app this face — try naming it again`, 7000);
+      logIssue('Faces', `Enrolment failed for "${name}" — the clips were tagged but no face was learned`);
+    }
+    cl.done = !!enrol; cl.assignedName = name;
     if (!names.includes(name)) names.push(name);
     // Naming a face FINISHES it, so the popup has no reason to stay open — and leaving it open was
     // actively costly: the next click anywhere re-rendered with the popup still selected, so you

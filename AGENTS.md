@@ -358,6 +358,27 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19j — #75 DONE (`551af21`); the WSL-safe queue is nearly empty
+
+Face matching: the enrolled set is cached (`confirmedFaceSet()`) and a whole clip's faces are decided
+in one `people:matchBatch` call instead of one IPC per face. **Invalidation is hung off
+`saveStore('ai.people')` — one hook covering all eleven mutating handlers — plus an array-identity
+check so a disk re-read invalidates itself.** Equivalence with the one-at-a-time path is the test.
+
+**What is left, and why the queue is now awkward:**
+- **#91-part** (recognition thresholds live in two divergent blocks plus a raw `< 0.35` at
+  `08-finalize-feedback.js:229`) — the last straightforward WSL-safe item.
+- **#8 (clipKey)** — needs its own session; delete-path migration, see "2026-07-19g".
+- **#25 / #35** — need a run against Jake's real Ollama models. Do not take blind.
+- Everything else open is Windows/hardware-gated (#92 unsigned auto-update, #98 COM failure, #5-MTP,
+  #20 MTP cap, #13 cluster threshold, #70 GPS, #71 HiLight, #85 calendar keyboard).
+
+**So after #91, the highest-value work is no longer "another backlog item"** — it is (a) deploying,
+which has been blocked all session, and (b) the two items that need the owner's machine or models.
+Say so plainly rather than manufacturing low-value work.
+
+---
+
 ### 2026-07-19i — #17 DONE (`347e997`) + an E2E TRAP THAT WILL WASTE YOUR TIME
 
 `adb pull` now judges success on COMPLETENESS (exact source size when known, non-empty only when the

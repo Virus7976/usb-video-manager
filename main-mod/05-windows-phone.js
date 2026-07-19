@@ -1050,6 +1050,23 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   for (const j of jobs) {
     let ok = false; let error = '';
     try {
+      // COLLISION, before the copy — the same guard phone:copyVideos has had for a while, which the
+      // photo twin never got. `recomputeVersions()` only de-duplicates `_v#` within the CURRENT
+      // scan, so a second batch with the same subject/description restarts at `_v1` and lands on the
+      // first batch's filename. copyFileVerified deliberately OVERWRITES a differing destination (it
+      // reads a mismatch as a truncated copy of the same file needing repair, and says so in its own
+      // comment) — so without this, batch 2 destroyed batch 1's photo, and distribute fans out to the
+      // computer folder, the NAS folder AND the routed Projects folder, so all three died at once
+      // while the backup reported success.
+      let occupied = false;
+      try { occupied = !!(await fsp.stat(j.dest)); } catch { occupied = false; }
+      if (occupied) {
+        // Byte-identical means a genuine re-run: skip it, or every retry litters the backup with
+        // _v2, _v3, _v4. FULL hash, not sampled — this decides whether a photo is overwritten.
+        let identical = false;
+        try { identical = await fingerprintsMatch(j.src, j.dest, { full: true }); } catch { identical = false; }
+        if (!identical) j.dest = await uniqueDest(path.dirname(j.dest), path.basename(j.dest));
+      }
       // Verified copy: fingerprint-checks the result before trusting it (a truncated
       // network copy of the right byte-count is no longer silently accepted as done).
       await copyFileVerified(j.src, j.dest);

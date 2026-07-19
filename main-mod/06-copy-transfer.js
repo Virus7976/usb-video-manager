@@ -463,14 +463,26 @@ ipcMain.handle('copy:start', async (evt, payload) => {
   // already trusts, it came from the scan, and this preflight is advisory (avoid a mid-copy failure)
   // — not a safety gate, so it must never be the reason a real import is refused. A file with no
   // declared size counts as 0, and an unreadable volume skips the check entirely.
-  if (totalBytes > 0) {
+  //
+  // CHECK EACH DESTINATION SEPARATELY. Since stills route to Photos Temp, a card can write to two
+  // folders that may be on DIFFERENT volumes — summing everything against the intake would both
+  // miss a full Photos Temp and wrongly refuse an import because photo bytes were counted against
+  // the video disk. phone:pull already does it per-destination; this path was left summing to one
+  // when the photo routing landed. (Same shape of gap as the routing bug itself.)
+  const needBy = new Map();
+  for (const f of files) {
+    const d = destFor(f);
+    needBy.set(d, (needBy.get(d) || 0) + (f.size || 0));
+  }
+  for (const [dir, need] of needBy) {
+    if (need <= 0) continue;
     try {
-      const st = await fsp.statfs(await nearestExistingDir(dest));
+      const st = await fsp.statfs(await nearestExistingDir(dir));
       const free = Number(st.bavail) * Number(st.bsize);
       const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
       // 2 GB of headroom: filling a system disk to the last byte breaks the machine, not just the app.
-      if (totalBytes + 2e9 > free) {
-        return { ok: false, error: `Not enough room: this card needs ${GB(totalBytes)} but only ${GB(free)} is free on that drive. Copy fewer clips, or point the intake folder at a bigger disk.` };
+      if (need + 2e9 > free) {
+        return { ok: false, error: `Not enough room: this card needs ${GB(need)} but only ${GB(free)} is free on that drive. Copy fewer clips, or point the intake folder at a bigger disk.` };
       }
     } catch { /* if we genuinely cannot read the volume, don't block the import over it */ }
   }

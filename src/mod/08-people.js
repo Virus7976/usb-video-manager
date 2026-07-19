@@ -114,7 +114,13 @@ async function detectFacesForClip(clip, onFrame) {
   // seen in many frames becomes ONE entry, keeping the biggest/clearest crop).
   const r = await window.api.facesFrames({ sourcePath: clip.sourcePath });
   const frames = (r && r.ok && Array.isArray(r.frames)) ? r.frames : [];
-  if (!frames.length) return { ready: true, faces: [], scene: null };
+  // COULDN'T READ THE SOURCE ≠ NO FACES IN IT. #84 already taught the caller to distinguish a GPU
+  // hiccup from a genuine absence — but that signal (`detectError`) is computed from the frames, and
+  // this exit happens BEFORE any exist. Main returns this same empty shape when ffmpeg cannot read
+  // the file, so a pulled card, a renamed folder or a replaced ffmpeg binary looked exactly like "no
+  // faces here" and the caller durably marked the clip scanned. That is the confusion #84 was written
+  // to end, arriving through a different door.
+  if (!frames.length) return { ready: true, faces: [], scene: null, readError: true };
   const collected = [];   // {descriptor, thumb, area}
   let detectErrors = 0;   // frames where detectAllFaces THREW (GPU/WebGL hiccup) — not the same as "no faces"
   // THE GROUP SHOT. detectAllFaces already finds everyone in a frame — but all we ever kept was a
@@ -278,8 +284,12 @@ async function collectClipFaces(clip, clusters, keys) {
       try { await window.api.savePerson({ name: m.match.name, descriptors: [f.descriptor], thumb: f.thumb, confirmed: false }); } catch { /* non-fatal */ }
     }
   }
-  r._facesScanned = true;
-  persistScannedFlag(r);
+  // Same rule as the scan loop above, which this path never got: only a detection that actually RAN
+  // may mark the clip scanned. Marking it after a read failure excludes it from every future scan.
+  if (!fr.readError && !fr.detectError) {
+    r._facesScanned = true;
+    persistScannedFlag(r);
+  }
   return 0;
 }
 
@@ -593,8 +603,13 @@ async function scanFacesForClips(clipList, opts = {}) {
       // #84: a GPU/WebGL hiccup makes detectAllFaces throw, which used to look identical to "no
       // faces" — so we'd mark the clip scanned and NEVER retry it. When detection actually errored
       // and found nothing, leave the clip UNscanned so a later scan (GPU recovered) tries again.
-      if (res.detectError) {
-        pushActivity(`Face detection failed on ${clip.name} — will retry later`, 'face');
+      if (res.detectError || res.readError) {
+        // Either way we learned NOTHING about this clip, so it must stay scannable. A read failure
+        // is usually the card being pulled mid-scan, and it hits every remaining clip at once — so
+        // the message says what actually happened rather than claiming 370 clips have no faces.
+        pushActivity(res.readError
+          ? `Couldn’t read ${clip.name} — is the card still connected? Will retry later`
+          : `Face detection failed on ${clip.name} — will retry later`, 'face');
       } else {
         pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
         // Remember this clip was scanned (even if nothing matched) so we never re-nag,

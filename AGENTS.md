@@ -322,6 +322,58 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ax — a card pulled mid-face-scan marked every remaining clip "scanned, no faces" FOREVER
+
+Eleventh axis (state that changes UNDER the running app) — the last untried angle, and it was not
+empty. Two dangerous findings; fixed the first, logged the second.
+
+**`detectFacesForClip` could not tell "couldn't read the source" from "this clip has no faces".**
+#84 already taught the caller to distinguish a GPU hiccup from a genuine absence — but `detectError`
+is computed FROM the frames, and the couldn't-read exit returns before any exist:
+`if (!frames.length) return { ready: true, faces: [], scene: null };`. Main returns exactly that shape
+when ffmpeg cannot read the file. **The same confusion #84 was written to end, arriving through a
+different door.**
+
+The sequence: scan a 400-clip card, pull it 30 clips in (or rename the folder, or have ffmpeg replaced
+by an update). Every remaining clip fails instantly, so the loop burns through 370 in seconds, prints
+"No faces found" for each, and persists `facesScanned: true` for each. That flag is durable and
+exclusionary — `isScanned()` filters them out of every future scan, and `force` is only reachable from
+a prompt that no longer appears once any review exists. **Those clips could never be face-scanned
+again**, and the app reported success for all of them.
+
+`collectClipFaces` was worse: it set the flag unconditionally, never consulting the error signal.
+
+Fix: `readError: true` on the read failure; the scan loop treats `detectError || readError` as "we
+learned nothing, leave it scannable"; `collectClipFaces` only marks a clip when detection actually
+ran. The message now says *"Couldn't read X — is the card still connected?"* rather than claiming 370
+clips have no faces in them.
+
+`test/e2e/face-scan-unreadable-source.e2e.mjs`, 6 tests, all three parts proven with asserted breaks.
+Written as E2E because these are renderer functions the vm harness cannot reach and the property that
+matters is the PERSISTED flag. Two guard the other direction — a genuinely face-free clip is still
+marked scanned (otherwise a card of landscapes costs GPU time forever) and the flag is still persisted.
+
+Both tiers green: vm **1039/946/93/0**, e2e **93/92/1/0**. App still running (PID 7104) — undeployed,
+**~80 commits**.
+
+**DANGEROUS FINDING 2, verified by the sweep but NOT yet fixed — take this next:**
+`copy:start` resolves the NAS once at the top: `try { await ensureDir(nasRoot); } catch (err) {
+nasSummary.setupError = err.message; nasRoot = ''; }`. With `nasRoot = ''` the per-file mirror is
+skipped for the WHOLE card and `nasNote` is empty, so the completion toast reads plain "Copied N clips
+to intake". The renderer only ever reads `res.nas.failed`, which is 0 — **`setupError` appears nowhere
+else in the tree.** So: NAS share drops (undocked, VPN down, folder renamed), next import makes ZERO
+NAS copies and reports full success; the user then runs Delete, which verifies card↔intake only, and
+is left with one copy where the app implied two. The sibling `finalize:run` gets this right — no
+upfront `ensureDir`, so each file's failure lands in `summary.errors` and is shown.
+
+**Verified handled or failing-safe** (do not re-check): copy/verify/delete with the card pulled
+(staged `.part` + full verify + fail-closed re-verify before every unlink); destinations deleted
+mid-session (all re-resolved per run, never cached at boot); store file deleted (in-memory copy
+survives, next save recreates it) or corrupted (`storeReadFailed` blocks writes, `.corrupt-*` kept,
+user told); Ollama model deleted mid-session (no cached ready flag; `/api/tags` per call); exiftool
+vanishing (caught per clip, sidecar fallback covers it); ENOSPC mid-run (staged copies, source never
+unlinked until the destination verifies).
+
 ### 2026-07-19aw — photos now enter the import index and get their drafts cleared. PHOTO PARITY CLOSED.
 
 The video path marks verified clips imported and clears their drafts right after verification, with

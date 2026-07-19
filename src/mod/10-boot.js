@@ -163,10 +163,18 @@ async function openCompress() {
       clearTask('compress');
       cmpState.running = false;
       $$('#cmpCancel').classList.add('hidden'); $$('#cmpClose').classList.remove('hidden');
+      // Re-enable the inputs on EVERY exit path, not just the throw. This used to live only in the
+      // `if (err)` branch, so a run that RESOLVED left them dead — and "resolved" covers a CANCELLED
+      // run and a run with per-file failures, which are exactly the cases where you want to retry
+      // the remainder. Cancel a 50-clip run at clip 3 and the checkboxes, preset picker, output
+      // picker and Compress button were all disabled, so the only way to continue was to close and
+      // reopen the dialog, losing the selection and preset. A dialog left disabled after the run has
+      // ENDED is never right, whichever way it ended.
+      ov.querySelectorAll('.cmp-pick, .cmp-preset, #cmpSkip, #cmpSelAll, .cmp-cb').forEach((el) => { el.disabled = false; });
     }
     if (err) {
-      // Put the dialog back the way it was so the run can actually be retried.
-      ov.querySelectorAll('.cmp-pick, .cmp-preset, #cmpSkip, #cmpSelAll, .cmp-cb').forEach((el) => { el.disabled = false; });
+      // Unhiding Run stays here and below: it is about whether there is WORK LEFT, not about whether
+      // the controls should respond.
       $$('#cmpRun').classList.remove('hidden');
       showToast(`Compress failed — ${err}`, 6000);
       logIssue('Compress', err);
@@ -176,6 +184,10 @@ async function openCompress() {
     const failed = (res && res.results || []).filter((r) => !r.ok);
     const saved = ok.reduce((s, r) => s + Math.max(0, (r.inBytes || 0) - (r.outBytes || 0)), 0);
     if (ok.length) $$('#cmpOrganize').classList.remove('hidden');
+    // Offer Run again when there is still something to compress — a cancelled run left clips
+    // untouched, and a failed one left clips that may succeed on a retry. After a clean sweep it
+    // stays hidden, so the natural next step is Organize rather than a pointless re-run.
+    if ((res && res.cancelled) || failed.length) $$('#cmpRun').classList.remove('hidden');
     showToast(res && res.cancelled ? `Stopped — ${ok.length} compressed` : `Compressed ${ok.length} clip${ok.length !== 1 ? 's' : ''}${saved ? ` · saved ${fmtBytes(saved)}` : ''}${failed.length ? ` · ${failed.length} failed` : ''} ✓`, 6000);
     if (failed.length) failed.forEach((r) => logIssue('Compress', `${r.name}: ${r.error || 'failed'}`));
   }

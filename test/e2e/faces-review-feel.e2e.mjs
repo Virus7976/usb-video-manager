@@ -85,3 +85,25 @@ test('renaming a person onto a taken name offers a MERGE, not a duplicate', { sk
   assert.match(src, /mergePerson\(\{ fromId: selId, intoId: r\.existingId \}\)/, 'and offers the merge that fixes it');
   assert.match(src, /nameInp\.value = old/, 'declining restores the field');
 });
+
+test('the compress dialog is usable again after a CANCELLED or partly-failed run', { skip: !RUN }, async () => {
+  // The throw path put the dialog back so the run could be retried; the RESOLVED path never did —
+  // and "resolved" covers a cancelled run and a run with per-file failures, which are exactly the
+  // cases where you want to retry the remainder. Cancel a 50-clip run at clip 3 and the checkboxes,
+  // preset picker, output picker and Compress button were all dead, so the only way to continue was
+  // to close and reopen, losing the selection and preset.
+  //
+  // The re-enable belongs in the `finally` — a dialog left disabled after the run has ENDED is never
+  // right, whichever way it ended. Unhiding Run stays conditional on there being work left.
+  const src = await read(app.win, 'String(openCompress)');
+  // Slice to the END of the finally block, not a fixed window — a generous window runs straight past
+  // it into the `if (err)` branch, which DOES re-enable, and the assertion then passes for the wrong
+  // reason. (Caught exactly that on the first run of this test.)
+  const start = src.indexOf('} finally {');
+  assert.ok(start > 0, 'the run has a finally');
+  const fin = src.slice(start, src.indexOf('\n    }', start));
+  assert.match(fin, /disabled = false/,
+    'the inputs are re-enabled in the FINALLY, so a cancelled or partly-failed run leaves a usable dialog');
+  assert.equal(/disabled = false/.test(src.slice(src.indexOf('if (err) {'))), false,
+    'and it is no longer ONLY in the error branch');
+});

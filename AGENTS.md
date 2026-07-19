@@ -358,6 +358,43 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19r — SIBLING-PATH SWEEP: 6 confirmed gaps, 2 fixed (`0da93e2`). Read the remaining 4.
+
+A systematic sweep for "a guard exists on one path, its twin lacks it" — the single most productive
+pattern of this session. **Fixed here:**
+1. **LOST PHOTOS.** `phone:distribute` overwrote a DIFFERENT photo of the same name, across the
+   computer folder, the NAS and the Projects folder at once, reported as success. `phone:copyVideos`
+   has guarded exactly this for a while. Now full-hashes and versions like its twin.
+2. **My own regression:** `copy:start`'s free-space preflight still summed all bytes against the
+   intake after I routed stills to Photos Temp (53c10dc). Now per-destination, like `phone:pull`.
+
+**STILL OPEN, in harm order — all confirmed by reading BOTH sides:**
+- **`projects:move` has NO free-space preflight**, while `finalize:run` (`09-ipc-boot.js:577`),
+  `copy:start` and `phone:pull` all do. Same operation, copy-by-default, reachable from the map's
+  "Apply — file clips". ENOSPC part-way = a half-filed shoot and a full C:. **WSL-verifiable, pure
+  statfs arithmetic — this is the best next item.**
+- **`projects:move` will MOVE files off a removable card**; `finalize:run` refuses
+  (`09-ipc-boot.js:570`, `isOnRemovableVolume`). `isOnRemovableVolume` appears nowhere in
+  `02-media.js`. Reachability is narrow (needs Compressed pointed at a card) but that is exactly the
+  case finalize:run bothers to guard, and it would strip footage without the delete gate. Code
+  asymmetry is WSL-verifiable; live behaviour needs Windows.
+- **The AI BATCH path has no "card was yanked" check**; the legacy single-pass loop does
+  (`src/mod/04-tasks-ai.js:1542`, the ONLY `cardIsGone()` call site). Inverted gap: the guarded loop
+  is the fallback, and `const batched = aiCfg.multiPass || aiToolModelReady` means a configured tool
+  model makes the guard unreachable. Pull the card mid-analyze and every remaining clip pays a full
+  200s/300s `aiCallGuard` timeout — hours of apparent hang, N "model timeout" errors instead of one
+  honest "your card is gone". **WSL-verifiable with stubs.**
+- **`people:reassignFace` dedups at a hardcoded `0.2`** (`08-finalize-feedback.js:280`) while every
+  sibling uses `FACE_DEDUP_T` (0.35). `a847dce` named the constant and missed this call site. Small
+  harm, same drift the constant exists to prevent.
+
+**Categories the sweep cleared (do not re-check):** tag/untag symmetry, ledger recording on both
+filing paths (the renderer does it for `projects:move`, on the other side of the IPC boundary),
+faces ignore/unignore persistence, `organize:undo` copy-and-move branches, phone photo metadata
+carry-forward.
+
+---
+
 ### 2026-07-19q — Gitea #2: photos no longer land in the video intake (`53c10dc`)
 
 **My own scoping note for #2 was wrong** — worth remembering, because it is the same failure the

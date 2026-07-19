@@ -782,12 +782,28 @@ function phoneRouteFor(clip) {
 // Build the copy jobs to back up renamed PHOTOS: optionally into "04 - Photos Temp"
 // (GoPro stills that aren't there yet), then the chosen computer/NAS destinations,
 // then the Projects tree for any that match a filing rule. Shared by phone + GoPro.
+// `includePhotosTemp` is TRUE only for the card/GoPro flow (distributeFlowPhotos) and false for the
+// phone flow, so it doubles as "is this a card import?" — which is what decides the NAS below.
 function buildPhotoJobs(photos, includePhotosTemp) {
   const jobs = [];
   const photosTemp = phoneStagingDests().photo.replace(/[\\/]+$/, '');
   const dests = [];
   if (cfg.phoneDestComputer && cfg.phoneComputerFolder) dests.push(cfg.phoneComputerFolder.replace(/[\\/]+$/, ''));
   if (cfg.phoneDestNas && cfg.phoneNasFolder) dests.push(cfg.phoneNasFolder.replace(/[\\/]+$/, ''));
+  // THE CARD'S NAS BACKUP — the one the setup wizard configures (config.nasBackup), which copy:start
+  // uses to mirror every VIDEO off a card. Photos never reach copy:start, so they were excluded from
+  // it entirely and their only NAS route was the separate phone-preferences setting above. Enable NAS
+  // backup in the wizard, never open phone preferences, insert a card: every clip mirrored off-machine
+  // and not one still — while the summary still said "Photos backed up".
+  //
+  // Card flow only. The phone flow has its own phoneNasFolder, and adding this there would copy every
+  // phone photo into two NAS folders. Deduped against `dests` because the two settings can legitimately
+  // point at the SAME folder, and a second job for one file collides with the first and versions it
+  // into _v2.
+  if (includePhotosTemp && cfg.nasBackup && cfg.nasBackup.enabled && cfg.nasBackup.path) {
+    const cardNas = cfg.nasBackup.path.replace(/[\\/]+$/, '');
+    if (cardNas && !dests.includes(cardNas)) dests.push(cardNas);
+  }
   const projRoot = (organizeDest || (cfg && cfg.projectsRoot) || '').replace(/[\\/]+$/, '');
   let routedN = 0;
   for (const p of photos) {

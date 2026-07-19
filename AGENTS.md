@@ -322,6 +322,43 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19au — card photos were excluded from the NAS backup every clip on the same card gets
+
+Videos imported from a card are mirrored inside `copy:start` using `config.nasBackup.{enabled,path}`
+— the setting the SETUP WIZARD writes. Photos never reach `copy:start` (they're stripped from
+`filesToCopy()` and fanned out by `distributeFlowPhotos`), so they never touched that setting at all.
+Their only NAS route was a **separate, separately-configured** one: `cfg.phoneDestNas` /
+`cfg.phoneNasFolder`, written in the phone-preferences panel.
+
+So: enable NAS backup in the wizard, never open phone preferences, insert a card → every video
+mirrored off-machine, **not one still** — while the completion line still said "Photos backed up",
+because it reports the destinations it was given rather than the one it never had.
+
+Fix: the card NAS joins the photo fan-out, **card flow only** (`includePhotosTemp` is true only for
+`distributeFlowPhotos`), deduped against the phone NAS since the two settings can legitimately point at
+the same folder and a second job for one file collides with the first and versions it into `_v2`.
+
+`test/e2e/photo-nas-mirror.e2e.mjs`, 6 tests, all three properties proven with asserted breaks.
+**Written as E2E on purpose:** `buildPhotoJobs` is a renderer function the vm harness cannot reach, and
+asserting on the ACTUAL destination list is worth far more here than a source match — what matters is
+where a photo really goes. Three tests guard the other direction: the phone flow keeps its own setting,
+a disabled or path-less backup adds nothing (no empty or bare-separator destinations), and Photos Temp
+is not displaced.
+
+Both tiers green: vm **1022/935/87/0**, e2e **87/86/1/0** (the e2e suite grew by this file). App still
+running (PID 7104) — undeployed, **~77 commits**.
+
+**QUEUE — two photo-parity items remain from the `at` sweep:**
+1. **Card photos get no free-space preflight anywhere.** Videos have two layers (renderer
+   `spaceTargets` + main's per-destination `statfs` with 2 GB headroom); `phone:distribute` has **no
+   `statfs` at all**, and a card of stills now fans out to up to 5 destinations each. Note this fix
+   ADDED a destination, so the gap matters slightly more than when it was logged.
+2. **Photos never enter the import index or get drafts cleared**, so re-inserting a card re-offers and
+   re-copies every still. Costs time, not data — the collision guard full-hashes and skips identical
+   files. LOW.
+
+**Still the highest-value action: THE DEPLOY.** ~77 commits, blocked all session by the app running.
+
 ### 2026-07-19at — card stills were WRITTEN IN PLACE before any copy existed. The one absolute, inverted.
 
 New axis (photo/video parity — a standing PROMPT.md §2 obligation never swept before) and it found the

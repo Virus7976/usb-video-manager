@@ -14131,9 +14131,20 @@ $('finRunBtn').addEventListener('click', async () => {
     const where = usePlan
       ? `Files move into your Projects tree at ${dest}, exactly where the map on the Organize step shows them.${unplanned ? ` ${unplanned} clip${unplanned !== 1 ? 's have' : ' has'} no place on the map yet and will be skipped — go back and file ${unplanned !== 1 ? 'them' : 'it'} first.` : ''}`
       : `Files move into ${dest}\\${finLevels.map(finLevelLabel).map((s) => s.toLowerCase()).join('\\')}\\…`;
+    // SAY WHERE THE UNNAMED ONES GO. A clip the AI never described files to `<date>/_unsorted` rather
+    // than the category/project path above (2026-07-19bj), so a mixed selection has TWO destinations
+    // and this sentence described one. Since unnamed clips became fileable AND selectable in the same
+    // session, this confirmation is the only place the app can tell him before he finds out by
+    // looking at his Projects tree afterwards — which is the "I have to re-check its work" failure
+    // this whole effort exists to remove. Counted from the SELECTION, so it describes the run he is
+    // actually about to make.
+    const plainN = matched.filter((c) => !c.matched).length;
+    const plainNote = plainN
+      ? ` ${plainN} clip${plainN !== 1 ? 's have' : ' has'} no name yet and will file by date into a “_unsorted” folder you can sort later.`
+      : '';
     const ok = await confirmDialog(
       `Organize ${matched.length} clip${matched.length !== 1 ? 's' : ''}?`,
-      `${where} Re-running is safe — existing folders are reused and duplicates are skipped.`,
+      `${where}${plainNote} Re-running is safe — existing folders are reused and duplicates are skipped.`,
       'Run', 'Cancel'
     );
     if (!ok) return;

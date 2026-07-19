@@ -322,6 +322,39 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bl — TIER 1 #8: the Run confirmation now says where the UNNAMED clips go
+
+Third piece of the same thread. The confirmation described one destination —
+`Files move into <dest>\category\project\…` — which was true while only described clips could be
+filed. Since `bj`/`bk` made unnamed clips both fileable and selectable, a mixed selection now has TWO
+destinations and the sentence he reads before pressing Run mentioned one.
+
+It now adds: *"N clips have no name yet and will file by date into a '_unsorted' folder you can sort
+later."* Counted from the SELECTION, so it describes the run he is actually about to make rather than
+the folder contents.
+
+**Why this is not a wording nit:** the confirmation is the only place the app can tell him before he
+finds out by looking at his Projects tree afterwards. Silent-but-correct is precisely the
+"I have to re-check its work" failure the toolness effort exists to remove — and the first time he
+ticks a few hundred unnamed clips is exactly when he needs to know.
+
+`test/e2e/run-confirm-says-where.e2e.mjs`, 5 tests, driven through the REAL dialog: `confirmDialog` is
+a function declaration in the shared bundle scope, so the test replaces it, captures the exact
+sentence he would read, and answers Cancel — asserting on his actual words without filing anything.
+**That technique is worth reusing for any confirmation-text change.** Guard proven by breaking it.
+Three guard the other direction: an all-named run gains no stray warning, the existing destination and
+"re-running is safe" sentences survive, and cancelling really cancels.
+
+**One test expectation was mine, not the code's:** I asserted the dialog names `C:\Projects`, but
+`finEffectiveDest()` resolves from the dest MODE and this fixture lands on the scan dir. Rewritten to
+assert the sentence exists rather than a path I had assumed.
+
+Both tiers green: vm **1078/974/104/0**, e2e **104/103/1/0**.
+
+**Tier 1 progress: #4, #5, #8, #9 done** (resume banner · file without a name · say where it goes ·
+"good enough" filing). The thread that started as "why do I never use this" is now: unnamed clips are
+fileable, selectable, opt-in, and honestly described before the run.
+
 ### 2026-07-19bk — finishing what `bj` started: a capability without a control is worse than none
 
 Verified the shipped change instead of moving on, and it had left a genuinely dangerous gap. The list

@@ -322,6 +322,44 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ag — the memory auto-consolidation had no FLOOR: 20 rules could become 1 (queue item 2)
+
+`maybeAutoConsolidate()` merges the AI preference rules in the background with no approval. Its only
+gate on applying the model's output was `merged.length <= mems.length` — which bounds GROWTH and says
+nothing about shrinkage. One rule returned for twenty passed cleanly and nineteen hand-taught rules
+were gone, unattended, with no undo and no version history for that store.
+
+And the model wasn't misbehaving: the prompt itself says "DELETE anything redundant, vague, or now
+contradicted" and "Aim for ≤ 18 rules", so enthusiastic collapse is the *requested* behaviour. The
+sibling `ai:consolidateMemories` never had this problem because it only PROPOSES — `ai:replaceMemories`
+commits after the user approves. Same operation, opposite consent models; the unattended one needed
+the bound the other gets from consent.
+
+Fix: `FLOOR = Math.min(18, Math.ceil(mems.length / 2))`, tracking the prompt's own target — a big
+list may always compress to 18, a smaller one may at most halve, anything past that is not a merge.
+Plus `config.ai.memoriesPrev`, a snapshot of what was replaced, because this is destructive,
+automatic and irreversible and there was nothing to recover from. Additive field; no UI yet, so
+recovery is by hand from config.json — **a future iteration could surface a one-click restore.**
+
+**THE PROMPT STRING IS UNCHANGED and a test now guards that.** AI prompts and tool strings are
+measured input here, so the change is confined to the gate deciding whether to APPLY the result. Test
+7 fails if anyone "tidies" the prompt text, which would need re-measuring against the real models.
+
+`test/memory-consolidate-floor.test.mjs`, 7 tests, both guards proven by breaking them. Three tests
+guard the OTHER direction — a genuine 20→12 merge still applies, a large set may still reach the
+documented 18, and a refusal leaves the rules byte-identical (no reordering or id churn).
+
+vm **939/858/81/0**. **e2e deliberately NOT run**: the diff is `main-mod/07-naming-organize.js` only,
+no renderer file touched. Jake asked for a faster loop cadence and the 52 s e2e run was most of the
+gap; skipping it when `src/mod/`, `src/index.html`, `src/styles.css` or `preload.js` are untouched is
+the agreed rule. **Run both tiers before any deploy.**
+
+App still running (PID 7104) — undeployed, ~63 commits.
+
+**QUEUE:** 3 delete-person leaves the name on filed clips · 4 `organize:undo` leaves `finalMeta.done`
+· 5 "Ignore this face" is not reversible · 6 ledger/undo race · 7 LOW: memory-inbox `slice(-300)`,
+`ledgerFind` case-sensitivity. Detail in `2026-07-19ae`.
+
 ### 2026-07-19af — face-review Undo now reverses the ENROLMENT, not just the tags (queue item 1)
 
 `assign()` made three persisted writes — `people:save` (confirmed descriptors + crop + thumb),

@@ -6121,9 +6121,26 @@ async function maybeAutoConsolidate() {
     const merged = extractRulesFrom(o).slice(0, 60);
     const before = mems.map((m) => (m.text || '').toLowerCase().trim()).join('|');
     const after = merged.map((r) => (r.text || '').toLowerCase().trim()).join('|');
-    // Apply when the set actually changed and didn't GROW (merges, conflict-drops, edits).
-    if (merged.length && merged.length <= mems.length && after !== before) {
+    // Apply when the set actually changed, didn't GROW, and didn't COLLAPSE.
+    //
+    // The floor is the point. `merged.length <= mems.length` bounds growth and says nothing about
+    // shrinkage, so one rule returned for twenty passed cleanly and nineteen hand-taught rules were
+    // gone — unattended, with no undo and no version history. And that isn't the model
+    // misbehaving: the prompt above asks it to "DELETE anything redundant" and "Aim for ≤ 18 rules",
+    // so enthusiastic collapse is the requested behaviour. The sibling path
+    // (ai:consolidateMemories) never had this problem because it only PROPOSES and waits for the
+    // user to approve; this one commits on its own, so it needs the bound the other gets from
+    // consent.
+    //
+    // min(18, half) tracks the prompt's own target: a big list may always compress to 18 (the
+    // documented aim), and a smaller one may at most halve. Anything past that is not a merge.
+    const FLOOR = Math.min(18, Math.ceil(mems.length / 2));
+    if (merged.length && merged.length <= mems.length && merged.length >= FLOOR && after !== before) {
       const now = Date.now();
+      // This is destructive, automatic and irreversible, so keep what it replaced. There is no undo
+      // and no history for this store; a snapshot at least makes a bad consolidation recoverable by
+      // hand from config.json instead of simply lost.
+      config.ai.memoriesPrev = mems.map((m) => ({ text: m.text, example: m.example || '', ts: m.ts || 0 }));
       config.ai.memories = merged.map((r) => ({ id: newMemId(), text: r.text, example: r.example || '', ts: now }));
       saveConfig();
       if (mainWindow && !mainWindow.isDestroyed()) { try { mainWindow.webContents.send('ai:memory-updated', { memories: config.ai.memories, consolidated: true }); } catch { /* ignore */ } }

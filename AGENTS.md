@@ -358,6 +358,22 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19z — INSTALLER REBUILT AT HEAD. Deploy is a 10-second install again.
+
+`dist/USB-SD-Auto-Action-Setup-0.4.28.exe` in the Windows checkout was rebuilt at `f59b00f` and the
+packaged asar verified to contain the two newest fixes (`name-exists` from the person-rename
+collision, `restoreAiQuestions` from the AI-question rebind) alongside `isOnRemovableVolume` and
+`clipKeyV2`. **No rebuild needed — only that the app be closed:**
+
+    Start-Process '<that .exe>' -ArgumentList '/S' -Wait
+    # verify with grep -ac (NOT grep -c) against
+    # %LOCALAPPDATA%\Programs\USB SD Auto-Action\resources\app.asar, then relaunch
+
+**This goes stale the moment anything else is committed** — re-sync and rebuild first if HEAD has
+moved past `f59b00f`.
+
+---
+
 ### 2026-07-19y — ALL SWEEP FINDINGS CLOSED (`0bb75b5`). The WSL-safe queue is empty.
 
 The compress dialog now re-enables its inputs in the `finally` rather than only in the `if (err)`

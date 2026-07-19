@@ -75,10 +75,12 @@ test('buildCompressArgs: a comma in `scale` cannot inject an extra ffmpeg filter
   assert.equal(args.join(' ').includes('transpose'), false);
 });
 
-test('buildCompressArgs: a plain integer scale still builds the filter', () => {
+test('buildCompressArgs: a plain integer scale still builds the filter (clamped, no upscale)', () => {
   const args = m.plain(m.call('buildCompressArgs', 'in.mp4', 'out.mp4',
     { scale: 1080, codec: 'h264', preset: 'medium' }));
-  assert.equal(vf(args), 'scale=-2:1080');
+  // Height is clamped to the source via ffmpeg's min() expression; the inner comma is escaped so
+  // the filtergraph parser keeps it as ONE filter argument.
+  assert.equal(vf(args), 'scale=-2:min(1080\\,ih)');
 });
 
 test('buildCompressArgs: "source" scale adds no -vf, and paths stay separate argv elements', () => {

@@ -20,6 +20,8 @@
     "check": "node --check main.js && node --check preload.js && node --check src/renderer.js && node --check watch-drives.js && node scripts/check-primitives.mjs && node --test test/",
     "test": "node --test test/",
     "pretest": "node scripts/bundle.mjs",
+    "test:e2e": "node scripts/bundle.mjs && RUN_E2E=1 node --test --test-concurrency=1 test/e2e/*.e2e.mjs",
+    "test:all": "npm test && npm run test:e2e",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win",
     "build:win": "electron-builder --win --publish never",
@@ -36,7 +38,8 @@
   },
   "devDependencies": {
     "electron": "^42.4.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "playwright-core": "^1.48.2"
   },
   "build": {
     "appId": "com.jakeg.usbautoaction",
@@ -75,10 +78,6 @@
       "createStartMenuShortcut": true,
       "shortcutName": "USB SD Auto-Action"
     }
-  },
-  "directories": {
-    "doc": "docs",
-    "test": "test"
   },
   "keywords": []
 }

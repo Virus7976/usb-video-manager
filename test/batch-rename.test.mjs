@@ -159,7 +159,13 @@ test('the filter predicate is shared — what you SEE and what a bulk action TOU
   const ren = mod('03-rename.js');
   assert.match(ren, /function clipMatchesFilter\(c\)/, 'one predicate');
   const apply = ren.slice(ren.indexOf('function applyClipFilter('));
-  assert.match(apply.slice(0, apply.indexOf('\n}')), /const ok = clipMatchesFilter\(c\);/, 'the display uses it');
+  // Audit #50 split this into two uses of the SAME predicate: the count (over state, so it doesn't
+  // under-report clips the windowed grid hasn't rendered) and the per-card visibility. Pin that both
+  // go through clipMatchesFilter — the intent is one predicate, not one particular local variable.
+  const body = apply.slice(0, apply.indexOf('\n}'));
+  const uses = body.match(/clipMatchesFilter\(c\)/g) || [];
+  assert.ok(uses.length >= 2, `both the count and the display use it (found ${uses.length})`);
+  assert.match(body, /state\.scannedFiles\.reduce\(/, 'the count is over STATE, not the rendered cards');
 });
 
 test('a new card starts with no filter', () => {

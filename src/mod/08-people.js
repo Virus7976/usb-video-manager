@@ -6,7 +6,32 @@
 // ---------------------------------------------------------------------------
 let _faceReady = null;
 let faceScanAborted = false;
+// True only while a face scan is running. Used to coalesce the faces-pending saves far harder
+// during a scan — see PENDING_SAVE_MS (audit #67).
+let faceScanActive = false;
 function faceDist(a, b) { let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i += 1) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
+
+// --- RECOGNITION DISTANCES (euclidean, face-api 128-d descriptors) ----------------------------
+// These are MEASURED values, not preferences — see usb-app-tool-strings-are-input. They were bare
+// literals repeated across five call sites, which is how thresholds that interact silently drift
+// apart (audit #91). One name per decision, so a retune is one edit and shows up in review.
+//
+// Measured 2026-07-18 on the face fixture (three genuinely different people, real face-api run):
+// the closest DISTINCT pair was 0.6028 (others 0.6511, 0.7116). So 0.5 has ~0.10 of margin on that
+// sample — it does NOT fuse those three.
+//
+// KNOWN WEAKNESS (audit #13, deliberately NOT changed blind): clustering at 0.50 is LOOSER than the
+// auto-tag threshold of 0.46 — the app is more willing to fuse two UNKNOWN faces than to tag a known
+// one, which is backwards, because the two errors are not symmetric:
+//   • a bad MERGE is expensive — confirming the fused card tags BOTH people and poisons the
+//     person's training set (only confirmed faces vote, so the damage compounds);
+//   • a bad SPLIT is cheap — you just see two cards for one person and name both.
+// Close relatives (Jake shoots siblings) are exactly where 0.50 is suspect, and the fixture has no
+// sibling pair to prove it with. Retuning needs a measurement against real footage FIRST — pick
+// clips with two similar-looking family members, print faceDist for the pairs, and only then move
+// this number. Do not "tighten it to be safe": that fragments one person into many cards.
+const FACE_CLUSTER_DIST = 0.5;        // merge two unknown faces into ONE review card
+const FACE_FRAME_DEDUPE_DIST = 0.45;  // the same face recurring across frames of ONE clip
 
 // face-api.min.js is 1.3 MB and bundles TensorFlow.js. It used to sit in index.html as a
 // blocking <script> ahead of renderer.js, so EVERY launch paid to read, parse and execute
@@ -91,6 +116,7 @@ async function detectFacesForClip(clip, onFrame) {
   const frames = (r && r.ok && Array.isArray(r.frames)) ? r.frames : [];
   if (!frames.length) return { ready: true, faces: [], scene: null };
   const collected = [];   // {descriptor, thumb, area}
+  let detectErrors = 0;   // frames where detectAllFaces THREW (GPU/WebGL hiccup) — not the same as "no faces"
   // THE GROUP SHOT. detectAllFaces already finds everyone in a frame — but all we ever kept was a
   // 144px crop per person, so a frame with three people became three disembodied heads and the shot
   // they came from was thrown away. Keep the best one: the frame showing the MOST faces at once
@@ -110,19 +136,22 @@ async function detectFacesForClip(clip, onFrame) {
     const src = faceSource(img);
     let dets = [];
     // eslint-disable-next-line no-await-in-loop
-    try { dets = await fa.detectAllFaces(src.el, new fa.SsdMobilenetv1Options({ minConfidence: 0.5 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; }
+    try { dets = await fa.detectAllFaces(src.el, new fa.SsdMobilenetv1Options({ minConfidence: 0.4 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; detectErrors += 1; }
     const inFrame = [];   // everyone visible in THIS frame, together
     for (const d of dets) {
       const box = d.detection.box; const area = box.width * box.height;
-      // Skip faces that are too SMALL or low-confidence — their descriptors are noisy
-      // and pollute a person's training set, which is what hurts recognition accuracy.
-      const minSide = Math.max(64, src.w * 0.055);
+      // A face has to be big and confident enough that its descriptor is worth learning from — too
+      // small or too unsure and it just pollutes a person's training set. But the OLD floors (64px /
+      // 5.5% / score 0.55) were tuned for solo clips and quietly dropped the back-row and side faces
+      // in a group shot, so a table of nine showed as three. Relaxed so more real faces are offered to
+      // NAME (the user's confirmation is the real quality gate); still filters true noise. TUNABLE.
+      const minSide = Math.max(44, src.w * 0.04);
       if (box.width < minSide || box.height < minSide) continue;
-      if ((d.detection.score || 0) < 0.55) continue;
+      if ((d.detection.score || 0) < 0.42) continue;
       const desc = Array.from(d.descriptor);
       const thumb = cropFace(src, box);
       inFrame.push({ descriptor: desc, thumb, area, box: { x: box.x, y: box.y, width: box.width, height: box.height } });
-      const existing = collected.find((c) => faceDist(c.descriptor, desc) < 0.45);
+      const existing = collected.find((c) => faceDist(c.descriptor, desc) < FACE_FRAME_DEDUPE_DIST);
       if (existing) { if (area > existing.area) { existing.thumb = thumb; existing.area = area; existing.descriptor = desc; } }
       else collected.push({ descriptor: desc, thumb, area });
     }
@@ -144,6 +173,9 @@ async function detectFacesForClip(clip, onFrame) {
     ready: true,
     faces: collected.map((c) => ({ descriptor: c.descriptor, thumb: c.thumb })),
     scene: scene ? { img: scene.img, w: scene.w, h: scene.h, faces: scene.faces } : null,
+    // Detection actually failed on a frame AND we ended up with nothing — the "no faces" result is
+    // untrustworthy (likely a transient GPU/WebGL error), so callers must not mark the clip scanned.
+    detectError: detectErrors > 0 && !collected.length,
   };
 }
 
@@ -157,10 +189,22 @@ async function detectFacesForClip(clip, onFrame) {
 // are: a scan MERGES into what is already waiting instead of replacing it.
 let faceScenes = [];
 let _scenesLoaded = false;
+// A load that FAILED is not the same as "there are no group shots". This mirrors main's
+// `storeReadFailed` latch (see AGENTS.md 2026-07-09): run on empty defaults so the UI still works,
+// but REFUSE to write, because saving now would replace every real group shot with this session's
+// empty list — and the old code latched `_scenesLoaded = true` on the failure path, so it never
+// even retried the read.
+let _scenesLoadFailed = false;
 async function ensureFaceScenes() {
   if (_scenesLoaded) return faceScenes;
-  try { faceScenes = (await window.api.getFaceScenes()) || []; } catch { faceScenes = []; }
-  _scenesLoaded = true;
+  try {
+    faceScenes = (await window.api.getFaceScenes()) || [];
+    _scenesLoaded = true; _scenesLoadFailed = false;
+  } catch {
+    // Deliberately do NOT set _scenesLoaded: leaving it false means a later call retries the read
+    // instead of running the rest of the session on a phantom empty store.
+    faceScenes = []; _scenesLoadFailed = true;
+  }
   return faceScenes;
 }
 // One scene per clip — a second scan of the same clip replaces its old group shot rather than
@@ -174,6 +218,9 @@ async function noteFaceScene(clip, scene) {
   if (at >= 0) faceScenes[at] = rec; else faceScenes.push(rec);
 }
 function saveFaceScenesNow() {
+  // Never write a list we never successfully read. faces:saveScenes REPLACES the whole store, so
+  // saving an empty/partial session over a healthy one is a silent wipe of every saved group shot.
+  if (_scenesLoadFailed || !_scenesLoaded) return Promise.resolve();
   try { return window.api.saveFaceScenes(faceScenes); } catch { return Promise.resolve(); }
 }
 
@@ -204,7 +251,7 @@ async function collectClipFaces(clip, clusters, keys) {
     const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
     const matched = !!(m && m.match);   // backend already applied the strict gate
     // Cluster the face (recognized or not) for the Review grid — never auto-apply.
-    let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
+    let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < FACE_CLUSTER_DIST);
     if (!c) {
       c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null };
       clusters.push(c);
@@ -327,9 +374,25 @@ const FACE_SUGGEST_DIST = 0.54;   // ceiling passed to people:match; the backend
 // --- persist the review across restarts (crops + descriptors + state) --------
 // Only the UNRESOLVED clusters are stored (confirmed faces already live in
 // people.json; skipped ones are dismissed). clipKeys is a Set → stored as array.
+// #45: a done/skipped cluster whose face appears in a saved group SHOT has to persist too. It used to
+// be filtered out here — so on reopen clusterOf() couldn't resolve it, a partly-named shot fell below
+// liveScenes' "≥2 resolvable" bar and VANISHED, stranding the still-unnamed people in it (Jake: "why
+// isn't it remembering face scanning across sessions!!!"). We keep ONLY scene-referenced resolved
+// clusters — a solo named face already lives in people.json — so faces-pending.json stays bounded, and
+// because every kept resolved cluster is on a scene, render()'s onScene filter keeps them out of the
+// flat grid (no "just confirmed" clutter on reopen).
+function _clusterInAnyScene(c) {
+  if (!c || !c.descriptor) return false;
+  for (const s of (faceScenes || [])) {
+    for (const f of (s.faces || [])) {
+      if (f && f.descriptor && faceDist(c.descriptor, f.descriptor) < FACE_CLUSTER_DIST) return true;
+    }
+  }
+  return false;
+}
 function _serializePending(clusters) {
   return (clusters || [])
-    .filter((c) => c && !c.skipped && !c.done && c.descriptor)
+    .filter((c) => c && c.descriptor && (!(c.done || c.skipped) || _clusterInAnyScene(c)))
     .map((c) => ({
       thumb: c.thumb || '',
       descriptor: c.descriptor,
@@ -337,20 +400,46 @@ function _serializePending(clusters) {
       clipKeys: [...(c.clipKeys || [])],
       suggest: c.suggest || null,
       rejected: !!c.rejected,
+      done: !!c.done,
+      skipped: !!c.skipped,
+      assignedName: c.assignedName || '',
     }));
 }
+// How long to coalesce faces-pending writes.
+//
+// 700 ms is right for interactive edits in the review grid. DURING A SCAN it is wrong: a save fires
+// after every clip, and each one blocks the MAIN process — writeJsonAtomic uses writeSync + fsyncSync
+// (main-mod/01-core.js), so previews and copy progress stall with it. Measured 2026-07-18: a realistic
+// post-#66 store of 250 clusters serialises to 3.1 MB and ~13 ms BEFORE the synchronous write, and a
+// 250-clip scan fires that after every clip.
+//
+// Safe to trade durability for responsiveness HERE specifically because faces-pending is DERIVED
+// data: the worst case after a crash is re-scanning some clips, not lost footage and not lost names.
+// Drafts keep their tight debounce precisely because they are NOT derived. The scan's `finally`
+// always flushes, so ending a scan never leaves work unsaved.
+const PENDING_SAVE_MS = () => (faceScanActive ? 8000 : 700);
 let _pendingSaveTimer = null;
+// See loadPendingFaces: true once a read has failed, which makes the in-memory list a phantom.
+// faces:savePending REPLACES the whole store, so writing while this is set wipes the faces waiting
+// to be reviewed from every other card.
+let _pendingLoadFailed = false;
 function schedulePendingSave(clusters) {
   clearTimeout(_pendingSaveTimer);
-  _pendingSaveTimer = setTimeout(() => { try { window.api.savePendingFaces(_serializePending(clusters)); } catch { /* ignore */ } }, 700);
+  if (_pendingLoadFailed) return;
+  _pendingSaveTimer = setTimeout(() => { try { window.api.savePendingFaces(_serializePending(clusters)); } catch { /* ignore */ } }, PENDING_SAVE_MS());
 }
 function savePendingNow(clusters) {
   clearTimeout(_pendingSaveTimer);
+  if (_pendingLoadFailed) return Promise.resolve();
   try { return window.api.savePendingFaces(_serializePending(clusters)); } catch { return Promise.resolve(); }
 }
 async function loadPendingFaces() {
   let list = [];
-  try { list = await window.api.getPendingFaces(); } catch { list = []; }
+  // Same fail-open as the scenes store: `catch { list = [] }` made a rejected IPC indistinguishable
+  // from "no unreviewed faces", and the next save then replaced every other card's pending faces
+  // with this session's empty list. Record the failure so the savers can refuse.
+  try { list = await window.api.getPendingFaces(); _pendingLoadFailed = false; }
+  catch { list = []; _pendingLoadFailed = true; }
   return (list || []).filter((c) => c && Array.isArray(c.descriptor)).map((c) => ({
     thumb: c.thumb || '',
     descriptor: c.descriptor,
@@ -358,15 +447,39 @@ async function loadPendingFaces() {
     clipKeys: new Set(c.clipKeys || []),
     suggest: c.suggest || null,
     rejected: !!c.rejected,
-    done: false,
+    // Restore resolved state (was hardcoded false) — the other half of #45: a named face in a saved
+    // group shot must come back NAMED, so the scene resolves it instead of stranding it as unnamed.
+    done: !!c.done,
+    skipped: !!c.skipped,
+    assignedName: c.assignedName || '',
   }));
+}
+
+// Standalone "just scan faces" on the ticked clips → straight into the face review. Face scanning was
+// only reachable bundled inside Analyze (which also runs the vision naming) or two clicks deep in the
+// People dashboard; there was no way to run ONLY a face scan. This is that entry point.
+function scanFacesSelected() {
+  const sel = currentSelectedClips();
+  if (!sel.length) { showToast('Tick some clips first (or open a card)'); return; }
+  return scanFacesForClips(sel);
 }
 
 async function scanFacesForClips(clipList, opts = {}) {
   if (!clipList || !clipList.length) { showToast('Select some clips first'); return; }
-  // Skip clips already scanned in a previous (or interrupted) run — face scanning is
-  // slow and the result is remembered, so never redo a clip unless explicitly forced.
-  const toScan = opts.force ? clipList : clipList.filter((c) => !c._facesScanned);
+  // Skip clips already scanned in a previous (or interrupted) run — face scanning is slow and the
+  // result is remembered, so never redo a clip unless explicitly forced.
+  //
+  // Consult the PERSISTED drafts, not only the in-memory `_facesScanned` flag. That flag was the whole
+  // "it re-scans from scratch every session" bug: it isn't present on every clip representation (the
+  // Organize screen builds fresh clip objects without it), and a restore can miss it — so a clip we
+  // scanned last session got scanned again. The draft record (keyed by name__size) is the durable
+  // truth; a clip is "already scanned" if EITHER source says so.
+  let scannedKeys = new Set();
+  if (!opts.force) {
+    try { const drafts = (await window.api.getDrafts()) || {}; for (const k of Object.keys(drafts)) { if (drafts[k] && drafts[k].facesScanned) scannedKeys.add(k); } } catch { /* fall back to the in-memory flag alone */ }
+  }
+  const isScanned = (c) => !!c._facesScanned || scannedKeys.has(clipKey(c));
+  const toScan = opts.force ? clipList : clipList.filter((c) => !isScanned(c));
   const skipped = clipList.length - toScan.length;
   if (!toScan.length) {
     // Everything here was scanned before → don't re-scan. Reopen the SAVED review
@@ -385,6 +498,7 @@ async function scanFacesForClips(clipList, opts = {}) {
   const probe = await ensureFaceModels();
   if (!probe.ok) { showFaceSetup(probe.error); return; }
   faceScanAborted = false;
+  faceScanActive = true;   // coalesce faces-pending writes hard while scanning (audit #67)
   aiFollow = true; aiAborted = false; showFollowBtn(false);
   clearActivity();
   // Start from the saved review so a new scan MERGES into what's already waiting
@@ -412,20 +526,32 @@ async function scanFacesForClips(clipList, opts = {}) {
       // eslint-disable-next-line no-await-in-loop
       await noteFaceScene(clip, res.scene);   // the frame that shows them TOGETHER — see noteFaceScene
       if (res.scene) pushActivity(`${res.scene.faces.length} people in one shot — you can name them on the frame`, 'face');
-      pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
-      // Remember this clip was scanned (even if nothing matched) so we never re-nag,
-      // and PERSIST it now so a mid-stream cutoff still remembers what's done.
-      clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
-      const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
-      flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
+      // #84: a GPU/WebGL hiccup makes detectAllFaces throw, which used to look identical to "no
+      // faces" — so we'd mark the clip scanned and NEVER retry it. When detection actually errored
+      // and found nothing, leave the clip UNscanned so a later scan (GPU recovered) tries again.
+      if (res.detectError) {
+        pushActivity(`Face detection failed on ${clip.name} — will retry later`, 'face');
+      } else {
+        pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
+        // Remember this clip was scanned (even if nothing matched) so we never re-nag,
+        // and PERSIST it now so a mid-stream cutoff still remembers what's done.
+        clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
+        const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
+        flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
+      }
       for (const f of res.faces) {
         // eslint-disable-next-line no-await-in-loop
         const m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST });
+        // #46: this face is in the IGNORE bin — a statue/TV/poster/passer-by the user dismissed.
+        // matchPerson already recognises it (match:null, ignored:true) but "Ignore" only ever
+        // suppressed MATCHING, not CLUSTERING — so it fell through below and re-formed a "New face —
+        // name it?" cluster on EVERY future scan. Drop it here: don't cluster, don't offer, don't re-ask.
+        if (m && m.ignored) continue;
         const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
         const matched = !!(m && m.match);   // backend already applied the strict gate
         // NEVER auto-tag or auto-confirm. Recognized faces become SUGGESTIONS you confirm
         // in the Review grid, and are saved to the person's profile as UNCONFIRMED.
-        let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
+        let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < FACE_CLUSTER_DIST);
         if (!c) { c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null }; clusters.push(c); pushActivity(matched ? `Looks like ${m.match.name} — needs your confirmation` : 'New face — will ask you to name it', 'face', f.thumb); }
         c.descriptors.push(f.descriptor); c.clipKeys.add(clipKey(clip));   // stable across replug — see collectClipFaces
         if (matched) {
@@ -443,6 +569,10 @@ async function scanFacesForClips(clipList, opts = {}) {
     showToast(`Face scan stopped — ${msg}. The ${done} clip${done !== 1 ? 's' : ''} already scanned are remembered.`, 5500);
   } finally {
     clearAllAnalyzing(); clearTask('faces');
+    // Leave scan mode and FLUSH: the coarse 8 s debounce above means a pending write can still be
+    // in flight, and ending a scan must never leave the review unsaved (audit #67).
+    faceScanActive = false;
+    try { savePendingNow(clusters); } catch { /* the grid below re-saves on any edit anyway */ }
   }
   scheduleDraftSave();   // make sure the last clips' scanned-flags persist
   if (faceScanAborted) { showToast(`Face scan stopped — ${done} scanned so far are remembered (resume to do the rest).`, 4500); }
@@ -491,10 +621,22 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   function tagClips(cl, name) {
     for (const k of cl.clipKeys) { const c = byKey[k]; if (c) c.people = [...new Set([...(c.people || []), name])]; }
     flushDraftSave();
+    // …and the ones that are NOT in memory (audit #26/#27). `byKey` is built from state.scannedFiles,
+    // so a cluster restored from faces-pending.json — which legitimately references clips from
+    // earlier sessions, already renamed and filed — tagged NONE of them, silently. Send every key:
+    // the backend is add-only and idempotent, so in-memory clips (whose persisted record may lag)
+    // are harmless to include, and it never creates a record for a key it doesn't know.
+    // Fire-and-forget: the in-memory tag above already succeeded, so a failure here must not block
+    // naming — it just means the persisted half retries on the next confirm.
+    try { window.api.tagPersonOnClips({ name, keys: [...cl.clipKeys] }); } catch { /* non-fatal */ }
   }
   function untagClips(cl, name) {
     for (const k of cl.clipKeys) { const c = byKey[k]; if (c && Array.isArray(c.people)) c.people = c.people.filter((n) => n !== name); }
     flushDraftSave();
+    // …and reverse the PERSISTED tag too. tagClips writes through to finalMeta/drafts (#26), so
+    // without this the undo only removed the name from clips that happen to be in memory — the
+    // filed ones kept it forever.
+    try { window.api.untagPersonOnClips({ name, keys: [...cl.clipKeys] }); } catch { /* non-fatal */ }
   }
   async function assign(cl, name) {
     name = String(name || '').trim();
@@ -506,8 +648,21 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     if (!names.includes(name)) names.push(name);
     render();
   }
-  function cardHTML(cl) {
-    const thumb = personThumbHTML(cl.thumb);
+  // A tight crop of a SPECIFIC face out of the group photo, done in pure CSS (a background sprite) —
+  // no canvas, no async decode. Used so the naming card shows the face you actually clicked, instead
+  // of the cluster's canonical thumb (which is a crop from some OTHER clip and looks like a stranger).
+  function faceCropHTML(img, box, iw, ih) {
+    if (!img || !box || !box.width) return personThumbHTML('');
+    const D = 96;                         // thumb size, px
+    const s = D / box.width;              // scale so the face box fills the thumb width
+    const bw = Math.round((iw || 0) * s); const bh = Math.round((ih || 0) * s);
+    const px = Math.round(-box.x * s); const py = Math.round(-box.y * s);
+    const style = `width:${D}px;height:${D}px;background-image:url('${escapeAttr(img)}');`
+      + `background-size:${bw}px ${bh}px;background-position:${px}px ${py}px;background-repeat:no-repeat;`;
+    return `<span class="person-thumb fgc-facecrop" style="${style}"></span>`;
+  }
+  function cardHTML(cl, opts = {}) {
+    const thumb = (opts.faceImg && opts.faceBox) ? faceCropHTML(opts.faceImg, opts.faceBox, opts.iw, opts.ih) : personThumbHTML(cl.thumb);
     const seen = `${cl.clipKeys.size} clip${cl.clipKeys.size !== 1 ? 's' : ''}`;
     if (cl.done) {
       return `<div class="face-grid-card-item confirmed" data-i="${cl._i}">
@@ -551,7 +706,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   // A scene face is linked back to its cluster BY DESCRIPTOR, not by a stored index: clusters are
   // rebuilt from faces-pending.json on every reopen and merged across scans, so any index we wrote
   // down would silently point at the wrong person the next time round.
-  const clusterOf = (desc) => clusters.findIndex((c) => c && !c.skipped && faceDist(c.descriptor, desc) < 0.5);
+  const clusterOf = (desc) => clusters.findIndex((c) => c && !c.skipped && faceDist(c.descriptor, desc) < FACE_CLUSTER_DIST);
   const unresolved = (ci) => ci >= 0 && clusters[ci] && !clusters[ci].done && !clusters[ci].skipped;
 
   function liveScenes() {
@@ -579,10 +734,18 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
 
     const left = s.cis.filter(unresolved).length;
     const sel = (s._sel != null && s.cis[s._sel] >= 0) ? clusters[s.cis[s._sel]] : null;
+    const selBox = (sel && s.faces[s._sel]) ? s.faces[s._sel].box : null;
+    // The naming card is a POPUP centred over the photo (dim backdrop), not a card below it you had to
+    // scroll to find. Its thumbnail is the face you actually clicked, cropped from THIS photo.
+    const pop = sel
+      ? `<div class="fsc-pop-wrap">${cardHTML(sel, { faceImg: s.img, faceBox: selBox, iw: s.w, ih: s.h })}</div>`
+      : '';
+    // The popup anchors to the whole .face-scene (not inside .fsc-photo, which is overflow:hidden and
+    // would clip the card on a wide/short group shot). Backdrop dims the scene; card centres over it.
     return `<div class="face-scene">
       <div class="fsc-photo"><img src="${escapeAttr(s.img)}" alt=""/>${boxes}</div>
       <div class="fsc-bar muted small">${escapeHtml(s.name || 'this shot')} · ${s.cis.filter((ci) => ci >= 0).length} people · ${left ? `${left} still to name — click a face` : 'all named ✓'}</div>
-      ${sel ? `<div class="fsc-pick">${cardHTML(sel)}</div>` : ''}
+      ${pop}
     </div>`;
   }
 
@@ -594,8 +757,13 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     const live = clusters.filter((c) => !c.skipped && !onScene.has(c._i));
     const suggested = live.filter((c) => !c.done && c.suggest && !c.rejected);
     const fresh = live.filter((c) => !c.done && (!c.suggest || c.rejected));
-    const recognized = live.filter((c) => c.done && c.autoMatched);
-    const confirmed = live.filter((c) => c.done && !c.autoMatched);
+    // `autoMatched` was READ here and in the Undo handler but never SET anywhere, so the
+    // "Recognized automatically" section below could never render and this split was always
+    // (everything, nothing). The Undo half of that dead flag was a real bug — it made Undo skip
+    // untagging entirely — so the flag is gone rather than left lying around to be misread again.
+    // Nothing auto-confirms in this app by design (see collectClipFaces: a recognised face becomes a
+    // SUGGESTION), which is why there was never anything to put in that section.
+    const confirmed = live.filter((c) => c.done);
 
     const sceneHTML = scenes.length
       ? `<div class="fg-section">Who's in this shot? <span class="fg-count">${scenes.length}</span></div>${scenes.map(sceneCardHTML).join('')}`
@@ -603,7 +771,6 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     scroll.innerHTML = sceneHTML
       + section('Suggested — confirm or correct', suggested)
       + section('New faces — who is this?', fresh)
-      + section('Recognized automatically — fix any that are wrong', recognized)
       + section('Just confirmed', confirmed);
     if (!scenes.length && !live.length) scroll.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">All faces handled ✓</p>';
     wire();
@@ -623,8 +790,27 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       b.addEventListener('click', () => {
         const s = faceScenes.find((x) => x.clipKey === scenes[Number(b.dataset.si)].clipKey);
         if (!s) return;
+        // Second-screen integration: mirror THIS shot's full-resolution file to the pop-out preview
+        // window (if it's open) so faces are big and clear over there while you name on the main
+        // screen. previewSet no-ops when the window is closed, so this is always safe to call.
+        const clip = byKey[s.clipKey];
+        if (clip && clip.sourcePath) { try { window.api.previewSet(clip.sourcePath, clip.name || '', { kind: 'photo' }); } catch { /* ignore */ } }
         const fi = Number(b.dataset.fi);
         s._sel = (s._sel === fi) ? null : fi;      // click the same face again to close it
+        render();
+        // Bring the popup fully into view if the photo is taller than the scroll viewport. rAF:
+        // render() just replaced innerHTML.
+        if (s._sel != null) requestAnimationFrame(() => {
+          const pop = scroll.querySelector('.fsc-pop-wrap');
+          if (pop) pop.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+      });
+    });
+    // Clicking the dim backdrop (not the card) closes the popup — a natural "dismiss".
+    scroll.querySelectorAll('.fsc-pop-wrap').forEach((w) => {
+      w.addEventListener('mousedown', (e) => {
+        if (e.target !== w) return;   // ignore clicks that land on the card itself
+        for (const s of faceScenes) s._sel = null;
         render();
       });
     });
@@ -642,7 +828,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       if (!cl) return;
       const yes = card.querySelector('.fgc-yes'); if (yes) yes.addEventListener('click', () => flash(card, 'ok', () => assign(cl, cl.suggest.name)));
       const no = card.querySelector('.fgc-no'); if (no) no.addEventListener('click', () => flash(card, 'no', () => { cl.rejected = true; render(); }));
-      const undo = card.querySelector('.fgc-undo'); if (undo) undo.addEventListener('click', () => { if (cl.autoMatched && cl.assignedName) untagClips(cl, cl.assignedName); cl.done = false; cl.autoMatched = false; cl.assignedName = ''; cl.suggest = null; render(); });
+      const undo = card.querySelector('.fgc-undo'); if (undo) undo.addEventListener('click', () => { if (cl.assignedName) untagClips(cl, cl.assignedName); cl.done = false; cl.assignedName = ''; cl.suggest = null; render(); });
       const save = card.querySelector('.fgc-save'); const inp = card.querySelector('.fgc-input');
       if (save && inp) save.addEventListener('click', () => { if (inp.value.trim()) flash(card, 'ok', () => assign(cl, inp.value)); });
       if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && inp.value.trim()) { e.preventDefault(); flash(card, 'ok', () => assign(cl, inp.value)); } });
@@ -652,6 +838,13 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   }
   ov.querySelector('.fg-confirm-all').addEventListener('click', async () => {
     const pending = clusters.filter((c) => !c.done && !c.skipped && c.suggest && !c.rejected);
+    // #83: this bulk-tags EVERY suggested person across all their clips in one click — borderline
+    // suggestions included — with no batch undo, so a single wrong suggestion can mislabel many clips
+    // at once. Drop an automatic restore point first, exactly like batch-apply (#34) and the AI ops,
+    // gated to a confirm big enough to be worth it and honouring the auto-version preference.
+    if (pending.length >= 5 && typeof saveVersionPoint === 'function' && uiPrefs.autoVersionOnAi !== false) {
+      await saveVersionPoint(`Before confirming ${pending.length} face suggestions`, true);
+    }
     for (const c of pending) { /* eslint-disable-next-line no-await-in-loop */ await assign(c, c.suggest.name); }
   });
   render();
@@ -915,7 +1108,9 @@ function removeClipPersonName(name) {
 function currentSelectedClips() {
   const fin = document.getElementById('finalize');
   if (fin && !fin.classList.contains('hidden') && finScan && finScan.files) {
-    return (finSelected().length ? finSelected() : finMatched()).map((f) => ({ key: f.name, name: f.name, sourcePath: f.sourcePath, people: (f.meta && f.meta.people) || [], _ref: f }));
+    // Carry `size` so clipKey(name__size) matches the drafts/scan record — without it a face scan from
+    // the Organize screen couldn't tell an already-scanned clip and re-did everything from scratch.
+    return (finSelected().length ? finSelected() : finMatched()).map((f) => ({ key: f.name, name: f.name, size: f.size, sourcePath: f.sourcePath, people: (f.meta && f.meta.people) || [], _facesScanned: !!(f.meta && f.meta.facesScanned), _ref: f }));
   }
   const sel = (state.scannedFiles || []).filter((c) => c.selected);
   return (sel.length ? sel : (state.scannedFiles || []));

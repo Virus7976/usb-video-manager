@@ -41,12 +41,14 @@ function openCalendar(anchor, currentStr, onPick) {
       const ds = `${vy}-${String(vm + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       html += `<button type="button" class="cal-day${ds === currentStr ? ' selected' : ''}" data-d="${ds}">${d}</button>`;
     }
-    html += '</div><div class="cal-foot"><button type="button" class="cal-today">Today</button></div>';
+    html += `</div><div class="cal-foot"><button type="button" class="cal-today">Today</button>${currentStr ? '<button type="button" class="cal-clear">Clear date</button>' : ''}</div>`;
     cal.innerHTML = html;
     cal.querySelector('.cal-prev').onclick = () => { vm -= 1; if (vm < 0) { vm = 11; vy -= 1; } render(); };
     cal.querySelector('.cal-next').onclick = () => { vm += 1; if (vm > 11) { vm = 0; vy += 1; } render(); };
     cal.querySelector('.cal-title').onclick = () => { mode = 'month'; render(); };
     cal.querySelector('.cal-today').onclick = () => { onPick(toDateStr(Date.now())); closePopover(); };
+    const clr = cal.querySelector('.cal-clear');   // clearing was impossible before — needed a version restore
+    if (clr) clr.onclick = () => { onPick(''); closePopover(); };
     cal.querySelectorAll('.cal-day[data-d]').forEach((b) => {
       b.onclick = () => { onPick(b.dataset.d); closePopover(); };
     });
@@ -151,6 +153,7 @@ const MENUS = {
         { label: 'Auto-name everything (background)', desc: 'Analyzes every still-unnamed clip on its own while you keep working.', action: aiAutoEnhance },
         { sep: true },
         { header: 'People' },
+        { label: 'Scan faces on selected clips', desc: 'Just find the faces in the ticked clips and open the review to name them — no vision naming, no descriptions.', action: scanFacesSelected },
         { label: 'People & faces…', desc: 'Tag who’s in each clip so names and metadata can use real names.', action: showPeopleManager },
         { label: 'Use names in descriptions (instant)', desc: 'Swaps generic words like “a man” for the recognized name. No AI call, instant.', action: applyNamesToDescriptions },
         { sep: true },
@@ -407,6 +410,7 @@ function clipContextItems(i) {
         { label: 'Analyze selected clips', action: aiAnalyzeSelected },
         { label: 'Improve descriptions (use all data)', action: aiImproveSelected },
         { sep: true },
+        { label: 'Scan faces on selected clips', action: scanFacesSelected },
         { label: 'AI settings…', action: showAiSettings },
         { label: 'People & faces…', action: showPeopleManager }
       ] }
@@ -450,6 +454,7 @@ function defaultContextItems() {
     { label: 'AI', submenu: () => [
       { label: 'AI settings…', action: showAiSettings },
       { label: 'Analyze selected clips', action: aiAnalyzeSelected },
+      { label: 'Scan faces on selected clips', action: scanFacesSelected },
       { label: 'People & faces…', action: showPeopleManager }
     ] },
     { label: 'Filing & destinations', submenu: () => [
@@ -486,8 +491,13 @@ function selectAllClips(on) {
   // Batch: set state for ALL clips, then touch only the DOM cards that exist (windowed)
   // and refresh the bar ONCE. (Calling setClipSelected per clip re-ran updateBatchBar +
   // rebuilt a growing checked-strip ~n times = O(n²) → froze/crashed on a 3000-clip roll.)
-  (state.scannedFiles || []).forEach((c) => { c.selected = on; });
+  // RESPECT THE FILTER — same rule the batch-bar select already follows: a bulk edit must never reach
+  // a clip the user can't see (filtering to "Unnamed" then Select-All + Apply overwrote finished clips).
+  const scoped = typeof clipFilterActive === 'function' && clipFilterActive();
+  (state.scannedFiles || []).forEach((c) => { if (scoped && !clipMatchesFilter(c)) return; c.selected = on; });
   document.querySelectorAll('#renameList .rename-card').forEach((card) => {
+    const c = state.scannedFiles[Number(card.dataset.i)];
+    if (scoped && !clipMatchesFilter(c)) return;
     const cb = card.querySelector('.clip-check'); if (cb) cb.checked = on;
     card.classList.toggle('selected', on);
   });
@@ -495,8 +505,9 @@ function selectAllClips(on) {
 }
 function invertClipSelection() {
   // Batch (like selectAllClips) — per-clip setClipSelected re-ran updateBatchBar+strip
-  // once per clip = O(n²) freeze on big rolls.
-  (state.scannedFiles || []).forEach((c) => { c.selected = !c.selected; });
+  // once per clip = O(n²) freeze on big rolls. Respects the filter (see selectAllClips).
+  const scoped = typeof clipFilterActive === 'function' && clipFilterActive();
+  (state.scannedFiles || []).forEach((c) => { if (scoped && !clipMatchesFilter(c)) return; c.selected = !c.selected; });
   document.querySelectorAll('#renameList .rename-card').forEach((card) => {
     const i = Number(card.dataset.i); const on = !!(state.scannedFiles[i] && state.scannedFiles[i].selected);
     const cb = card.querySelector('.clip-check'); if (cb) cb.checked = on;
@@ -531,6 +542,7 @@ function getCommands() {
     { label: 'AI: Analyze selected clips', hint: 'ai', run: aiAnalyzeSelected },
     { label: 'AI: Improve descriptions (use all data)', hint: 'ai', run: aiImproveSelected },
     { label: 'AI: Learn rules from this analysis', hint: 'ai', run: learnFromAnalysisNow },
+    { label: 'AI: Scan faces on selected clips', hint: 'ai', run: scanFacesSelected },
     { label: 'AI: People & faces…', hint: 'ai', run: showPeopleManager },
     { label: 'AI: Model store…', hint: 'ai', run: () => showModelStore() },
     { label: 'Filing: Visualize destinations…', hint: 'filing', run: showDestinationMapAuto },

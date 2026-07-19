@@ -86,7 +86,7 @@ function applyTheme(t) {
 }
 
 // View options (persisted): density/visibility toggles applied as root classes.
-const uiPrefs = { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false, autoVersionOnAi: true, autoRestore: true, autoAnalyzeAfterCopy: true, quickAnalyze: true, autoTagFaces: false, finalizePhotos: false, routesSeeded: false };
+const uiPrefs = { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false, autoVersionOnAi: true, autoRestore: true, autoAnalyzeAfterCopy: true, quickAnalyze: true, autoTagFaces: false, finalizePhotos: true, routesSeeded: false };
 // Duplicate-import detection: keys (name+size) of source files imported before.
 let importedSet = new Set();
 function importKey(c) { return `${String((c && c.name) || '').toLowerCase()}__${(c && c.size) || 0}`; }
@@ -1126,6 +1126,26 @@ function recomputeVersions() {
   }
 }
 
+// Version suffixes (the "-2" that disambiguates two clips sharing a base name) depend on
+// cross-clip collisions, so a single keystroke can change ANOTHER clip's number — which makes
+// recomputeVersions inherently O(all clips). Running it on every keystroke got heavy on big
+// scans. Coalesce it: the live subject/description text updates instantly (refreshNames writes
+// the fields synchronously); only the version suffix lags by one debounce tick, invisible for a
+// de-dup counter. Finalize/draft-save happen seconds later, well after this has settled.
+let _versionTimer = null;
+function scheduleVersionRecompute() {
+  if (_versionTimer) return;
+  _versionTimer = setTimeout(() => {
+    _versionTimer = null;
+    recomputeVersions();
+    document.querySelectorAll('[data-final]').forEach((pill) => {
+      const clip = state.scannedFiles[Number(pill.dataset.final)]; if (!clip) return;
+      const name = finalName(clip);
+      if (pill.textContent !== name) pill.textContent = name;
+    });
+  }, 120);
+}
+
 // ---------------------------------------------------------------------------
 // Rename drafts — persist in-progress naming so it survives an app restart
 // (not just in-session navigation). Keyed by a per-clip fingerprint (name+size)
@@ -1182,6 +1202,14 @@ function flushDraftSave() {
 // few edits. (The main-process save is non-destructive, so an extra flush is harmless.)
 (function wireDraftSafetyFlush() {
   const flush = () => { try { flushDraftSave(); } catch { /* ignore */ } };
+  // NOTE (audit #12, 2026-07-18): this async flush was suspected of losing the last renames when a
+  // quit landed inside the 600 ms debounce. It doesn't — a two-launch e2e that types a name and
+  // quits immediately shows the draft persisting (test/e2e/drafts-quit-flush.e2e.mjs). A graceful
+  // quit (tray Quit → app.quit()) unloads the window and main still services the invoke. A
+  // sendSync version was built and measured against the same test: no behavioural difference, and
+  // it adds a way for a wedged main to hang the quit. Don't "fix" this again without a REPRODUCTION.
+  // The genuinely unprotected case is a HARD kill (SIGKILL/power loss), where beforeunload never
+  // runs at all and no flush of any kind can help.
   window.addEventListener('beforeunload', flush);
   window.addEventListener('pagehide', flush);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });

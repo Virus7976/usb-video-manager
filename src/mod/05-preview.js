@@ -205,7 +205,12 @@ function updateBatchBar() {
   const count = sel.length;
   $('applyBatch').disabled = count === 0;
   $('applyBatch').textContent = `Apply to ${count}`;
-  $('selectAllClips').checked = count > 0 && count === state.scannedFiles.length;
+  // Compare against the FILTERED total when a filter is active — "select all matching" ticks only the
+  // visible clips, so measuring against the full count left the box unchecked while every visible clip
+  // was selected (its state contradicting the selection).
+  const selectableTotal = (typeof clipFilterActive === 'function' && clipFilterActive())
+    ? state.scannedFiles.filter(clipMatchesFilter).length : state.scannedFiles.length;
+  $('selectAllClips').checked = count > 0 && count === selectableTotal;
 
   // Default the batch date so a same-day batch shares one identical name (versions then
   // differentiate) — but ONLY when every selected clip already has that same date.
@@ -255,6 +260,14 @@ async function applyBatch() {
     const d = await decideCopyDate();
     if (d === null) return;          // cancelled
     useDate = d;
+  }
+  // #34: batch-apply overwrites subject/description/location/date across EVERY selected clip with no
+  // way back — "Apply to 200" could clobber a whole day's careful names irreversibly. Drop an
+  // automatic restore point first, exactly like the AI operations do (and honouring the same
+  // auto-version preference). Gated to a batch big enough to be worth it so a 2-clip tweak doesn't
+  // spam the version history. Placed AFTER the copy-date dialog so a cancel leaves no stray point.
+  if (sel.length >= 8 && uiPrefs.autoVersionOnAi !== false) {
+    await saveVersionPoint(`Before batch apply · ${sel.length} clips`, true);
   }
   // Only apply fields you actually filled — so you can batch-tag one field
   // without wiping each clip's name (and vice versa).
@@ -687,14 +700,23 @@ function focusClip(i) {
 
 // Jump to the next clip with no name, starting after the focused one (wraps).
 function jumpNextUnnamed() {
-  const total = state.scannedFiles.length;
-  if (!total) return;
-  let start = 0;
-  const card = document.activeElement && document.activeElement.closest && document.activeElement.closest('.rename-card');
-  if (card) start = Number(card.dataset.i) + 1;
-  for (let off = 0; off < total; off += 1) {
-    const i = (start + off) % total;
-    if (!isRenamed(state.scannedFiles[i])) { focusClip(i); return; }
+  // Walk the VISUAL order actually on screen (cards are laid out day-grouped, newest first),
+  // not the raw array index — otherwise "next unnamed" leaps to a clip on the far side of the
+  // list from where the user is looking. All cards are in the DOM (only previews lazy-load),
+  // so their document order IS the visual order.
+  const cards = Array.from(document.querySelectorAll('#renameList .rename-card'));
+  if (!cards.length) {
+    // Fallback (list not built yet): original array-order scan.
+    const total = state.scannedFiles.length;
+    for (let i = 0; i < total; i += 1) if (!isRenamed(state.scannedFiles[i])) { focusClip(i); return; }
+    return;
+  }
+  const active = document.activeElement && document.activeElement.closest && document.activeElement.closest('.rename-card');
+  const startPos = active ? cards.indexOf(active) : -1;
+  for (let off = 1; off <= cards.length; off += 1) {
+    const card = cards[(startPos + off) % cards.length];
+    const i = Number(card.dataset.i);
+    if (state.scannedFiles[i] && !isRenamed(state.scannedFiles[i])) { focusClip(i); return; }
   }
 }
 
@@ -878,6 +900,8 @@ function showToast(msg, ms = 1800) {
   if (!appToastEl) {
     appToastEl = document.createElement('div');
     appToastEl.className = 'zoom-toast app-toast';
+    appToastEl.setAttribute('role', 'status');       // toasts are the app's primary feedback channel —
+    appToastEl.setAttribute('aria-live', 'polite');   // announce them to screen readers instead of silence
     document.body.appendChild(appToastEl);
   }
   appToastEl.textContent = msg;
@@ -892,6 +916,8 @@ function showToastAction(msg, actionLabel, onAction, ms = 8000) {
   if (!appToastEl) {
     appToastEl = document.createElement('div');
     appToastEl.className = 'zoom-toast app-toast';
+    appToastEl.setAttribute('role', 'status');       // toasts are the app's primary feedback channel —
+    appToastEl.setAttribute('aria-live', 'polite');   // announce them to screen readers instead of silence
     document.body.appendChild(appToastEl);
   }
   appToastEl.textContent = '';
@@ -1047,6 +1073,13 @@ document.addEventListener('keydown', (e) => {
   const key = eventToHotkey(e);
   if (!key) return;
   const safeWhileTyping = /Ctrl|Alt|^F\d/.test(key) || key.includes('+');
+
+  // Ctrl+Space toggles the focused clip's checkbox while naming — build a batch without reaching for
+  // the mouse (bare Space is remapped to a hyphen inside the name fields, so it can't do this itself).
+  if (key === 'Ctrl+Space') {
+    const card = e.target && e.target.closest && e.target.closest('.rename-card');
+    if (card) { const i = Number(card.dataset.i); if (i >= 0 && state.scannedFiles[i]) { e.preventDefault(); setClipSelected(i, !state.scannedFiles[i].selected); return; } }
+  }
 
   // Text shortcuts (session temp first, then saved): insert text into the field.
   // Only modifier/function combos fire so a bare key never hijacks normal typing.

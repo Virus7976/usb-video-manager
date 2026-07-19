@@ -168,7 +168,12 @@ test('Apply confirms before moving, and offers the undo that already existed', (
   const h = map.slice(map.indexOf("q('.dmap-apply').addEventListener"));
   const body = h.slice(0, h.indexOf('\n    });'));
   assert.match(body, /await confirmDialog\(/, 'it asks before moving every clip on the map');
-  assert.match(body, /will go into <b>misc<\/b>/, 'and calls out the clips with no real home');
+  // Audit #40: the call-out used to hardcode "misc" AND count only clips with no placement at all —
+  // which recomputeAuto never produces, so it was dead. It now counts the _Unsorted placements too
+  // (unplacedCounts) and names whichever destination actually applies. The intent this pins is
+  // unchanged: the dialog must call out the clips with no real home.
+  assert.match(body, /unplacedCounts\(clips, placement\)/, 'it counts what will really happen');
+  assert.match(body, /no real home on the map/, 'and calls out the clips with no real home');
   assert.match(body, /showToastAction\(.*'Undo', \(\) => undoLastOrganize\(\)/s,
     'the undo is offered at the moment you would want it, not buried in a menu');
 });

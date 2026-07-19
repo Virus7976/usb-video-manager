@@ -162,11 +162,12 @@
         return;
       }
       grid.innerHTML = clips.map((c) => {
+        // Never emit bare `autoplay`: with "Play videos" on, that made EVERY tile decode at once
+        // and black-tiled/stalled the GPU. Tiles always start on their poster frame (#t=0.5);
+        // playback is granted only to on-screen tiles, capped, by setupGridPlayback below.
         const media = c.kind === 'photo'
           ? `<img loading="lazy" src="${esc(c.url)}" alt="" />`
-          : (cfg.playVideos
-              ? `<video src="${esc(c.url)}" muted loop autoplay preload="metadata"></video>`
-              : `<video src="${esc(c.url)}#t=0.5" muted preload="metadata"></video>`);
+          : `<video src="${esc(c.url)}#t=0.5" muted loop preload="metadata"${cfg.playVideos ? ' data-play="1"' : ''}></video>`;
         return `<div class="cell${c.named ? ' named' : ''}" data-i="${c.i}" title="${esc(c.name)}">
           <span class="badge">${c.kind === 'photo' ? 'photo' : 'video'}</span>
           ${media}
@@ -176,6 +177,31 @@
       grid.querySelectorAll('.cell').forEach((cell) => {
         cell.addEventListener('click', () => window.api.previewJump(Number(cell.dataset.i)));
       });
+      setupGridPlayback();
+    }
+
+    // Play at most a handful of the videos actually on screen — the single-decode policy this
+    // preview window exists to honour. As tiles scroll in/out we pause the ones that left and
+    // top the pool back up to the cap from whatever is currently visible (self-healing), so the
+    // wall never runs more than PLAY_CAP decoders no matter how many clips are in scope.
+    let _gridIO = null;
+    function setupGridPlayback() {
+      if (_gridIO) { _gridIO.disconnect(); _gridIO = null; }
+      if (!cfg.playVideos) return;
+      const PLAY_CAP = 6;
+      const visible = new Set();
+      const playing = new Set();
+      _gridIO = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) { visible.add(e.target); }
+          else { visible.delete(e.target); if (playing.has(e.target)) { playing.delete(e.target); try { e.target.pause(); } catch (_) { /* ignore */ } } }
+        }
+        for (const v of visible) {
+          if (playing.size >= PLAY_CAP) break;
+          if (!playing.has(v)) { playing.add(v); v.play().catch(() => {}); }
+        }
+      }, { root: grid, threshold: 0.25 });
+      grid.querySelectorAll('video[data-play]').forEach((v) => _gridIO.observe(v));
     }
     window.api.onPreviewList((d) => { if (d && Array.isArray(d.clips)) renderGrid(d.clips); });
 

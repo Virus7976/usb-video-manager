@@ -192,17 +192,34 @@ function listRemovableDrives() {
 // FAILS CLOSED on Windows: if the volume query errors or returns nothing while we're being
 // asked about a path that isn't obviously local, we do NOT get to claim it's safe to move off.
 // On non-Windows (dev/test) detection is disabled entirely, so nothing is treated as removable.
-async function isOnRemovableVolume(p) {
-  if (!p || !DETECTION_ENABLED) return false;
+// THE decision: is this path on a removable volume? Pure (drives are passed in) so the delete
+// gate's most important refusal can be tested without a real card in a slot.
+//
+// This used to answer `false` for ANY path without a drive letter, which fails OPEN: a
+// `\\?\Volume{GUID}\…` card read as "not removable", so the same-card delete guard never fired and
+// the gate could delete the original while the only remaining copy sat on the card about to be
+// wiped. Unknown-because-no-letter is the same ignorance as unknown-because-the-lookup-threw, and
+// that case already fails CLOSED — so they now make the same call.
+function classifyRemovable(p, drives) {
+  const raw = String(p || '');
   const letterOf = (s) => {
     const m = /^([A-Za-z]):/.exec(String(s).replace(/^\\\\\?\\/, ''));
     return m ? m[1].toUpperCase() : '';
   };
-  const target = letterOf(p);
-  if (!target) return false;               // UNC / non-lettered path — not a local removable volume
+  // Failing closed must NOT be blanket. `\\server\share` is knowably not a local removable volume,
+  // and calling it one would refuse organizing onto the NAS with a nonsense "that's a card" error.
+  // (`\\?\…` is a Win32 device path, not a UNC share — excluded here and handled by letterOf.)
+  if (/^\\\\(?!\?\\)/.test(raw)) return false;
+  const target = letterOf(raw);
+  // No letter to look up. It may very well BE the card, so assume it is.
+  if (!target) return true;
+  return (drives || []).some((d) => letterOf(d.mountpoint || d.raw) === target);
+}
+async function isOnRemovableVolume(p) {
+  if (!p || !DETECTION_ENABLED) return false;
   let drives = [];
   try { drives = await listRemovableDrives(); } catch { return true; }   // can't tell → don't move off it
-  return drives.some((d) => letterOf(d.mountpoint || d.raw) === target);
+  return classifyRemovable(p, drives);
 }
 
 // Is this source still actually there? Asked on demand, because auto-poll is OFF by default in

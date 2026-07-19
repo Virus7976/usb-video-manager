@@ -186,7 +186,14 @@ function ttIlloFor(id) {
 }
 function cancelTaskById(id) {
   if (id === 'faces') { faceScanAborted = true; showToast('Cancelling face scan…'); }
-  else if (id === 'ai') { aiAborted = true; showToast('Cancelling AI… (finishes the current clip)', 3500); }
+  else if (id === 'ai') {
+    aiAborted = true;
+    // Abort the request that is ACTUALLY in flight (audit #78). The flag alone is only checked
+    // between clips, so Cancel used to sit at "Cancelling…" for the rest of the current call —
+    // up to 180 s for a vision pass, or the whole tool loop for naming.
+    try { window.api.aiCancel(); } catch { /* main may already be gone */ }
+    showToast('Cancelling AI…', 3000);
+  }
   else if (id === 'compress') { window.api.compressCancel(); showToast('Cancelling compression…'); }
 }
 function isCancellable(id) { return id === 'faces' || id === 'ai' || id === 'compress'; }
@@ -1006,7 +1013,9 @@ async function aiAutoEnhance() {
       setTask('ai', aiModelLabel(), done + 1, unnamed.length, 'naming', state.scannedFiles[i].name);
       markClipAnalyzing(i, 'naming');
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, 'empty', { quiet: true });
+      // Guarded for the same reason as the other two batch loops (audit #23) — this one runs over
+      // every unnamed clip, so an unbounded call here stalls exactly the run it was meant to finish.
+      const r = await aiCallGuard(aiSuggestClip(i, 'empty', { quiet: true }), 300000);
       queueQuestions(i, r);
       markClipAnalyzing(i, false); flushDraftSave(); done += 1;
     }
@@ -1502,7 +1511,13 @@ async function aiAnalyzeSelected(preset = null) {
       // noPerceive: the observation is already in hand. If it somehow isn't, fall back rather than
       // reloading the vision model mid-phase and thrashing the GPU.
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, mode, { observation: observations[i] || '', quiet: true, noPerceive: true });
+      // GUARDED (audit #23). Naming was the one phase with no bound, while perceive and improve both
+      // had one. The tool loop is maxSteps:5 with a 120 s per-call timeout, so a wedged clip could hold
+      // the batch ~10 min and then fall through to the legacy path for another 180 s — on a 200-clip
+      // card that is how a run appears to "just stop". 300 s is deliberately LOOSER than the 200 s
+      // perceive guard: naming legitimately takes several tool steps, and a guard that skips clips
+      // which would have succeeded is worse than the stall it prevents.
+      const r = await aiCallGuard(aiSuggestClip(i, mode, { observation: observations[i] || '', quiet: true, noPerceive: true }), 300000);
       queueQuestions(i, r);
       markClipAnalyzing(i, false);
       flushDraftSave();   // persist each named clip immediately — survives a mid-run crash
@@ -1520,7 +1535,8 @@ async function aiAnalyzeSelected(preset = null) {
       setTask('ai', aiModelLabel(), done + 1, idxs.length, cached ? 'reusing' : 'analyzing', clip.name);
       markClipAnalyzing(i, cached ? 'reusing' : 'analyzing');
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, mode, { observation: cached, quiet: true });
+      // Guarded for the same reason as the multi-pass loop above (audit #23).
+      const r = await aiCallGuard(aiSuggestClip(i, mode, { observation: cached, quiet: true }), 300000);
       queueQuestions(i, r);
       markClipAnalyzing(i, false);
       flushDraftSave();   // persist each named clip immediately — survives a mid-run crash
@@ -1535,7 +1551,10 @@ async function aiAnalyzeSelected(preset = null) {
   clearTask('ai');
   await releaseGpu();   // give the VRAM back — this also runs on abort, so cancelling frees it too
   const q = aiQuestions.length;
-  if (failCount && !okCount) showToast(`AI couldn't name any clips — ${lastErr || 'check the model in AI settings'}`, 6000);
+  // A CANCELLED run (aborted before it named anything) used to report "AI analysis done · Named 0
+  // clips" — which reads as "it ran and found nothing", not "you stopped it". Say what happened.
+  if (aiAborted) showToast(`Analyse cancelled${okCount ? ` — ${okCount} named before you stopped` : ''}${q ? ` · ${q} to review` : ''}`, 4500);
+  else if (failCount && !okCount) showToast(`AI couldn't name any clips — ${lastErr || 'check the model in AI settings'}`, 6000);
   else if (failCount) showToast(`AI named ${okCount}, ${failCount} failed${lastErr ? ` (${lastErr})` : ''} · ${q} to review`, 5000);
   else { showToast(`AI analysed ${okCount} clip${okCount !== 1 ? 's' : ''}${q ? ` · ${q} to review` : ''}${mode === 'empty' ? ' (filled empty fields only)' : ''}`); pcNotify('AI analysis done', `Named ${okCount} clip${okCount !== 1 ? 's' : ''}${q ? ` · ${q} to review` : ''}.`); }
   // OFFER THE RETRY. A toast saying "12 failed" is not actionable — it disappears, and the only
@@ -2073,6 +2092,7 @@ window.api.onAiMenu((action) => {
     if (aiCtxIndex >= 0 && state.scannedFiles[aiCtxIndex]) runAiOnClip(aiCtxIndex);
     else showToast('Right-click a clip\'s description first');
   } else if (action === 'analyze') aiAnalyzeSelected();
+  else if (action === 'scan-faces') scanFacesSelected();
 });
 // When the AI learns new rules (feedback / edits / reflect) and you already have
 // analyzed clips, nudge — from the bottom — that you can re-apply them.

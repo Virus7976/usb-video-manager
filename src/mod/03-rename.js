@@ -167,7 +167,7 @@ function buildRenameStep() {
 
 // Update every visible final-name pill + date input from current state.
 function refreshNames() {
-  recomputeVersions();
+  scheduleVersionRecompute();
   // Query each element type ONCE (not per-clip), and only write the DOM when the value
   // actually changed — typing in one field used to re-write every clip's pill + date,
   // which got slow with a card full of clips.
@@ -263,7 +263,7 @@ function addTagToClip(i, tag) {
 function removeTagFromClip(i, tag) {
   const c = state.scannedFiles[i]; if (!c || !Array.isArray(c.tags)) return;
   c.tags = c.tags.filter((t) => t !== tag);
-  renderClipTags(i); scheduleDraftSave();
+  renderClipTags(i); scheduleDraftSave(); applyClipFilter();   // tags are in the filter haystack — keep visibility in sync (like people edits)
 }
 // digiKam-style tag panel: a checklist of the shared tag pool (check = on this clip),
 // a type-to-add field with live autocomplete, and apply-to-selected. Fully local.
@@ -307,7 +307,7 @@ function showTagEditor(i) {
     host.innerHTML = pool.map((t) => `<label class="te-pool-row"><input type="checkbox" class="te-pool-cb" data-tag="${escapeAttr(t)}" ${on.has(t) ? 'checked' : ''}/><span class="ctc-ic">🏷</span><span class="te-pool-tx">${escapeHtml(t)}</span></label>`).join('');
     host.querySelectorAll('.te-pool-cb').forEach((cb) => cb.addEventListener('change', () => {
       if (cb.checked) addTagToClip(i, cb.dataset.tag); else removeTagFromClip(i, cb.dataset.tag);
-      renderClipTags(i); scheduleDraftSave(); renderCurrent();
+      renderClipTags(i); scheduleDraftSave(); renderCurrent(); applyClipFilter();   // keep the active filter in sync after a tag change
     }));
   };
   const commitAdd = () => {
@@ -496,13 +496,18 @@ function resetClipFilter() {
 function applyClipFilter() {
   const list = $('renameList'); if (!list) return;
   const q = (clipFilterText || '').trim().toLowerCase();
-  let shown = 0; const total = state.scannedFiles.length;
+  const total = state.scannedFiles.length;
+  // Count from STATE, not the DOM (audit #50). The list renders in 100-clip chunks, so tallying
+  // `.rename-card` elements reported only what had scrolled into view — "2 of 3000" for a filter
+  // that actually matched 50. That reads as "your search found nothing", which is the opposite of
+  // true and exactly the kind of thing that makes the app not worth trusting.
+  // (Visibility below still walks the DOM, because only rendered cards HAVE visibility. Cards
+  // rendered later are filtered by the applyClipFilter() call at the end of each chunk.)
+  const shown = state.scannedFiles.reduce((n, c) => (c && clipMatchesFilter(c) ? n + 1 : n), 0);
   list.querySelectorAll('.rename-card').forEach((card) => {
     const i = Number(card.dataset.i); const c = state.scannedFiles[i]; if (!c) return;
-    const ok = clipMatchesFilter(c);
-    const disp = ok ? '' : 'none';
+    const disp = clipMatchesFilter(c) ? '' : 'none';
     if (card.style.display !== disp) card.style.display = disp;   // only write when it changes (avoids layout thrash)
-    if (ok) shown += 1;
   });
   // Hide day dividers whose whole group is filtered out.
   let divider = null; let groupVisible = false;
@@ -562,8 +567,14 @@ function wireRowEditing(listEl) {
       if (openPopover) { closePopover(); return; }
       const i = Number(btn.dataset.date);
       openCalendar(btn, state.scannedFiles[i].date, (ds) => {
-        state.scannedFiles[i].date = ds;
-        state.scannedFiles[i].dateLocked = true;   // user choice wins over metadata
+        const c = state.scannedFiles[i];
+        if (ds) { c.date = ds; c.dateLocked = true; }   // user choice wins over metadata
+        else {
+          // Clear → back to the file's natural date (phone filename / mtime), UNLOCKED so ffprobe can
+          // correct it. Locking to '' (the old always-lock path) is what made a wrong date un-clearable.
+          c.date = (typeof phoneDateOf === 'function' && phoneDateOf(c.name)) || toDateStr(c.mtimeMs) || '';
+          c.dateLocked = false;
+        }
         refreshNames();
       });
     });

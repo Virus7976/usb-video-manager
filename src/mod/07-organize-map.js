@@ -21,6 +21,26 @@ const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
 //
 // Now there is one plan. The map is the source of truth; Run just executes it (and adds the
 // embed / NAS mirror / Resolve CSV on top).
+// How many clips have no REAL home in this plan (audit #40).
+//
+// The Apply dialog used to count only clips with no placement at all — but recomputeAuto ALWAYS
+// assigns one: a clip it can't place gets `<category>/_Unsorted`. So the count was permanently 0,
+// the warning never rendered, and low-confidence clips filed silently into real _Unsorted folders
+// in his tree. Count what actually happens.
+//
+// The `_Unsorted` test is ANCHORED to the trailing leaf: a genuine project called "Unsorted Beach
+// Day" is a real home and must not be swept into the warning — a warning that cries wolf on normal
+// runs stops being read, which would be worse than the silence it replaced.
+function unplacedCounts(clips, placement) {
+  let misc = 0; let unsorted = 0;
+  for (const c of (clips || [])) {
+    const rel = placement && placement[c.key];
+    if (!rel) { misc += 1; continue; }
+    if (/(^|\/)_Unsorted$/i.test(String(rel))) unsorted += 1;
+  }
+  return { misc, unsorted, total: misc + unsorted };
+}
+
 let lastDestPlan = null;   // { root, byPath: { [sourcePath]: 'Client/Alps-2026/2026-07-12' } }
 function currentDestPlan() { return lastDestPlan; }
 // Record successfully-filed clips into the persistent project ledger, then (if AI
@@ -60,11 +80,14 @@ async function recordToLedger(clips, placement, results) {
 async function undoLastOrganize() {
   let info; try { info = await window.api.organizeUndoInfo(); } catch { info = null; }
   if (!info || !info.ok) { showToast('Nothing to undo — no recent organize on record'); return; }
-  const ok = await confirmDialog('Undo last organize?', `Move the ${info.count} filed clip${info.count !== 1 ? 's' : ''} back out of your Projects tree to where they came from?`, 'Undo', 'Cancel');
+  // Say that the project MEMORY is reversed too, not just the files. Undo used to leave the
+  // ledger behind, so an undone run kept matching future imports — the user needs to know
+  // that's no longer the case, because "forget what it learned" is the point of undoing.
+  const ok = await confirmDialog('Undo last organize?', `Move the ${info.count} filed clip${info.count !== 1 ? 's' : ''} back out of your Projects tree to where they came from, and forget what this run added to your project memory?`, 'Undo', 'Cancel');
   if (!ok) return;
   showToast('Undoing…', 2000);
   let r; try { r = await window.api.organizeUndo(); } catch (e) { r = { ok: false, error: e.message }; }
-  if (r && r.ok) showToast(`Moved ${r.undone} clip${r.undone !== 1 ? 's' : ''} back${r.failed ? ` · ${r.failed} couldn’t be moved (already gone/renamed)` : ''} ✓`, 5500);
+  if (r && r.ok) showToast(`Moved ${r.undone} clip${r.undone !== 1 ? 's' : ''} back${r.failed ? ` · ${r.failed} couldn’t be moved (already gone/renamed)` : ''}${r.ledgerReversed ? ` · ${r.ledgerReversed} project${r.ledgerReversed !== 1 ? 's' : ''} forgotten` : ''} ✓`, 5500);
   else showToast(r && r.error ? r.error : 'Undo failed', 5000);
 }
 
@@ -524,7 +547,13 @@ async function showDestinationMap(rawClips, opts = {}) {
     const clean = String(dest || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim();
     if (!clean) return;
     moveKeys(g.keys.slice(), clean);
-    if (remember && await learnRouteFromGroup(g.keys, clean)) showToast('Got it — I’ll auto-file these next time ✓', 3800);
+    if (remember) {
+      // #42: "Remember" needs a subject/location to build a match rule from. On the Organize stage
+      // those are usually still empty, so learnRouteFromGroup silently returned false — the user
+      // ticked Remember and got NO rule and NO word about why. Tell them, instead of no-op-ing.
+      if (await learnRouteFromGroup(g.keys, clean)) showToast('Got it — I’ll auto-file these next time ✓', 3800);
+      else showToast('Can’t remember this one yet — these clips have no subject/keywords for me to match future footage on. Name them first, then tick Remember.', 5200);
+    }
   }
   const expandedGroups = new Set();   // gkeys whose clip list is shown
   function renderPlan() {
@@ -1336,12 +1365,17 @@ async function showDestinationMap(rawClips, opts = {}) {
       // "Needs you"/_Unsorted, which lands in `misc`. It went straight through with no confirmation
       // at all, which is a lot of file movement to trigger with one click. Say what will happen,
       // and call out the clips that have no real home yet, since those are the ones you'd regret.
-      const miscN = clips.filter((c) => !placement[c.key]).length;
+      // Count what will ACTUALLY happen — including the _Unsorted placements the old check was blind
+      // to (audit #40). Name the real destination too: saying "misc" when the clips land in
+      // `<category>/_Unsorted` sent people looking for a folder that was never created.
+      const { misc: miscN, unsorted: unsortedN, total: homelessN } = unplacedCounts(clips, placement);
       const folders = new Set(moves.map((m) => m.rel)); folders.delete('misc');
+      const where = (miscN && unsortedN) ? '<b>misc</b> and <b>_Unsorted</b>'
+        : (miscN ? '<b>misc</b>' : '<b>_Unsorted</b>');
       const ok = await confirmDialog(
         `File ${moves.length} clip${moves.length !== 1 ? 's' : ''} into your Projects tree?`,
         `They move into ${escapeHtml(rootClean)} across ${folders.size} folder${folders.size !== 1 ? 's' : ''}${embed ? ', with their metadata embedded' : ''}.`
-        + (miscN ? `<br><br>⚠ ${miscN} clip${miscN !== 1 ? 's have' : ' has'} no folder on the map and will go into <b>misc</b> — go back and place ${miscN !== 1 ? 'them' : 'it'} if that's not what you want.` : '')
+        + (homelessN ? `<br><br>⚠ ${homelessN} clip${homelessN !== 1 ? 's have' : ' has'} no real home on the map and will go into ${where} — go back and place ${homelessN !== 1 ? 'them' : 'it'} if that's not what you want.` : '')
         + `<br><br>You can undo this straight afterwards.`,
         'File them', 'Cancel'
       );
@@ -1352,8 +1386,11 @@ async function showDestinationMap(rawClips, opts = {}) {
       // Without the finally, Apply stayed disabled reading "Filing…" and the aiActivity
       // spinner span forever — the dialog was dead with no way back.
       let r = null;
+      // Honor "Keep the originals" — Apply used to always MOVE, deleting the L: archive source. Default
+      // to copy (safe) when the toggle isn't in the DOM.
+      const copy = $('finKeepSource') ? !!$('finKeepSource').checked : true;
       try {
-        r = await window.api.projectsMove({ moves, embed });
+        r = await window.api.projectsMove({ moves, embed, copy, root: rootClean });
       } catch (e) {
         const msg = (e && e.message) || String(e);
         aiActivityDone(`Filing failed — ${msg}`);

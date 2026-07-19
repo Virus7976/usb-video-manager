@@ -83,11 +83,30 @@ async function getPoster(srcPath) {
   // A photo is its own poster — no ffmpeg needed. (HEIC may not render in Chromium;
   // that's fine — the tile just shows a generic icon, AI still reads the file.)
   if (isImagePath(srcPath)) { const u = fileUrl(srcPath); posterCache.set(srcPath, u); return u; }
+  // Persistent on-disk cache keyed by path+size+mtime: reuse a poster extracted in an EARLIER
+  // session rather than re-running ffmpeg for every clip on each relaunch. THUMB_DIR is nuked on
+  // boot; POSTER_CACHE_DIR survives (bounded by prunePosterCache).
+  let st = null;
+  try { st = fs.statSync(srcPath); } catch { /* unstattable → fall back to the ephemeral counter name */ }
   await acquirePoster();
   try {
-    await ensureDir(THUMB_DIR);
-    posterCounter += 1;
-    const outPath = path.join(THUMB_DIR, `poster_${posterCounter}.jpg`);
+    let outPath;
+    if (st) {
+      await ensureDir(POSTER_CACHE_DIR);
+      outPath = path.join(POSTER_CACHE_DIR, posterCacheName(srcPath, st.size, st.mtimeMs));
+      try {
+        if (fs.statSync(outPath).size > 0) {
+          const u = fileUrl(outPath);
+          try { const now = new Date(); fs.utimesSync(outPath, now, now); } catch { /* LRU touch is best-effort */ }
+          posterCache.set(srcPath, u);
+          return u;
+        }
+      } catch { /* not cached on disk yet — extract below */ }
+    } else {
+      await ensureDir(THUMB_DIR);
+      posterCounter += 1;
+      outPath = path.join(THUMB_DIR, `poster_${posterCounter}.jpg`);
+    }
     let ok = await ffmpegFrame(srcPath, 1, outPath);   // ~1s in
     if (!ok) ok = await ffmpegFrame(srcPath, 0, outPath); // very short clips
     if (!ok) return null;
@@ -102,6 +121,13 @@ async function getPoster(srcPath) {
 // ---------------------------------------------------------------------------
 // IPC handlers
 // ---------------------------------------------------------------------------
+// ONE source of truth for the ui-flag defaults (DEDUP.md). config:get and ui:set kept separate copies
+// that drifted — config:get's omitted cleanGrid/dayDividers/showLocation, so on a fresh config those
+// three came back `undefined` to the renderer while ui:set defaulted them true/true/false.
+// Shared validation whitelists (DEDUP.md) — config:get read-back and prefs:set validation must agree.
+const COPY_DATE_MODES = ['always', 'ask', 'never'];
+const ENTER_FLOWS = ['columns', 'row'];
+const UI_DEFAULTS = { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false };
 ipcMain.handle('config:get', () => ({
   intakeFolder: config.intakeFolder,
   photosTempFolder: config.photosTempFolder,
@@ -114,13 +140,13 @@ ipcMain.handle('config:get', () => ({
   ffmpegPath: config.ffmpegPath,
   hotkey: config.hotkey,
   autoPoll: !!config.autoPoll,
-  ui: { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, ...(config.ui || {}) },
+  ui: { ...UI_DEFAULTS, ...(config.ui || {}) },
   previewWidth: Number(config.previewWidth) || 248,
   previewGrid: { mode: 'mirror', source: 'selected', tile: 200, playVideos: false, muted: true, ...(config.previewGrid || {}) },
   hotkeys: { jumpUnnamed: 'F2', captureMacro: 'Ctrl+Shift+S', ...(config.hotkeys || {}) },
   textMacros: Array.isArray(config.textMacros) ? config.textMacros : [],
-  copyDateMode: ['always', 'ask', 'never'].includes(config.copyDateMode) ? config.copyDateMode : 'always',
-  enterFlow: ['columns', 'row'].includes(config.enterFlow) ? config.enterFlow : 'columns',
+  copyDateMode: COPY_DATE_MODES.includes(config.copyDateMode) ? config.copyDateMode : 'always',
+  enterFlow: ENTER_FLOWS.includes(config.enterFlow) ? config.enterFlow : 'columns',
   folderLevels: Array.isArray(config.folderLevels) ? config.folderLevels : ['category', 'project'],
   organizeFields: config.organizeFields,
   organizeDest: config.organizeDest || '',
@@ -169,10 +195,10 @@ ipcMain.handle('prefs:set', (_evt, patch) => {
         .filter((m) => m && typeof m.key === 'string' && typeof m.text === 'string' && m.key && m.text)
         .map((m) => ({ key: m.key, text: m.text }));
     }
-    if (['always', 'ask', 'never'].includes(patch.copyDateMode)) {
+    if (COPY_DATE_MODES.includes(patch.copyDateMode)) {
       config.copyDateMode = patch.copyDateMode;
     }
-    if (['columns', 'row'].includes(patch.enterFlow)) {
+    if (ENTER_FLOWS.includes(patch.enterFlow)) {
       config.enterFlow = patch.enterFlow;
     }
     if (['external', 'app'].includes(patch.compressMode)) {
@@ -256,12 +282,12 @@ ipcMain.handle('prefs:set', (_evt, patch) => {
     previewWidth: Number(config.previewWidth) || 248,
     hotkeys: { jumpUnnamed: 'F2', captureMacro: 'Ctrl+Shift+S', ...(config.hotkeys || {}) },
     textMacros: Array.isArray(config.textMacros) ? config.textMacros : [],
-    copyDateMode: ['always', 'ask', 'never'].includes(config.copyDateMode) ? config.copyDateMode : 'always'
+    copyDateMode: COPY_DATE_MODES.includes(config.copyDateMode) ? config.copyDateMode : 'always'
   };
 });
 
 ipcMain.handle('ui:set', (_evt, payload) => {
-  config.ui = { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false, ...(config.ui || {}) };
+  config.ui = { ...UI_DEFAULTS, ...(config.ui || {}) };
   if (payload && typeof payload.key === 'string') config.ui[payload.key] = !!payload.value;
   saveConfig();
   return config.ui;
@@ -411,6 +437,28 @@ ipcMain.handle('copy:start', async (evt, payload) => {
   }
 
   const totalBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+
+  // WILL THE CARD EVEN FIT? Running to ENOSPC halfway through leaves a half-imported card, a
+  // truncated clip in intake, and a full disk — and finding out then is the worst possible moment.
+  // The organize step has had this check for a while (main-mod/09-ipc-boot.js); intake, which is the
+  // FIRST thing that writes anything, did not.
+  //
+  // Reuses `totalBytes` rather than re-stat'ing every source: it's the number the progress bar
+  // already trusts, it came from the scan, and this preflight is advisory (avoid a mid-copy failure)
+  // — not a safety gate, so it must never be the reason a real import is refused. A file with no
+  // declared size counts as 0, and an unreadable volume skips the check entirely.
+  if (totalBytes > 0) {
+    try {
+      const st = await fsp.statfs(await nearestExistingDir(dest));
+      const free = Number(st.bavail) * Number(st.bsize);
+      const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
+      // 2 GB of headroom: filling a system disk to the last byte breaks the machine, not just the app.
+      if (totalBytes + 2e9 > free) {
+        return { ok: false, error: `Not enough room: this card needs ${GB(totalBytes)} but only ${GB(free)} is free on that drive. Copy fewer clips, or point the intake folder at a bigger disk.` };
+      }
+    } catch { /* if we genuinely cannot read the volume, don't block the import over it */ }
+  }
+
   const copied = [];
   copyTask = {
     active: true, totalFiles: files.length, totalBytes, copiedBytes: 0,
@@ -509,8 +557,58 @@ ipcMain.handle('poster:get', (_evt, srcPath) => getPoster(srcPath));
 function aiEndpoint() {
   return ((config.ai && config.ai.endpoint) || 'http://localhost:11434').replace(/\/+$/, '');
 }
+// A shared cancel token every in-flight Ollama request listens to (audit #78).
+//
+// Requests used to carry only `AbortSignal.timeout(...)`, and the renderer's `aiAborted` flag is
+// checked BETWEEN clips — so pressing Cancel mid-request left the current call running to
+// completion: up to 180 s for a vision call, or the whole tool loop for naming. "Cancelling…"
+// sitting there for minutes per stuck clip is the most trust-destroying thing a long job can do.
+//
+// Renewed lazily after an abort. That matters more than the cancel itself: a token left in the
+// aborted state would fail every subsequent request instantly and leave the AI dead until restart —
+// a far worse bug than the one this fixes.
+let aiCancelCtl = null;
+function aiCancelToken() {
+  if (!aiCancelCtl || aiCancelCtl.signal.aborted) aiCancelCtl = new AbortController();
+  return aiCancelCtl;
+}
+ipcMain.handle('ai:cancel', () => {
+  const n = aiCancelCtl && !aiCancelCtl.signal.aborted ? 1 : 0;
+  try { if (aiCancelCtl) aiCancelCtl.abort(); } catch { /* already gone */ }
+  aiCancelCtl = null;   // the next request builds a fresh one
+  return { ok: true, cancelled: n };
+});
 async function ollamaFetch(pathname, opts = {}, timeoutMs = 6000) {
-  return fetch(aiEndpoint() + pathname, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const cancel = aiCancelToken().signal;
+  // AbortSignal.any lands in Node 20.3; fall back to the timeout alone on anything older so a
+  // missing helper can never stop the app talking to Ollama.
+  const signal = (typeof AbortSignal.any === 'function') ? AbortSignal.any([timeout, cancel]) : timeout;
+  return fetch(aiEndpoint() + pathname, { ...opts, signal });
+}
+// Pick a context window big enough for THIS prompt.
+//
+// Ollama defaults num_ctx to 4096 and — on current builds — returns HTTP 400
+// `exceed_context_size_error` (it no longer silently truncates) the moment the
+// prompt is bigger. Our prompts routinely run 5–6k tokens once injected memories,
+// style examples and the shoot digest are folded in, so a fixed 4096 dropped
+// THOUSANDS of clips in one run ("request (5337 tokens) exceeds the available
+// context size (4096 tokens)"). Size the window to the prompt with headroom,
+// clamped so a 6 GB card's KV cache stays sane. A prompt bigger than the cap is
+// still trimmed by Ollama, but that path is now rare rather than the default.
+function pickNumCtx(prompt, opts) {
+  const ai = (config && config.ai) || {};
+  const cap = Math.max(4096, Math.floor(Number(ai.numCtxMax) || 8192));
+  // Explicit fixed override (per-call or config) wins outright.
+  const fixed = Math.floor(Number(opts.num_ctx) || Number(ai.numCtx) || 0);
+  if (fixed > 0) return Math.min(Math.max(fixed, 512), cap);
+  // ~3.5 chars/token is a deliberate over-estimate for our JSON-heavy prompts;
+  // vision calls also spend tokens on each image; leave room for the reply.
+  const promptToks = Math.ceil(String(prompt || '').length / 3.5);
+  const imageToks = (opts.images ? opts.images.length : 0) * 1600;
+  const need = promptToks + imageToks + 1024;
+  const rounded = Math.ceil(need / 2048) * 2048;
+  return Math.min(Math.max(rounded, 4096), cap);
 }
 // One Ollama /api/generate call. Returns the raw `response` string. Pass
 // `images` for a vision call, `format:'json'` to force JSON. Throws on HTTP error.
@@ -522,7 +620,10 @@ async function ollamaGenerate(model, prompt, opts = {}) {
   // faster and keeps strict-JSON output clean. Ollama ignores `think` for models
   // that don't support it (verified). Pass opts.think:true to allow reasoning.
   body.think = opts.think === undefined ? false : !!opts.think;
-  body.options = { temperature: isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 0.2 };
+  body.options = {
+    temperature: isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 0.2,
+    num_ctx: pickNumCtx(prompt, opts),
+  };
   const res = await ollamaFetch('/api/generate', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
   }, opts.timeout || 180000);
@@ -611,8 +712,12 @@ async function ollamaLoaded() {
 // and a reasoning phase — but batching only separates them in time, and Ollama keeps a model resident
 // for 5 minutes after its last request. Call this at the top of each phase and the phases are
 // separated in MEMORY too, which is the thing that actually prevents the OOM.
+// Models THIS app has asked Ollama to keep resident. ollamaReleaseAll only evicts these — finishing
+// a run must not tear a model out of VRAM that another app or a user's `ollama` CLI session is using.
+const _appLoadedModels = new Set();
 async function ollamaUseOnly(model) {
   const want = String(model || '').trim();
+  if (want) _appLoadedModels.add(want.split(':')[0]);
   const loaded = await ollamaLoaded();
   const freed = [];
   const stuck = [];
@@ -637,6 +742,9 @@ async function ollamaReleaseAll() {
   const freed = [];
   const stuck = [];
   for (const m of loaded) {
+    // ONLY evict models this app loaded. Iterating every resident model unloaded ones another app or
+    // a user `ollama` CLI session was actively using — finishing our run shouldn't empty their VRAM.
+    if (!_appLoadedModels.has(String(m.name || '').split(':')[0])) continue;
     // eslint-disable-next-line no-await-in-loop
     const r = await ollamaUnload(m.name);
     if (r.ok) freed.push(m.name); else stuck.push(m.name);
@@ -826,7 +934,12 @@ async function ollamaCapabilities(name) {
       }
     }
   } catch { /* unreachable / old Ollama → null */ }
-  _capCache.set(key, caps);
+  // Only memoize a DEFINITIVE answer. `null` means "couldn't tell" — a /api/show that threw or
+  // came back non-ok, which at app boot usually means Ollama is still warming, not that the model
+  // lacks the capability. Caching that null latched the failure for the whole session: renderAiHealth()
+  // runs at boot, so one transient blip made a tool-capable qwen3:8b read as "no reasoning model"
+  // permanently, even after Ollama came up. Leave null uncached so the next probe re-checks.
+  if (caps) _capCache.set(key, caps);
   return caps;
 }
 
@@ -860,7 +973,20 @@ async function ollamaChat(model, messages, opts = {}) {
   // Thinking OFF by default: it slows a local 7-8B model down enormously and, for tool selection,
   // buys nothing — the choice is the answer. (Ollama ignores `think` on models without it.)
   body.think = opts.think === undefined ? false : !!opts.think;
-  body.options = { temperature: isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 0.2 };
+  // Size the context window to the CONVERSATION (audit #21). This sent only `temperature`, so the
+  // whole tool-calling brain ran at Ollama's 4096 default — while pickNumCtx(), which exists
+  // precisely to prevent the `exceed_context_size_error` a long trace causes, was wired only into
+  // ollamaGenerate. A tool loop GROWS every step (each tool result is appended to `messages`), so the
+  // ceiling was hit late and mid-batch: the worst way for it to fail.
+  //
+  // The TOOL SCHEMAS ride in the same body and consume the same window, so they are measured too —
+  // estimating from messages alone under-counts exactly when a big toolset is in play.
+  const sizingText = messages.map((m) => `${(m && m.role) || ''}:${(m && m.content) || ''}`).join('\n')
+    + (body.tools ? JSON.stringify(body.tools) : '');
+  body.options = {
+    temperature: isFinite(Number(opts.temperature)) ? Number(opts.temperature) : 0.2,
+    num_ctx: pickNumCtx(sizingText, opts),
+  };
   const res = await ollamaFetch('/api/chat', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
   }, opts.timeout || 180000);

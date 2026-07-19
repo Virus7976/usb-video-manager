@@ -77,6 +77,8 @@ contextBridge.exposeInMainWorld('api', {
   logInteraction: (entry) => ipcRenderer.send('log:interaction', entry),
   findClipsWithPerson: (name) => ipcRenderer.invoke('clips:findByPerson', name),
   retagPerson: (payload) => ipcRenderer.invoke('clips:retagPerson', payload),
+  tagPersonOnClips: (payload) => ipcRenderer.invoke('clips:tagPerson', payload),
+  untagPersonOnClips: (payload) => ipcRenderer.invoke('clips:untagPerson', payload),
   onPhoneCopyProgress: (cb) => {
     const listener = (_e, p) => cb(p);
     ipcRenderer.on('phone:copy-progress', listener);
@@ -103,6 +105,8 @@ contextBridge.exposeInMainWorld('api', {
   aiImprove: (payload) => ipcRenderer.invoke('ai:improve', payload),
   aiReflect: (payload) => ipcRenderer.invoke('ai:reflect', payload),
   aiPull: (name) => ipcRenderer.invoke('ai:pull', name),
+  // Stop the in-flight Ollama request, not just the loop between clips (audit #78).
+  aiCancel: () => ipcRenderer.invoke('ai:cancel'),
   onAiPullProgress: (cb) => {
     const listener = (_evt, p) => cb(p);
     ipcRenderer.on('ai:pull-progress', listener);
@@ -141,7 +145,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   onAiMenu: (cb) => {
     // Fired by the right-click AI submenu: 'settings' | 'run-this' | 'analyze' | 'feedback'.
-    const map = { 'ai:open-settings': 'settings', 'ai:run-this': 'run-this', 'ai:analyze-selected': 'analyze', 'ai:feedback-open': 'feedback' };
+    const map = { 'ai:open-settings': 'settings', 'ai:run-this': 'run-this', 'ai:analyze-selected': 'analyze', 'ai:scan-faces': 'scan-faces', 'ai:feedback-open': 'feedback' };
     const listeners = [];
     for (const [ch, action] of Object.entries(map)) {
       const l = () => cb(action);
@@ -344,6 +348,11 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('drive:removed', listener);
   },
   verifyCopies: (pairs) => ipcRenderer.invoke('verify:copies', pairs),
+  onVerifyProgress: (cb) => {
+    const listener = (_evt, p) => cb(p);
+    ipcRenderer.on('verify:progress', listener);
+    return () => ipcRenderer.removeListener('verify:progress', listener);
+  },
   freeSpace: (folder) => ipcRenderer.invoke('disk:freeSpace', folder),
   importsGet: () => ipcRenderer.invoke('imports:get'),
   importsAdd: (keys) => ipcRenderer.invoke('imports:add', { keys }),

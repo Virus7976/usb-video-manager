@@ -223,7 +223,9 @@ test('buildEmbedTags: separator-only fields collapse away — no empty "a||b" hi
 test('buildEmbedTags: people → PersonInImage + a People|<name> hierarchy branch', () => {
   const t = plain(call('buildEmbedTags', { subject: 'run', people: ['Liam', 'Josiah'] }, [], 'f.mp4'));
   assert.deepEqual(t['XMP-iptcExt:PersonInImage'], ['Liam', 'Josiah']);
-  assert.deepEqual(t['XMP-mwg-rs:RegionType'], ['Face', 'Face']);
+  // MWG Region* tags were dropped — invalid without RegionAppliedToDimensions + Area, ignored by
+  // digiKam, so dead XMP noise. PersonInImage + the People/ tag tree cover the people-tag case.
+  assert.equal(t['XMP-mwg-rs:RegionType'], undefined);
   assert.ok(t['XMP-lr:HierarchicalSubject'].includes('People|Liam'));
   assert.ok(t['XMP-digiKam:TagsList'].includes('People/Josiah'));
 });

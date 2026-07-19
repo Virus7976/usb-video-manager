@@ -29,24 +29,29 @@ function runCapture(cmd, args, { timeoutMs = 20000, onlyOnSuccess = false, maxBy
 // assumed hung (e.g. an MTP CopyHere stuck in a COM call on a yanked phone) and killed —
 // unlike killAfter's fixed deadline, the idle timer RESETS on every chunk, so a genuinely
 // long-but-progressing transfer is never killed. Resolves {code, out, err, timedOut}.
-function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env, maxBytes = 8 * 1024 * 1024 } = {}) {
+function streamSpawn(cmd, args, { onLine, onData, idleMs = 0, timeoutMs = 0, env, maxBytes = 8 * 1024 * 1024, abortCheck = null } = {}) {
   return new Promise((resolve) => {
     let proc;
     // Merge env INTO process.env (don't replace it) so a caller passing a couple of extra
     // vars can't accidentally drop PATH/SystemRoot and make the child fail to launch.
     try { proc = spawn(cmd, args, { windowsHide: true, env: env ? { ...process.env, ...env } : process.env }); }
     catch (e) { resolve({ code: -1, out: '', err: (e && e.message) || String(e), timedOut: false }); return; }
-    let out = ''; let err = ''; let buf = ''; let done = false; let timedOut = false;
-    let idleTimer = null; let hardTimer = null;
+    let out = ''; let err = ''; let buf = ''; let done = false; let timedOut = false; let aborted = false;
+    let idleTimer = null; let hardTimer = null; let abortTimer = null;
     const kill = () => { treeKill(proc); };   // tear down the whole tree (COM/conhost/children)
     const resetIdle = () => { if (!idleMs) return; clearTimeout(idleTimer); idleTimer = setTimeout(() => { timedOut = true; kill(); }, idleMs); };
     const finish = (code) => {
       if (done) return; done = true;
-      clearTimeout(idleTimer); clearTimeout(hardTimer);
+      clearTimeout(idleTimer); clearTimeout(hardTimer); clearInterval(abortTimer);
       if (onLine && buf) onLine(buf);   // flush a trailing partial line
-      resolve({ code, out, err, timedOut });
+      resolve({ code, out, err, timedOut, aborted });
     };
     if (timeoutMs) hardTimer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
+    // Cooperative cancel: when the caller's abort flag flips, tear the child down. Whatever file the
+    // child was mid-copy on is left truncated — but the phone:pull staging gate declines a file short
+    // of its source size, so a cancelled transfer never finalizes a partial clip. `aborted` lets the
+    // caller tell a user-cancel apart from a genuine timeout/crash.
+    if (typeof abortCheck === 'function') abortTimer = setInterval(() => { try { if (abortCheck()) { aborted = true; kill(); } } catch { /* ignore */ } }, 400);
     resetIdle();
     proc.stdout.on('data', (d) => {
       const s = d.toString(); if (out.length < maxBytes) out += s; resetIdle();
@@ -402,7 +407,14 @@ ipcMain.handle('ai:suggest', async (evt, payload) => {
   const clipText = [precomputed, (payload && payload.context) || '', ((payload && payload.people) || []).join(' ')].filter(Boolean).join(' ');
   const { fieldSpec, rulesText, styleBlock } = aiNamingSpec(ai, { subjects, categories, hasPeople, clipText });
 
-  const finish = (out) => ({ ok: true, ...normalizeNaming(out, payload && payload.people) });
+  const finish = (out) => {
+    const named = normalizeNaming(out, payload && payload.people);
+    // An empty reply (parseJsonLoose returns {} on a total model failure / a non-JSON answer) must NOT
+    // count as a named clip: the renderer would tick it "named", leave every field blank, mark no
+    // failure, and never offer a retry. Report it as a failure so it lands in the retry queue instead.
+    if (!aiFieldStr(named.subject) && !aiFieldStr(named.description)) return { ok: false, error: 'the model returned no usable name — try again' };
+    return { ok: true, ...named };
+  };
   const errMsg = (err) => (/aborted|timeout/i.test(err.message || '') ? 'Timed out — the model may still be loading; try again.' : (err.message || String(err)));
 
   // --- Multi-pass reasoning: perceive (vision) → name (text) → critique (text).

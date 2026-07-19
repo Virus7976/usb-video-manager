@@ -131,7 +131,10 @@ test('a scene face re-links to its cluster by DESCRIPTOR, never by a stored inde
   // written down today points at a different person tomorrow.
   const src = readFileSync(join(ROOT, 'src', 'mod', '08-people.js'), 'utf8');
   const fn = src.slice(src.indexOf('async function showFaceReviewGrid('));
-  assert.match(fn, /const clusterOf = \(desc\) => clusters\.findIndex\(\(c\) => c && !c\.skipped && faceDist\(c\.descriptor, desc\) < 0\.5\)/);
+  // The distance is FACE_CLUSTER_DIST (audit #91 named it; it was a bare 0.5 here). What this test
+  // is actually pinning is the DESCRIPTOR lookup, not the number — the number lives in one place now
+  // and is pinned by test/face-thresholds.test.mjs.
+  assert.match(fn, /const clusterOf = \(desc\) => clusters\.findIndex\(\(c\) => c && !c\.skipped && faceDist\(c\.descriptor, desc\) < FACE_CLUSTER_DIST\)/);
   assert.equal(/faces\[\s*fi\s*\]\.ci\b/.test(fn), false, 'no persisted cluster index');
 });
 
@@ -140,7 +143,9 @@ test('clicking a face opens the SAME card — no second naming path', () => {
   // The scene reuses cardHTML and wire() verbatim; a parallel implementation is how the two drift.
   const src = readFileSync(join(ROOT, 'src', 'mod', '08-people.js'), 'utf8');
   const fn = src.slice(src.indexOf('async function showFaceReviewGrid('));
-  assert.match(fn, /\$\{sel \? `<div class="fsc-pick">\$\{cardHTML\(sel\)\}<\/div>` : ''\}/, 'the real card, inline');
+  // Reuses cardHTML verbatim (a parallel implementation is how the two naming paths drift) — now as a
+  // popup ON the photo, whose thumbnail is the clicked face cropped from THIS shot.
+  assert.match(fn, /<div class="fsc-pop-wrap">\$\{cardHTML\(sel, \{ faceImg: s\.img, faceBox: selBox/, 'the real card, as a popup on the photo');
   assert.match(fn, /wireScenes\(scenes\)/);
   // …and a face being named ON the shot must not ALSO appear below as a loose head.
   assert.match(fn, /const onScene = new Set\(scenes\.flatMap\(\(s\) => s\.cis\)\.filter\(\(ci\) => ci >= 0\)\)/);

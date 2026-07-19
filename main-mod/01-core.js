@@ -53,6 +53,53 @@ try {
   console.error('Could not pin userData path:', err.message);
 }
 
+// #81 — Persistent, rotating application log. The packaged build runs as a windowless tray process,
+// so every console.* went NOWHERE: a user reporting "it forgot my settings" / "the update never
+// arrived" / "it just closed" left no diagnostic trail at all. Mirror console output to
+// userData/app.log (crash.log stays the dedicated crash sink). Bounded: at ~1 MB we roll the current
+// file to app.log.1 (one generation kept) so it can never grow without limit. Logging must NEVER
+// throw — a failed write is swallowed, and the original console is always still called.
+const LOG_FILE = path.join(app.getPath('userData'), 'app.log');
+const LOG_MAX_BYTES = 1024 * 1024;
+let _logBytes = -1;   // lazily seeded from the file's real size on first write
+function safeInspect(a) {
+  if (typeof a === 'string') return a;
+  if (a && a.stack) return a.stack;
+  try { return require('node:util').inspect(a, { depth: 2, breakLength: Infinity }); } catch { return String(a); }
+}
+function rotateLogIfNeeded() {
+  if (_logBytes < 0) { try { _logBytes = fs.statSync(LOG_FILE).size; } catch { _logBytes = 0; } }
+  if (_logBytes < LOG_MAX_BYTES) return;
+  try { fs.renameSync(LOG_FILE, `${LOG_FILE}.1`); } catch { /* ignore — just keep appending */ }
+  _logBytes = 0;
+}
+function appendLog(level, args) {
+  let line;
+  try { line = `[${new Date().toISOString()}] ${level}: ${(args || []).map(safeInspect).join(' ')}\n`; } catch { return; }
+  try { rotateLogIfNeeded(); fs.appendFileSync(LOG_FILE, line); _logBytes += Buffer.byteLength(line); } catch { /* logging must never throw */ }
+}
+// Wrap console ONCE, keeping the originals so the dev terminal/devtools still see everything.
+(function installFileLog() {
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  console.log = (...a) => { appendLog('INFO', a); try { orig.log(...a); } catch { /* ignore */ } };
+  console.warn = (...a) => { appendLog('WARN', a); try { orig.warn(...a); } catch { /* ignore */ } };
+  console.error = (...a) => { appendLog('ERROR', a); try { orig.error(...a); } catch { /* ignore */ } };
+}());
+
+// Global crash net. This is a long-lived tray process with ~150 async IPC handlers; a single unhandled
+// rejection or thrown error used to tear the main process down SILENTLY mid-copy — no dialog, and (in
+// the windowless packaged build) console output goes nowhere, so the user reporting "it just closed"
+// left no trace. Log every crash to userData/crash.log — the one durable diagnostic — and keep the
+// process alive rather than dying on the user mid-operation (the stores are atomic, so surviving is
+// safer than exiting). Registered as early as possible so nothing before whenReady goes untracked.
+function logCrash(kind, err) {
+  const line = `[${new Date().toISOString()}] ${kind}: ${(err && err.stack) || err}\n`;
+  try { console.error(line); } catch { /* ignore */ }
+  try { fs.appendFileSync(path.join(app.getPath('userData'), 'crash.log'), line); } catch { /* ignore */ }
+}
+process.on('uncaughtException', (err) => logCrash('uncaughtException', err));
+process.on('unhandledRejection', (err) => logCrash('unhandledRejection', err));
+
 // Enable the platform (OS/GPU) HEVC/H.265 decoder so GoPro footage plays in a
 // native <video> element in-app, with audio + scrubbing + playbackRate. Verified
 // supported on this hardware. Must be set before app is ready.
@@ -80,6 +127,16 @@ const USER_CONFIG = path.join(ROAMING_DIR, 'USB SD Auto-Action', 'config.json');
 // existing reader is unchanged) but persisted INDEPENDENTLY via saveStore(key). One
 // writer per file (single-instance lock) makes a fresh re-read cheap and race-free.
 const STORE_DIR = path.join(ROAMING_DIR, 'USB SD Auto-Action');
+// Sweep orphaned atomic-write temp files (`<store>.<pid>.<n>.tmp`) left by a crash/power-loss between
+// openSync and renameSync. Cleanup otherwise only ran in the same-process catch, so these leaked
+// forever — and for the multi-MB stores they can be large. Called once at boot.
+function sweepStoreTemps() {
+  try {
+    for (const name of fs.readdirSync(STORE_DIR)) {
+      if (/\.\d+\.\d+\.tmp$/.test(name)) { try { fs.rmSync(path.join(STORE_DIR, name), { force: true }); } catch { /* ignore */ } }
+    }
+  } catch { /* store dir absent / unreadable */ }
+}
 // A store key may be a top-level config key OR a dotted path into it ('ai.people'). The
 // big one is ai.people — face descriptors that used to be ~95% of config.json, so every
 // settings toggle re-serialized hundreds of KB of face data. Split out, config.json is tiny.
@@ -121,6 +178,7 @@ const STORE_DEFAULT = {
   aiQueue: () => [],
 };
 const storeSelfMtimeMs = {};   // per-store "our last write" mtime — skip needless re-reads
+const storeSelfSizeBytes = {}; // …and its size — an external write in the SAME mtime tick (coarse FAT/exFAT/network clocks) still changes the size, so re-read on a size change too
 
 // Stores NOT read at boot. people.json holds the face descriptors AND their base64 thumbnail
 // crops (~70% of the file) and grows without bound as people are tagged; parsing it — plus
@@ -138,6 +196,7 @@ const storeLoaded = {};        // key -> its sidecar has been read (or proven ab
 // we'd default it to []/{} and the next saveStore() would overwrite the user's face DB or
 // saved names with that empty default. Run the session on defaults, never write over it.
 const storeReadFailed = {};
+const storeQuarantined = {};   // per-store: have we already saved a *.corrupt copy of an unreadable file?
 
 // Read/write a store's value by key, where key may be dotted ('ai.people').
 function storeGet(key) {
@@ -186,8 +245,14 @@ function stripStoresForWrite() {
 function treeKill(proc) {
   if (!proc) return;
   if (process.platform === 'win32' && proc.pid) {
-    try { spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true }); return; }
-    catch { /* fall through to a plain kill */ }
+    try {
+      const tk = spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true });
+      // If taskkill can't do the job (missing, AV, permission) the wedged ffmpeg/powershell tree would
+      // be orphaned silently. Fall back to a direct kill on a spawn error or a nonzero exit.
+      tk.on('error', () => { try { proc.kill('SIGKILL'); } catch { /* ignore */ } });
+      tk.on('exit', (code) => { if (code) { try { proc.kill('SIGKILL'); } catch { /* ignore */ } } });
+      return;
+    } catch { /* fall through to a plain kill */ }
   }
   try { proc.kill('SIGKILL'); } catch { /* ignore */ }
 }
@@ -242,6 +307,10 @@ function writeJsonAtomic(file, obj) {
     try { fs.writeSync(fd, JSON.stringify(obj, null, 2)); fs.fsyncSync(fd); }
     finally { fs.closeSync(fd); }
     fs.renameSync(tmp, file);
+    // Flush the DIRECTORY entry too, so a crash/power-loss right after the rename (but before the dir
+    // metadata is durable) can't lose the file on ext4/xfs — honoring the "irreplaceable data" promise
+    // above. Best-effort: Windows can't fsync a directory handle via Node, so this is a no-op there.
+    try { const dfd = fs.openSync(path.dirname(file), 'r'); try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); } } catch { /* dir fsync unsupported / not needed */ }
   } catch (err) {
     // Clean the temp on ANY failure (write, fsync, or rename) — not just rename.
     try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
@@ -332,9 +401,14 @@ function loadConfig() {
       shotTypes: [],        // custom shot types [{name,desc}] — blank = built-in defaults
       askAfterRun: false,   // after an analyze run, ask me to confirm each clip (teaches from corrections)
       temperature: 0.2,
+      numCtxMax: 8192,      // ceiling for the auto-sized Ollama context window (KV-cache sanity on a 6 GB card)
+      numCtx: 0,            // 0 = size the window to each prompt; >0 pins a fixed num_ctx for every call
       prompt: '',           // custom guidance (blank = built-in default)
       multiPass: false,     // 3-pass reasoning (perceive → name → critique) — slower, better, opt-in
       learnFromEdits: true, // silently learn when the user changes an AI-suggested name
+      learnFromAnalysis: true, // after a run, distil what was seen+named into memory rules
+      faceInterval: 2,      // seconds between frames sampled for face scanning (config:get clamps 1..15)
+      faceMaxFrames: 24,    // cap on frames pulled per clip for face detection
       memories: [],         // discrete learned preferences [{id,text,ts}] — injected into prompts
       styleExamples: [],    // sample "subject / description" pairs MINED from the user's own filenames
       styleCorrections: [], // pairs the user actually CORRECTED — kept apart because mining REPLACES
@@ -457,7 +531,7 @@ function loadStoreFile(key) {
   const j = readJsonRetry(file);
   if (j !== null && j !== undefined) {
     storeSet(key, j);                                             // sidecar wins
-    try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+    try { const st = fs.statSync(file); storeSelfMtimeMs[key] = st.mtimeMs; storeSelfSizeBytes[key] = st.size; } catch { /* ignore */ }
   } else {
     // null = absent (fine, first run / pre-migration) OR present-but-unparseable
     // (dangerous). Only the second must block writes, or we'd replace real data with
@@ -533,7 +607,7 @@ function saveStore(key) {
     const cur = storeGet(key);
     const val = (cur === undefined || cur === null) ? STORE_DEFAULT[key]() : cur;
     writeJsonAtomic(file, val);
-    try { storeSelfMtimeMs[key] = fs.statSync(file).mtimeMs; } catch { /* ignore */ }
+    try { const st = fs.statSync(file); storeSelfMtimeMs[key] = st.mtimeMs; storeSelfSizeBytes[key] = st.size; } catch { /* ignore */ }
   } catch (err) { console.error(`Could not save store ${key}:`, err.message); }
 }
 
@@ -545,14 +619,28 @@ function freshStore(key) {
   const file = STORE_FILES[key];
   ensureStore(key);              // a deferred store must exist in memory before we diff mtimes
   if (file) {
-    let mtime = 0; let exists = true;
-    try { mtime = fs.statSync(file).mtimeMs; } catch { exists = false; }   // no file yet → in-memory
-    if (exists && !(storeSelfMtimeMs[key] && mtime <= storeSelfMtimeMs[key])) {
+    let mtime = 0; let size = -1; let exists = true;
+    try { const st = fs.statSync(file); mtime = st.mtimeMs; size = st.size; } catch { exists = false; }   // no file yet → in-memory
+    // Re-read if the file changed since OUR last write — by mtime OR SIZE. A size change catches an
+    // external write that lands in the same coarse-clock mtime tick (FAT/exFAT/network shares), which
+    // the mtime-only check treated as "ours" and silently ignored, diverging the in-memory copy.
+    if (exists && !(storeSelfMtimeMs[key] && mtime <= storeSelfMtimeMs[key] && size === storeSelfSizeBytes[key])) {
       const j = readJsonRetry(file);
       // A successful re-read clears the read-failed latch: if the user restored a good
       // file (or the transient lock cleared), saving is safe again from here on.
-      if (j !== null && j !== undefined) { storeSet(key, j); storeSelfMtimeMs[key] = mtime; storeReadFailed[key] = false; }
-      else storeReadFailed[key] = true;   // still present, still unreadable — keep writes blocked
+      if (j !== null && j !== undefined) { storeSet(key, j); storeSelfMtimeMs[key] = mtime; storeSelfSizeBytes[key] = size; storeReadFailed[key] = false; }
+      else {
+        storeReadFailed[key] = true;   // still present, still unreadable — keep writes blocked
+        // Quarantine a copy of the corrupt file ONCE (writes are blocked so the original is safe, but a
+        // *.corrupt copy is easy to hand to support / recover from), and leave a trace in crash.log —
+        // the old behavior ran the whole session on empty defaults with zero indication the DB was
+        // intact-but-unread, so the user just saw an empty People/faces view.
+        if (!storeQuarantined[key]) {
+          storeQuarantined[key] = true;
+          try { fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`); } catch { /* best-effort */ }
+          try { logCrash('store-unreadable', new Error(`${key} (${file}) could not be read — kept a .corrupt copy; running on defaults, writes blocked`)); } catch { /* ignore */ }
+        }
+      }
     }
   }
   if (storeGet(key) === undefined || storeGet(key) === null) storeSet(key, (STORE_DEFAULT[key] || (() => ({})))());
@@ -565,6 +653,37 @@ const VIDEO_EXTS = new Set(config.videoExtensions.map((e) => e.toLowerCase()));
 const IMAGE_EXTS = new Set(IMAGE_EXT_LIST.map((e) => `.${e}`));
 function isImagePath(p) { return IMAGE_EXTS.has(path.extname(String(p || '')).toLowerCase()); }
 const THUMB_DIR = path.join(app.getPath('temp'), 'usb-auto-action-thumbs');
+
+// Persistent poster/thumbnail cache. THUMB_DIR lives in the OS temp dir and is nuked on every
+// boot (so scratch can't grow forever), which meant EVERY clip re-ran ffmpeg to re-extract its
+// poster on each relaunch. This dir lives under userData and survives restarts; it's bounded not
+// by nuke-on-boot but by prunePosterCache() (keep the newest POSTER_CACHE_MAX, LRU-touched on hit).
+const POSTER_CACHE_DIR = path.join(app.getPath('userData'), 'poster-cache');
+const POSTER_CACHE_MAX = 4000;
+// Deterministic filename from path+size+mtime: a hit reuses the file; an edited/re-recorded clip
+// (different size or mtime) yields a new name and re-extracts, so a stale poster can't linger.
+function posterCacheName(srcPath, size, mtimeMs) {
+  const h = crypto.createHash('sha1').update(`${srcPath}|${size}|${Math.round(mtimeMs)}`).digest('hex').slice(0, 16);
+  return `p_${h}.jpg`;
+}
+// Pure, testable core of the eviction: given [{nm, m(time)}] and a cap, return the names to
+// delete (everything except the `cap` newest by mtime).
+function posterCachePrunePlan(entries, cap) {
+  if (!Array.isArray(entries) || entries.length <= cap) return [];
+  return entries.slice().sort((a, b) => b.m - a.m).slice(cap).map((e) => e.nm);
+}
+function prunePosterCache() {
+  let names = [];
+  try { names = fs.readdirSync(POSTER_CACHE_DIR); } catch { return; }   // dir not created yet → nothing to do
+  if (names.length <= POSTER_CACHE_MAX) return;
+  const entries = [];
+  for (const nm of names) {
+    try { entries.push({ nm, m: fs.statSync(path.join(POSTER_CACHE_DIR, nm)).mtimeMs }); } catch { /* vanished — skip */ }
+  }
+  for (const nm of posterCachePrunePlan(entries, POSTER_CACHE_MAX)) {
+    try { fs.rmSync(path.join(POSTER_CACHE_DIR, nm), { force: true }); } catch { /* ignore */ }
+  }
+}
 
 // Path identity, filesystem-case-aware. Windows (and default macOS) are case-INSENSITIVE,
 // so "Clip.MP4" and "clip.mp4" are the SAME file — compare case-folded there; compare
@@ -661,7 +780,13 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // SANDBOXED (audit #94). preload.js requires only electron's contextBridge + ipcRenderer, both
+      // of which a sandboxed preload still gets — it touches no fs/path/child_process — so this costs
+      // nothing and hardens the one privileged surface in the app. That matters more here than in a
+      // normal Electron app because `webSecurity: false` below means rendered filenames and AI text
+      // are running in a renderer with the brakes off: if anything ever achieves script execution
+      // there, the sandbox is what stops it reaching a full Node process.
+      sandbox: true,
       // Local-only tool: loads no remote content, but needs to play local video
       // files (file://) in the renderer. Chromium's native file loader handles
       // HEVC range/seek where a custom protocol could not.
@@ -670,6 +795,14 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+  // Renderer-crash recovery. Without this a crashed renderer left a dead window that the tray/hotkey
+  // just re-show()'d blank forever. Log it (crash.log) and reload the window so the app self-heals.
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    logCrash('render-process-gone', new Error((details && details.reason) || 'renderer gone'));
+    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload(); } catch { /* ignore */ }
+  });
+  mainWindow.webContents.on('unresponsive', () => logCrash('renderer-unresponsive', new Error('renderer unresponsive')));
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => { if (url && String(url).startsWith('file:')) logCrash('did-fail-load', new Error(`${code} ${desc} ${url}`)); });
 
   // Lock navigation down: this app only ever shows its own local file:// UI. With
   // webSecurity off, refuse to open new windows or navigate anywhere else, so no stray
@@ -717,6 +850,7 @@ function createWindow() {
             { label: 'AI settings…', click: () => send('ai:open-settings') },
             { label: 'Run AI on this clip', click: () => send('ai:run-this') },
             { label: 'Analyze selected clips', click: () => send('ai:analyze-selected') },
+            { label: 'Scan faces on selected clips', click: () => send('ai:scan-faces') },
             { type: 'separator' },
             { label: 'Leave feedback…', click: () => send('ai:feedback-open') }
           ]

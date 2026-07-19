@@ -15,22 +15,121 @@ const COMPRESS_PRESETS = {
 };
 function compressSettings(s) {
   const base = COMPRESS_PRESETS[(s && s.preset) || 'balanced'] || COMPRESS_PRESETS.balanced;
-  return { ...base, ...(s && s.overrides ? s.overrides : {}), skipExisting: !(s && s.skipExisting === false) };
+  // GPU encode is opt-in and CONFIG-ONLY (audit #64): set `"compressGpu": true` in config.json to
+  // try NVENC. Deliberately not a default and deliberately not a checkbox — the CRF→CQ mapping
+  // decides the quality of a permanent archive and wants one side-by-side encode before it is
+  // recommended to anyone. This matches how the other advanced knobs work here (numCtx/numCtxMax):
+  // a tool for a tool-user (PROMPT.md §1), not a settings screen for everything.
+  //
+  // Without this line the whole #64 feature was UNREACHABLE — read in three places, set nowhere.
+  // Exactly the dead-code shape audit #40 was about, so it gets a test that it stays reachable.
+  const gpu = !!(config && config.compressGpu);
+  return { ...base, gpu, ...(s && s.overrides ? s.overrides : {}), skipExisting: !(s && s.skipExisting === false) };
 }
-function buildCompressArgs(src, out, s) {
+// --- HARDWARE ENCODING (audit #64) ------------------------------------------------------------
+//
+// Compression is the slowest step in the pipeline: 4K GoPro footage through x265 `medium` is minutes
+// per clip on a CPU, while the NVENC block on his RTX 3060 is typically 5-20x faster.
+//
+// SHIPPED OPT-IN, DEFAULT OFF (`s.gpu`). The CRF→CQ mapping decides the quality of his PERMANENT
+// compressed archive, and visual quality cannot be validated from WSL — there is no NVIDIA device
+// here. So the probe, the plumbing and the CPU fallback land now; switching the default on needs one
+// real side-by-side encode on his machine. Note #6's duration verdict catches an INCOMPLETE encode
+// but says nothing about whether the quality is right, so it is not a substitute for that check.
+let _encoderProbe = null;
+function resetEncoderProbe() { _encoderProbe = null; }                 // tests
+function setEncoderProbeForTest(v) { _encoderProbe = v; }             // tests
+// LISTING IS NOT AVAILABILITY. `ffmpeg -encoders` lists hevc_nvenc/h264_nvenc whenever ffmpeg was
+// BUILT with them — verified on this WSL box, which reports 5 nvenc encoders and cannot use any of
+// them. Trusting the list would select a hardware encoder on a machine with no NVIDIA driver and
+// fail every single clip. So probe FUNCTIONALLY: run a tiny real encode and see whether it exits 0.
+// (320x240 because NVENC refuses frames below its minimum dimensions — a 64x64 probe fails for the
+// wrong reason and would report "no GPU" on a machine that has one.)
+async function canEncode(name) {
+  try {
+    const r = await streamSpawn(config.ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=1:duration=0.1',
+      '-c:v', name, '-f', 'null', '-',
+    ], { timeoutMs: 20000 });
+    return !!r && r.code === 0 && !r.timedOut;
+  } catch { return false; }
+}
+async function probeEncoders() {
+  if (_encoderProbe) return _encoderProbe;
+  // Test seam: { hevc_nvenc: bool, h264_nvenc: bool } to stand in for the real encodes.
+  const stub = globalThis.__ffmpegEncoderProbe;
+  let found; let trustworthy = true;
+  if (stub && typeof stub === 'object') {
+    found = { hevc_nvenc: !!stub.hevc_nvenc, h264_nvenc: !!stub.h264_nvenc };
+  } else if (stub === null) {
+    found = { hevc_nvenc: false, h264_nvenc: false };   // simulated probe failure
+    trustworthy = false;
+  } else {
+    const [hevc, h264] = await Promise.all([canEncode('hevc_nvenc'), canEncode('h264_nvenc')]);
+    found = { hevc_nvenc: hevc, h264_nvenc: h264 };
+  }
+  // Only CACHE a probe we trust. Caching a failure would latch one transient blip into "this machine
+  // has no GPU" for the whole session — the mistake the AI capability cache made with its null
+  // sentinel (AGENTS §7a).
+  if (trustworthy) _encoderProbe = found;
+  return found;
+}
+function buildCompressArgs(src, out, s, enc) {
   const a = ['-y', '-i', src];
   // `scale` is interpolated into ONE -vf element, so a value like "720,transpose=1" would
   // append an extra filter to the graph. Not a shell injection (spawn takes an argv array,
   // no shell), but the height must still be a plain positive integer — anything else is
   // ignored rather than passed through to the filtergraph.
   const scaleH = Number(s.scale);
-  if (s.scale && s.scale !== 'source' && Number.isInteger(scaleH) && scaleH > 0) a.push('-vf', `scale=-2:${scaleH}`);
-  if (s.codec === 'h265') a.push('-c:v', 'libx265', '-tag:v', 'hvc1', '-crf', String(s.crf ?? 28));
-  else a.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', String(s.crf ?? 23));
+  // NEVER upscale: `scale=-2:720` on a 480p clip re-renders it to 720p — a bigger file with no
+  // added detail (and slower). Clamp the target height to the source height via ffmpeg's own
+  // expression min(target, ih); the comma inside the expression is escaped (\,) so the filtergraph
+  // parser reads it as one argument, not a second filter. The argv is passed to spawn (no shell),
+  // so the backslash reaches ffmpeg literally and it unescapes to a real comma.
+  if (s.scale && s.scale !== 'source' && Number.isInteger(scaleH) && scaleH > 0) a.push('-vf', `scale=-2:min(${scaleH}\\,ih)`);
+  // Hardware path only when explicitly asked for AND the probe saw that exact encoder. A partial
+  // driver (h264_nvenc present, hevc_nvenc missing) is common, so this is decided per-codec —
+  // emitting an encoder ffmpeg doesn't have fails the whole batch.
+  const gpu = !!(s.gpu && enc);
+  const wantHevc = s.codec === 'h265';
+  const hw = gpu && ((wantHevc && enc.hevc_nvenc) || (!wantHevc && enc.h264_nvenc));
+  if (hw && wantHevc) {
+    // NVENC ignores -crf; quality comes from -cq. Same number is a deliberate STARTING point, not a
+    // validated equivalence — see the note above buildCompressArgs before turning this on by default.
+    a.push('-c:v', 'hevc_nvenc', '-tag:v', 'hvc1', '-cq', String(s.crf ?? 28));
+  } else if (hw) {
+    a.push('-c:v', 'h264_nvenc', '-pix_fmt', 'yuv420p', '-cq', String(s.crf ?? 23));
+  } else if (wantHevc) {
+    a.push('-c:v', 'libx265', '-tag:v', 'hvc1', '-crf', String(s.crf ?? 28));
+  } else {
+    a.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', String(s.crf ?? 23));
+  }
   a.push('-preset', s.preset || 'medium');
   if (s.audio === 'copy') a.push('-c:a', 'copy'); else a.push('-c:a', 'aac', '-b:a', '160k');
   a.push('-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', out);
   return a;
+}
+// Is a finished encode actually COMPLETE? ffmpeg exiting 0 is NOT proof: given a source with a
+// corrupt tail (or a read that ends early) it writes a short file and still exits 0. Nothing else
+// between here and the Compressed folder checks anything — the staged file is renamed to its real
+// name and organized as "done" — and because the delete gate only compares card↔intake, the card is
+// then legitimately cleared. That can leave a SHORT clip as the only surviving copy of a shot.
+//
+// Durations are ffprobe seconds. The tolerance exists because a re-encode can legitimately land a
+// hair short (GOP/timebase rounding); it stays far tighter than any real truncation. Erring the
+// other way matters too — too tight a bound would start rejecting genuine encodes.
+function compressOutputVerdict(srcSec, outSec) {
+  if (!(outSec > 0)) return { ok: false, error: 'the compressed file has no readable video duration — the encode did not finish' };
+  // Source duration unknown (ffprobe couldn't read the input container) → nothing to compare
+  // against. A probeable output is all we can honestly assert; failing here would reject good work.
+  if (!(srcSec > 0)) return { ok: true };
+  const shortfall = srcSec - outSec;
+  const tol = Math.max(0.5, srcSec * 0.02);
+  if (shortfall > tol) {
+    return { ok: false, error: `compressed clip is ${shortfall.toFixed(1)}s shorter than the source (${outSec.toFixed(1)}s vs ${srcSec.toFixed(1)}s) — the encode did not finish` };
+  }
+  return { ok: true };
 }
 function ffmpegLastError(err) {
   const lines = String(err || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -95,13 +194,25 @@ ipcMain.handle('compress:run', async (evt, payload) => {
     await ensureDir(partDir);
     const partPath = path.join(partDir, path.basename(outPath));
     try { await fsp.rm(partPath, { force: true }); } catch { /* no leftover */ }
-    const args = buildCompressArgs(src, partPath, s);
+    // Probe once per run; a machine without NVENC just gets the CPU path (audit #64).
+    // eslint-disable-next-line no-await-in-loop
+    const enc = s.gpu ? await probeEncoders() : null;
+    const args = buildCompressArgs(src, partPath, s, enc);
     // eslint-disable-next-line no-await-in-loop
     const res = await new Promise((resolve) => {
       let errBuf = '';
+      let wedged = false;
       const proc = spawn(config.ffmpegPath, args, { windowsHide: true });
       compressProc = proc;
+      // Idle watchdog — every other ffmpeg call in the app has one; compress didn't. ffmpeg streams
+      // `out_time=` progress ~1/sec, so 10 min of TOTAL silence means it's wedged inside a bad-codec
+      // clip (the killAfter comment warns these "stall forever"). Kill it so one bad input can't hang
+      // the whole batch; the .part is discarded and the clip is reported failed, not stuck.
+      let idle = null;
+      const bump = () => { clearTimeout(idle); idle = setTimeout(() => { wedged = true; try { treeKill(proc); } catch { /* ignore */ } }, 10 * 60 * 1000); };
+      bump();
       proc.stdout.on('data', (d) => {
+        bump();
         const m = String(d).match(/out_time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
         if (!m) return;
         if (durationSec) {
@@ -112,13 +223,30 @@ ipcMain.handle('compress:run', async (evt, payload) => {
           send({ index: i, total: files.length, name: f.name, phase: 'compressing', indeterminate: true, inBytes });
         }
       });
-      proc.stderr.on('data', (d) => { errBuf += String(d); if (errBuf.length > 6000) errBuf = errBuf.slice(-6000); });
-      proc.on('error', (e) => { compressProc = null; resolve({ ok: false, error: e.message }); });
-      proc.on('close', (code) => { compressProc = null; resolve(code === 0 ? { ok: true } : { ok: false, error: compressAborted ? 'cancelled' : (ffmpegLastError(errBuf) || `ffmpeg exited ${code}`) }); });
+      proc.stderr.on('data', (d) => { bump(); errBuf += String(d); if (errBuf.length > 6000) errBuf = errBuf.slice(-6000); });
+      proc.on('error', (e) => { clearTimeout(idle); compressProc = null; resolve({ ok: false, error: e.message }); });
+      proc.on('close', (code) => { clearTimeout(idle); compressProc = null; resolve(code === 0 ? { ok: true } : { ok: false, error: wedged ? 'stalled — no progress for 10 min (skipped)' : (compressAborted ? 'cancelled' : (ffmpegLastError(errBuf) || `ffmpeg exited ${code}`)) }); });
     });
     if (res.ok) {
-      // ffmpeg exited 0 → the encode is complete. Only NOW does it get the real name, so nothing
+      // ffmpeg exited 0 — which is NOT the same as "the encode is complete" (see
+      // compressOutputVerdict). Measure the staged file BEFORE it earns its real name, so nothing
       // that isn't a finished clip can ever appear in the Compressed folder.
+      //
+      // Probe via runFfprobeJson, NOT probeMeta: probeMeta memoises by path, and the staged path is
+      // deterministic (out/.partial/<name>.mp4), so a cached duration from an earlier clip or an
+      // earlier run would be compared instead of this file's.
+      let outSec = 0;
+      // eslint-disable-next-line no-await-in-loop
+      try { const j = JSON.parse((await runFfprobeJson(partPath)) || '{}'); outSec = parseFloat(j.format && j.format.duration) || 0; } catch { /* unprobeable → the verdict below fails it */ }
+      const verdict = compressOutputVerdict(durationSec, outSec);
+      if (!verdict.ok) {
+        // Discard the staged file. The SOURCE is untouched, so this clip is simply reported failed
+        // and can be retried — far better than filing a short clip and clearing the card behind it.
+        try { await fsp.rm(partPath, { force: true }); } catch { /* ignore */ }
+        results.push({ name: f.name, ok: false, error: verdict.error });
+        send({ index: i, total: files.length, name: f.name, pct: 0, phase: 'error', error: verdict.error });
+        continue;
+      }
       let outBytes = 0;
       try {
         await flushToDisk(partPath);
@@ -222,7 +350,10 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     // real answer — no guessing, no sidecar, and it works on another machine or after the sidecar
     // has been pruned. Only reached on a store miss, which is exactly the case where the
     // compressor renamed the file — so we pay the exiftool read precisely when it earns its keep.
-    if (!rec && !f.isPhoto) {
+    // Photos now carry the embedded record too (phone:distribute), so recover from a PHOTO on a store
+    // miss as well — the `!f.isPhoto` gate defeated the round-trip for exactly the format where reading
+    // XMP is cheapest. Only fires on `!rec` (a store miss), so it's not a per-photo cost in the common case.
+    if (!rec) {
       const embedded = await readEmbeddedRecord(f.sourcePath);
       if (embedded) { rec = embedded; matchType = 'embedded'; }
     }
@@ -295,10 +426,25 @@ function buildEmbedTags(meta, parts, fallbackName) {
   if (caption) tags['XMP-dc:Description'] = caption;
   if (keywords.length) tags['XMP-dc:Subject'] = keywords;             // flat keywords (Resolve/Bridge)
   if (hier.length) tags['XMP-lr:HierarchicalSubject'] = hier;          // digiKam/Lightroom tag tree
-  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) tags['XMP-photoshop:DateCreated'] = date;
+  // Accept a date that STARTS with YYYY-MM-DD (a trailing time is fine): the old exact-match wrote NO
+  // date at all for anything carrying a time.
+  const dm = String(date).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (dm) {
+    tags['XMP-photoshop:DateCreated'] = `${dm[1]}-${dm[2]}-${dm[3]}`;
+    // ALSO write the NATIVE capture date — Windows "Date taken", Resolve "Date Recorded", and
+    // digiKam's default date sort read EXIF/QuickTime, NOT the XMP field, so the AI/user date was
+    // invisible everywhere it matters. Gated by file type so exiftool never gets a group the file
+    // lacks (an EXIF tag on an MP4 / a QuickTime tag on a JPEG would fail the whole write).
+    const exifDate = `${dm[1]}:${dm[2]}:${dm[3]} 00:00:00`;
+    const isPhotoFile = /\.(jpe?g|png|heic|heif|tiff?|dng|webp)$/i.test(String(fallbackName || ''));
+    if (isPhotoFile) { tags['EXIF:DateTimeOriginal'] = exifDate; tags['EXIF:CreateDate'] = exifDate; }
+    else { tags['QuickTime:CreateDate'] = exifDate; }
+  }
   if (m.location) tags['XMP-iptcCore:Location'] = deh(m.location);
   if (m.context) tags['XMP-dc:Coverage'] = m.context;                  // the shoot context, kept searchable
-  if (m.shotType) tags['XMP-xmp:Label'] = deh(m.shotType);
+  // shotType is ALREADY in the flat dc:Subject keywords (searchable). It used to ALSO be written to
+  // XMP:Label — but Label is the Bridge/Lightroom COLOUR-label field, so "pov"/"wide" produced a
+  // garbage colour label. Dropped. (Native EXIF/QuickTime capture date is a separate follow-up.)
   // People / faces — written so digiKam reads them as people tags. We write THREE
   // standard things: IPTC PersonInImage (Bridge/Lightroom), a "People/<name>" branch
   // in the hierarchical subject + digiKam's own TagsList (digiKam shows these under
@@ -307,9 +453,10 @@ function buildEmbedTags(meta, parts, fallbackName) {
     const ppl = uniqStrings(m.people).filter(Boolean);
     if (ppl.length) {
       tags['XMP-iptcExt:PersonInImage'] = ppl;
-      tags['XMP-mwg-rs:RegionPersonDisplayName'] = ppl;
-      tags['XMP-mwg-rs:RegionName'] = ppl;
-      tags['XMP-mwg-rs:RegionType'] = ppl.map(() => 'Face');
+      // NOTE: dropped the XMP-mwg-rs:Region* tags. An MWG region struct is INVALID (and ignored by
+      // digiKam's face-region reader) without RegionAppliedToDimensions + a per-person Area, which we
+      // don't have here — so those three tags were dead XMP noise. PersonInImage + the People/ tag tree
+      // below already cover the people-tag case. (Emit real regions later if we thread box coords in.)
       const peopleHier = ppl.map((n) => `People|${hc(n)}`);
       const peopleTags = ppl.map((n) => `People/${hc(n)}`);
       tags['XMP-lr:HierarchicalSubject'] = uniqStrings([...(tags['XMP-lr:HierarchicalSubject'] || hier), ...peopleHier]);
@@ -445,6 +592,7 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
 
   const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, unplanned: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
   const undoable = [];   // {from,to} per relocated clip → enables "Undo last organize"
+  const ledgerEntries = [];   // audit #29 — what this Run filed, for the project ledger
   const csvRows = [];
   const filed = [];      // clips whose metadata is now consumed → the finalMeta prune may evict them
   // Is the caller driving us from the destination map's plan? (Any item carrying a `rel` means
@@ -487,8 +635,18 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       emit(i, it.name, 'embedding');
       try {
         if (Object.keys(tags).length) {
-          await et.write(curPath, tags, ['-overwrite_original']);
-          summary.embedded += 1;
+          // Skip the write when the file ALREADY carries this exact record. Embedding XMP into an
+          // MP4/MOV rewrites the WHOLE file (minutes each on GoPro footage), and a retry / re-run
+          // otherwise redoes every already-good clip. The lossless dc:Identifier record captures every
+          // field the human-facing tags derive from, so a record match means the whole tag set matches.
+          let already = false;
+          const newRec = tags['XMP-dc:Identifier'];
+          if (newRec) {
+            const cur = await readEmbeddedRecord(curPath);
+            if (cur) already = (`${EMBED_RECORD_PREFIX}${JSON.stringify(cur)}` === newRec);
+          }
+          if (!already) await et.write(curPath, tags, ['-overwrite_original']);
+          summary.embedded += 1;   // it IS embedded either way (written now, or already carrying it)
         }
       } catch (err) {
         summary.errors.push(`Embed ${it.name}: ${err.message}`);
@@ -508,6 +666,21 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         if (r.action === 'moved' || r.action === 'copied') {
           summary.moved += 1;
           undoable.push({ from: before, to: r.path, copied: r.action === 'copied' });
+          // Feed the PROJECT LEDGER (audit #29). Only the map's "Apply" recorded here, so filing via
+          // step-3 Run learned nothing: the ledger is what makes a later import from the same shoot
+          // offer the same project, and the shoot DATE is the strongest signal this app has
+          // (usb-app-shoots-in-batches). Two filing paths that disagree about learning is exactly the
+          // divergence PROMPT.md §2 warns about.
+          ledgerEntries.push({
+            rel: relRaw,
+            name: path.basename(r.path),
+            date: meta.date || '',
+            subject: meta.subject || '',
+            description: meta.description || '',
+            location: meta.location || '',
+            people: Array.isArray(meta.people) ? meta.people : [],
+            observation: meta.observation || '',
+          });
         } else summary.skipped += 1;
         // A COPY leaves the original where it is — the archive on L: is the whole point — so the rest
         // of the run (embed, CSV, NAS) must keep operating on the SOURCE, not chase the new copy.
@@ -523,8 +696,10 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       }
     }
 
-    // 3. Mirror to the NAS (organized structure), if enabled.
-    if (nasRoot) {
+    // 3. Mirror to the NAS (organized structure), if enabled. NOT for a skipMove clip: it was
+    // deliberately left unplaced (no rel under a plan), so `parts` is empty and this would flat-dump
+    // it into the NAS ROOT next to the real project folders — the very root-dump the local skip avoids.
+    if (nasRoot && !skipMove) {
       emit(i, it.name, 'backup');
       try {
         const nasDir = path.join(nasRoot, ...parts);
@@ -539,19 +714,35 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     if (opts.csv) {
       // Scene = the deepest configured folder level's value (a useful grouping in
       // Resolve), falling back to the legacy 'project' field.
+      // Scene = the deepest folder the clip actually filed into. Under a PLAN the clip files by `rel`
+      // (rich project folders), but the old code derived scene from the level fields (category/project),
+      // which are normally EMPTY under a plan → a blank Scene column despite meaningful folders. Prefer
+      // the plan's leaf folder, then fall back to the configured level / project field.
       const sceneLevel = levels[levels.length - 1];
-      const scene = (sceneLevel ? metaLevelValue(sceneLevel, meta) : '') || meta.project || '';
+      const scene = (relRaw ? (parts[parts.length - 1] || '') : '')
+        || (sceneLevel ? metaLevelValue(sceneLevel, meta) : '') || meta.project || '';
       csvRows.push({
         file: finalFileName,
         description: meta.description || '',
+        // Shot type (wide/close/pov…) and the AI's full visual observation are both derived per clip
+        // and were being dropped from the CSV. Resolve's Import Metadata maps "Shot" and "Comments"
+        // directly, so an editor gets to sort by shot type and full-text-search the media pool for
+        // what was actually in each clip — using work the AI already did.
+        shot: meta.shotType || '',
         keywords: keywords.join(', '),
-        scene
+        scene,
+        comments: meta.observation || ''
       });
     }
     // This clip's metadata has now been CONSUMED — embedded into the file and/or filed into the
     // tree. Only now may the finalMeta prune consider evicting it. (An embed failure `continue`s
     // above, so a clip that didn't make it never gets marked and its metadata is kept for a retry.)
-    filed.push(it.name);
+    //
+    // A skipMove clip is the SAME case: it is still sitting unfiled in the Compressed folder (the user
+    // hasn't placed it yet), so its metadata must survive for the run that finally files it. Marking
+    // it done let the prune evict its meta, after which it was filtered out at the top of the loop
+    // (`it.meta` required) and could NEVER be organized again — the AI's work silently gone.
+    if (!skipMove) filed.push(it.name);
   }
   markFinalMetaDone(filed);
 
@@ -561,8 +752,22 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     try {
       const csvDir = (opts.organize && dest) ? dest : (dir || config.finalizeSource || dest);
       const csvPath = path.join(csvDir, 'resolve-metadata.csv');
-      const lines = [['File Name', 'Description', 'Keywords', 'Scene'].map(csvCell).join(',')];
-      for (const r of csvRows) lines.push([r.file, r.description, r.keywords, r.scene].map(csvCell).join(','));
+      const HEADER = ['File Name', 'Description', 'Shot', 'Scene', 'Keywords', 'Comments'];
+      // MERGE by File Name, don't overwrite: he organizes batch-by-batch, and a fresh write each run
+      // left the editor's Resolve import holding only the last batch's rows. Keep prior rows; this
+      // run's rows override a same-named row. Existing data rows are re-emitted verbatim.
+      const byFile = new Map();
+      try {
+        const prev = (await fsp.readFile(csvPath, 'utf8')).split(/\r?\n/).filter(Boolean);
+        for (let li = 0; li < prev.length; li += 1) {
+          const name = csvFirstField(prev[li]);
+          if (li === 0 && name === 'File Name') continue;   // skip the old header
+          if (name) byFile.set(name, prev[li]);
+        }
+      } catch { /* no existing CSV yet */ }
+      for (const r of csvRows) byFile.set(r.file, [r.file, r.description, r.shot, r.scene, r.keywords, r.comments].map(csvCell).join(','));
+      const lines = [HEADER.map(csvCell).join(',')];
+      for (const line of byFile.values()) lines.push(line);
       await fsp.writeFile(csvPath, lines.join('\r\n'), 'utf8');
       summary.csvPath = csvPath;
     } catch (err) { summary.errors.push(`CSV: ${err.message}`); }
@@ -570,6 +775,14 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
 
   // Record this run's relocations so "Undo last organize" can move them back.
   if (undoable.length) { config.lastOrganize = { ts: Date.now(), moves: undoable }; saveConfig(); }
+
+  // Record what Run filed into the project ledger — AFTER lastOrganize is stamped, because
+  // organize:undo only reverses a ledger delta whose ts is >= the run's (see reverseLastLedger).
+  // Recording before would leave the delta looking like it belonged to an earlier run and undo
+  // would refuse to take it back.
+  if (ledgerEntries.length) {
+    try { recordLedgerEntries(ledgerEntries); } catch (err) { summary.errors.push(`Ledger: ${err.message}`); }
+  }
 
   // `ok` was set true at construction and never reconsidered, so a run in which EVERY clip failed
   // still reported success and the renderer showed a tidy green summary. Report reality: a run that
@@ -766,7 +979,17 @@ async function verifyCopyPair(src, dst) {
       // Same inode on the same device = the same file reached by a different name: a hardlink, a
       // symlink, a junction, a `subst`ed drive letter, a \\?\ prefix. pathsEqual compares strings
       // and cannot see any of those. The stats are already in hand, so this costs nothing.
-      if (ss && ds && ss.ino && ss.ino === ds.ino && ss.dev === ds.dev) {
+      // A COPY ON THE SAME CARD IS NOT A COPY OFF THE CARD — the volume-identity form of the
+      // drive-letter check above. That one compares path SPELLING, so it misses a card addressed as
+      // `\\?\Volume{GUID}\…` (no letter at all) or mounted into a folder. `st.dev` is the volume
+      // identity the OS itself reports, so it sees through spelling entirely.
+      //
+      // Strictly ADDITIVE: it can only ever refuse more, never fewer — the one direction this gate
+      // is allowed to move. Gated on the source really being removable, so an ordinary copy within
+      // one internal disk is untouched, and placed before the hash so a refusal costs no I/O.
+      if (!reason && ss && ds && ss.dev === ds.dev && await isOnRemovableVolume(src)) {
+        reason = 'the copy is on the same card as the original — that is not a backup';
+      } else if (ss && ds && ss.ino && ss.ino === ds.ino && ss.dev === ds.dev) {
         reason = 'the copy on record is the same file as the source (a link, not a copy)';
       } else if (ss && ds) {
         if (ss.size !== ds.size) { reason = `size mismatch (${ss.size} vs ${ds.size})`; }
@@ -783,9 +1006,19 @@ async function verifyCopyPair(src, dst) {
   return { source: src, dest: dst, ok, reason };
 }
 
-ipcMain.handle('verify:copies', async (_evt, pairs) => {
+ipcMain.handle('verify:copies', async (evt, pairs) => {
+  const list = Array.isArray(pairs) ? pairs : [];
   const out = [];
-  for (const p of (Array.isArray(pairs) ? pairs : [])) out.push(await verifyCopyPair(p && p.source, p && p.dest));
+  const total = list.length;
+  for (let i = 0; i < total; i += 1) {
+    const p = list[i];
+    // #86: verifying HASHES the whole of every copy — 200 clips is minutes of work with no signal,
+    // so the pre-delete "Verifying copies…" looked frozen. Emit per-pair progress before each hash
+    // (best-effort; the sender may already be gone). Purely additive — the verdict is unchanged.
+    try { evt.sender.send('verify:progress', { done: i, total, name: (p && p.name) || (p && p.source) || '' }); } catch { /* ignore */ }
+    out.push(await verifyCopyPair(p && p.source, p && p.dest));
+  }
+  try { evt.sender.send('verify:progress', { done: total, total, name: '' }); } catch { /* ignore */ }
   return out;
 });
 
@@ -898,6 +1131,7 @@ if (!gotLock) {
     // append-heavy stores still living in config.json into their own sidecar files,
     // before anything can trigger a config save. One-time; a no-op once migrated.
     migrateStores();
+    sweepStoreTemps();   // clear any atomic-write .tmp orphans a prior crash left in the store dir
 
     // Keep the OS login-item entry in sync with config on every start.
     applyLoginItem(config.launchAtLogin);
@@ -906,6 +1140,7 @@ if (!gotLock) {
     ingestMemoryInbox();   // fold any externally-dropped learnings into AI memory
     // Purge last session's thumbnail/poster scratch so temp can't grow without bound.
     try { fs.rmSync(THUMB_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+    prunePosterCache();   // bound the PERSISTENT poster cache (survives launches, unlike THUMB_DIR)
     createWindow();
     createTray();
 

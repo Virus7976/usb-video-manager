@@ -19,3 +19,6 @@ Thumbs.db
 # but ignore any stray local copies just in case
 config.local.json
 *.local.json
+
+# E2E generated media fixtures (regenerated on demand)
+test/e2e/.fixtures/

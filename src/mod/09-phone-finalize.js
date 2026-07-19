@@ -51,6 +51,7 @@ async function phoneEnterChooser() {
   $('phBar').classList.add('hidden');
   $('phGrid').innerHTML = '';
   $('phCopyWrap').classList.add('hidden');
+  $('phCopyBtn').classList.remove('hidden');   // restored after a pull was hidden it (see phoneCopy)
   $('phAlbums').innerHTML = '<span class="muted small">Finding albums…</span>';
   $('phNewSummary').textContent = 'Checking what’s new…';
   $('phNewSub').textContent = '';
@@ -320,6 +321,36 @@ function phoneDateOf(name) {
   }
   return '';
 }
+
+// The capture date for one pulled item (audit #58).
+//
+// This used to be `phoneDateOf(name) || toDateStr(mtimeMs)`, and mtime after an MTP/ADB pull is when
+// the file LANDED ON DISK — i.e. today. Plenty of phone media carries no date in its name (WhatsApp,
+// screenshots, many Android cameras), so a shoot from last month arrived dated today. That is not
+// cosmetic: the shoot DATE predicts the subject ~88% of the time (usb-app-shoots-in-batches) and
+// drives day-grouping, ledger same-shoot matching, and get_shoot_context — the AI's strongest signal.
+//
+// Order matters. The FILENAME wins when it has a date: it is authoritative and free, whereas probing
+// spawns an ffprobe per file — unaffordable across a card of hundreds when most names already carry
+// the date.
+//
+// VIDEOS ONLY. The container's `creation_time` is what ffprobe can read. Stills need
+// EXIF:DateTimeOriginal and ffprobe returns EMPTY tags for a JPEG (verified), so probing a photo
+// costs a spawn and yields nothing — the photo half needs the vendored Windows exiftool and is
+// deliberately left for a session that can run it, rather than guessed at.
+async function captureDateFor(sourcePath, name, mtimeMs, isPhoto) {
+  const fromName = phoneDateOf(name);
+  if (fromName) return fromName;
+  if (!isPhoto && sourcePath) {
+    try {
+      const meta = await window.api.getMeta(sourcePath);
+      const iso = meta && meta.dateISO;
+      if (iso) { const d = toDateStr(Date.parse(iso)); if (d) return d; }
+    } catch { /* unreadable → fall through to mtime, never fail staging over a date */ }
+  }
+  return toDateStr(mtimeMs);
+}
+
 function phoneRenderGrid() {
   const host = $('phGrid');
   const items = phoneVisibleMedia();
@@ -383,6 +414,10 @@ async function phoneCopy() {
   phoneState.copying = true; phoneUpdateBar();
   $('phChooser').classList.add('hidden');
   $('phCopyWrap').classList.remove('hidden');
+  // Hide the "Pull N off phone & rename" primary button while the pull runs — the progress panel has
+  // its own Cancel, and leaving the Pull button sitting under a 62% bar reads as a broken screen.
+  // phoneEnterChooser() brings it back when we return to choosing.
+  $('phCopyBtn').classList.add('hidden');
   $('phCopyBar').style.width = '0%'; $('phCopyPct').textContent = '0%';
   $('phCopyLabel').textContent = 'Pulling off your phone…';
   $('phCopySub').textContent = `${nPho} photo${nPho !== 1 ? 's' : ''} → Photos Temp · ${nVid} video${nVid !== 1 ? 's' : ''} → Video Temp`;
@@ -424,6 +459,12 @@ async function phoneCopy() {
   }
   if (res && res.ok && Array.isArray(res.staged) && res.staged.length) {
     if (typeof pcNotify === 'function') pcNotify('Phone ready', `${nPho} photo${nPho !== 1 ? 's' : ''} in Photos Temp · ${nVid} video${nVid !== 1 ? 's' : ''} ready to name.`);
+    // #87: some selected items can fail to transfer (device declined the file, or it staged
+    // truncated and was rejected) even on an otherwise-successful pull. The progress bar hitting
+    // 100% otherwise implies EVERYTHING came off the phone — call out the ones that didn't, since
+    // they're still on the phone and a re-pull will retry them.
+    const missed = res.incomplete || 0;
+    if (missed > 0) showToast(`Heads up: ${missed} item${missed !== 1 ? 's' : ''} didn’t transfer off the phone and ${missed !== 1 ? 'were' : 'was'} left on it — pull again to retry ${missed !== 1 ? 'them' : 'it'}.`, 6500);
     enterRenameWithPhoneFiles(res.staged);
   } else {
     $('phCopyLabel').textContent = `Couldn’t prepare media${res && res.error ? `: ${res.error}` : ''}`;
@@ -444,18 +485,18 @@ async function enterRenameWithPhoneFiles(staged) {
   // (:520 gates on state.copied.length) would happily list them. You were one pill-click from
   // deleting a card from inside the phone flow. A new flow starts with nothing to delete.
   state.copied = [];
-  state.scannedFiles = staged.map((f) => {
+  state.scannedFiles = await Promise.all(staged.map(async (f) => {
     const clip = {
       ...f,
       origBase: f.name.slice(0, f.name.length - (f.ext || '').length),
-      date: phoneDateOf(f.name) || toDateStr(f.mtimeMs),
+      date: await captureDateFor(f.sourcePath, f.name, f.mtimeMs, f.kind === 'photo'),
       dateLocked: !!phoneDateOf(f.name),
       subject: '', description: '', version: 1, selected: false,
       isPhoto: f.kind === 'photo'
     };
     for (const fld of organizeFields) clip[fld.id] = '';
     return clip;
-  });
+  }));
   $('phone').classList.add('hidden');
   $('finalize').classList.add('hidden');
   $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
@@ -745,11 +786,14 @@ function buildPhotoJobs(photos, includePhotosTemp) {
   let routedN = 0;
   for (const p of photos) {
     const fname = finalName(p);
-    if (includePhotosTemp && photosTemp) jobs.push({ src: p.sourcePath, dest: `${photosTemp}\\${fname}` });
-    for (const d of dests) jobs.push({ src: p.sourcePath, dest: `${d}\\${fname}` });
+    // The AI's record rides WITH the copy job so phone:distribute can embed it into the photo file —
+    // videos get this via finalize:run, photos got nothing but copied bytes. Same shape as finalMeta.
+    const meta = flowMetaOf(p);
+    if (includePhotosTemp && photosTemp) jobs.push({ src: p.sourcePath, dest: `${photosTemp}\\${fname}`, meta });
+    for (const d of dests) jobs.push({ src: p.sourcePath, dest: `${d}\\${fname}`, meta });
     if (projRoot) {
       const route = phoneRouteFor(p);
-      if (route) { const sub = `${route.dest.replace(/\//g, '\\')}${route.byDay && p.date ? `\\${p.date}` : ''}`; jobs.push({ src: p.sourcePath, dest: `${projRoot}\\${sub}\\${fname}` }); routedN += 1; }
+      if (route) { const sub = `${route.dest.replace(/\//g, '\\')}${route.byDay && p.date ? `\\${p.date}` : ''}`; jobs.push({ src: p.sourcePath, dest: `${projRoot}\\${sub}\\${fname}`, meta }); routedN += 1; }
     }
   }
   return { jobs, dests, routedN };
@@ -1055,8 +1099,15 @@ async function runCopy() {
 async function verifyFlowCopies() {
   if (!state.copied || !state.copied.length) return { ok: 0, fail: 0 };
   let results = [];
+  // #86: verification HASHES the whole of every copy, so a big card sat on "Verifying copies…" for
+  // minutes looking frozen. Reflect per-clip progress in the label; detach the listener in finally.
+  const label = $('copyLabel');
+  const off = (window.api.onVerifyProgress && label) ? window.api.onVerifyProgress((p) => {
+    if (p && p.total) label.textContent = `Verifying copies… ${Math.min(p.done + 1, p.total)}/${p.total}`;
+  }) : null;
   try { results = await window.api.verifyCopies(state.copied.map((c) => ({ source: c.sourcePath, dest: c.destPath }))); }
   catch { results = []; }
+  finally { if (off) { try { off(); } catch { /* ignore */ } } }
   const bySrc = {}; results.forEach((r) => { if (r) bySrc[r.source] = r; });
   let ok = 0; let fail = 0;
   for (const c of state.copied) { const v = bySrc[c.sourcePath]; c._verified = !!(v && v.ok); c._verifyReason = (v && v.reason) || ''; if (c._verified) ok += 1; else { fail += 1; logIssue('Copy verify', `${c.name}: ${c._verifyReason || 'mismatch'}`); } }
@@ -1066,18 +1117,27 @@ async function verifyFlowCopies() {
 }
 // Persist each clip's full metadata keyed by its final filename (carry-forward to
 // Organize). Called after copy and again after background analysis enriches it.
+// The canonical AI-derived record for a clip/photo — the same shape finalMeta stores and
+// buildEmbedTags reads. Shared so the photo copy jobs can carry it into the file (see buildPhotoJobs
+// → phone:distribute) instead of it living only in a sidecar the photo never reaches.
+function flowMetaOf(clip) {
+  const rec = {
+    subject: clip.subject || '', description: clip.description || '', date: clip.date || '',
+    location: clip.location || '', context: clip.context || '',
+    shotType: clip.shotType || '', observation: clip.observation || '',
+    people: Array.isArray(clip.people) ? clip.people : [],
+    peopleAuto: Array.isArray(clip.peopleAuto) ? clip.peopleAuto : []   // unconfirmed face guesses
+  };
+  for (const fld of organizeFields) rec[fld.id] = clip[fld.id] || '';
+  rec.tags = Array.isArray(clip.tags) ? clip.tags : [];
+  rec.ledgerRel = clip._ledgerRel || clip.ledgerRel || '';
+  rec.keywords = [clip.subject, clip.location, clip.shotType, ...organizeFields.map((f) => clip[f.id]), ...rec.tags].filter(Boolean);
+  return rec;
+}
 function saveFlowFinalMeta(clips) {
   const map = {};
   for (const clip of clips) {
-    const rec = {
-      subject: clip.subject || '', description: clip.description || '', date: clip.date || '',
-      location: clip.location || '', context: clip.context || '',
-      shotType: clip.shotType || '', observation: clip.observation || '',
-      people: Array.isArray(clip.people) ? clip.people : [],
-      peopleAuto: Array.isArray(clip.peopleAuto) ? clip.peopleAuto : []   // unconfirmed face guesses
-    };
-    for (const fld of organizeFields) rec[fld.id] = clip[fld.id] || '';
-    rec.tags = Array.isArray(clip.tags) ? clip.tags : [];
+    const rec = flowMetaOf(clip);
     // The same-shoot decision the user ALREADY confirmed ("Part of an existing project?" →
     // "Will file N clips into 'X' at the organize step"). It was only ever persisted into
     // renameDrafts — and the drafts for copied clips are deleted immediately after the copy —
@@ -1301,8 +1361,14 @@ $('deleteConfirmBtn').addEventListener('click', async () => {
   let verify = [];
   if (toCheck.length) {
     btn.disabled = true; btn.textContent = 'Verifying copies…';
+    // #86: full-hash verify before the irreversible delete — show progress so this critical wait
+    // never looks hung. Listener detached in finally regardless of outcome.
+    const off = window.api.onVerifyProgress ? window.api.onVerifyProgress((p) => {
+      if (p && p.total) btn.textContent = `Verifying copies… ${Math.min(p.done + 1, p.total)}/${p.total}`;
+    }) : null;
     try { verify = await window.api.verifyCopies(toCheck.map((i) => ({ source: state.copied[i].sourcePath, dest: state.copied[i].destPath }))); }
     catch { verify = []; }
+    finally { if (off) { try { off(); } catch { /* ignore */ } } }
     btn.disabled = false; btn.textContent = restore;
   }
   const bySource = {}; verify.forEach((v) => { if (v) bySource[v.source] = v; });

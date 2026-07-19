@@ -88,7 +88,7 @@ function applyTheme(t) {
 }
 
 // View options (persisted): density/visibility toggles applied as root classes.
-const uiPrefs = { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false, autoVersionOnAi: true, autoRestore: true, autoAnalyzeAfterCopy: true, quickAnalyze: true, autoTagFaces: false, finalizePhotos: false, routesSeeded: false };
+const uiPrefs = { showHelp: false, compact: false, showResult: true, autoplayAudio: false, notifications: true, showCommandBar: true, showMetaRow: true, finMatchedOnly: false, cleanGrid: true, dayDividers: true, showLocation: false, autoVersionOnAi: true, autoRestore: true, autoAnalyzeAfterCopy: true, quickAnalyze: true, autoTagFaces: false, finalizePhotos: true, routesSeeded: false };
 // Duplicate-import detection: keys (name+size) of source files imported before.
 let importedSet = new Set();
 function importKey(c) { return `${String((c && c.name) || '').toLowerCase()}__${(c && c.size) || 0}`; }
@@ -1128,6 +1128,26 @@ function recomputeVersions() {
   }
 }
 
+// Version suffixes (the "-2" that disambiguates two clips sharing a base name) depend on
+// cross-clip collisions, so a single keystroke can change ANOTHER clip's number — which makes
+// recomputeVersions inherently O(all clips). Running it on every keystroke got heavy on big
+// scans. Coalesce it: the live subject/description text updates instantly (refreshNames writes
+// the fields synchronously); only the version suffix lags by one debounce tick, invisible for a
+// de-dup counter. Finalize/draft-save happen seconds later, well after this has settled.
+let _versionTimer = null;
+function scheduleVersionRecompute() {
+  if (_versionTimer) return;
+  _versionTimer = setTimeout(() => {
+    _versionTimer = null;
+    recomputeVersions();
+    document.querySelectorAll('[data-final]').forEach((pill) => {
+      const clip = state.scannedFiles[Number(pill.dataset.final)]; if (!clip) return;
+      const name = finalName(clip);
+      if (pill.textContent !== name) pill.textContent = name;
+    });
+  }, 120);
+}
+
 // ---------------------------------------------------------------------------
 // Rename drafts — persist in-progress naming so it survives an app restart
 // (not just in-session navigation). Keyed by a per-clip fingerprint (name+size)
@@ -1184,6 +1204,14 @@ function flushDraftSave() {
 // few edits. (The main-process save is non-destructive, so an extra flush is harmless.)
 (function wireDraftSafetyFlush() {
   const flush = () => { try { flushDraftSave(); } catch { /* ignore */ } };
+  // NOTE (audit #12, 2026-07-18): this async flush was suspected of losing the last renames when a
+  // quit landed inside the 600 ms debounce. It doesn't — a two-launch e2e that types a name and
+  // quits immediately shows the draft persisting (test/e2e/drafts-quit-flush.e2e.mjs). A graceful
+  // quit (tray Quit → app.quit()) unloads the window and main still services the invoke. A
+  // sendSync version was built and measured against the same test: no behavioural difference, and
+  // it adds a way for a wedged main to hang the quit. Don't "fix" this again without a REPRODUCTION.
+  // The genuinely unprotected case is a HARD kill (SIGKILL/power loss), where beforeunload never
+  // runs at all and no flush of any kind can help.
   window.addEventListener('beforeunload', flush);
   window.addEventListener('pagehide', flush);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
@@ -2041,7 +2069,7 @@ function buildRenameStep() {
 
 // Update every visible final-name pill + date input from current state.
 function refreshNames() {
-  recomputeVersions();
+  scheduleVersionRecompute();
   // Query each element type ONCE (not per-clip), and only write the DOM when the value
   // actually changed — typing in one field used to re-write every clip's pill + date,
   // which got slow with a card full of clips.
@@ -2137,7 +2165,7 @@ function addTagToClip(i, tag) {
 function removeTagFromClip(i, tag) {
   const c = state.scannedFiles[i]; if (!c || !Array.isArray(c.tags)) return;
   c.tags = c.tags.filter((t) => t !== tag);
-  renderClipTags(i); scheduleDraftSave();
+  renderClipTags(i); scheduleDraftSave(); applyClipFilter();   // tags are in the filter haystack — keep visibility in sync (like people edits)
 }
 // digiKam-style tag panel: a checklist of the shared tag pool (check = on this clip),
 // a type-to-add field with live autocomplete, and apply-to-selected. Fully local.
@@ -2181,7 +2209,7 @@ function showTagEditor(i) {
     host.innerHTML = pool.map((t) => `<label class="te-pool-row"><input type="checkbox" class="te-pool-cb" data-tag="${escapeAttr(t)}" ${on.has(t) ? 'checked' : ''}/><span class="ctc-ic">🏷</span><span class="te-pool-tx">${escapeHtml(t)}</span></label>`).join('');
     host.querySelectorAll('.te-pool-cb').forEach((cb) => cb.addEventListener('change', () => {
       if (cb.checked) addTagToClip(i, cb.dataset.tag); else removeTagFromClip(i, cb.dataset.tag);
-      renderClipTags(i); scheduleDraftSave(); renderCurrent();
+      renderClipTags(i); scheduleDraftSave(); renderCurrent(); applyClipFilter();   // keep the active filter in sync after a tag change
     }));
   };
   const commitAdd = () => {
@@ -2370,13 +2398,18 @@ function resetClipFilter() {
 function applyClipFilter() {
   const list = $('renameList'); if (!list) return;
   const q = (clipFilterText || '').trim().toLowerCase();
-  let shown = 0; const total = state.scannedFiles.length;
+  const total = state.scannedFiles.length;
+  // Count from STATE, not the DOM (audit #50). The list renders in 100-clip chunks, so tallying
+  // `.rename-card` elements reported only what had scrolled into view — "2 of 3000" for a filter
+  // that actually matched 50. That reads as "your search found nothing", which is the opposite of
+  // true and exactly the kind of thing that makes the app not worth trusting.
+  // (Visibility below still walks the DOM, because only rendered cards HAVE visibility. Cards
+  // rendered later are filtered by the applyClipFilter() call at the end of each chunk.)
+  const shown = state.scannedFiles.reduce((n, c) => (c && clipMatchesFilter(c) ? n + 1 : n), 0);
   list.querySelectorAll('.rename-card').forEach((card) => {
     const i = Number(card.dataset.i); const c = state.scannedFiles[i]; if (!c) return;
-    const ok = clipMatchesFilter(c);
-    const disp = ok ? '' : 'none';
+    const disp = clipMatchesFilter(c) ? '' : 'none';
     if (card.style.display !== disp) card.style.display = disp;   // only write when it changes (avoids layout thrash)
-    if (ok) shown += 1;
   });
   // Hide day dividers whose whole group is filtered out.
   let divider = null; let groupVisible = false;
@@ -2436,8 +2469,14 @@ function wireRowEditing(listEl) {
       if (openPopover) { closePopover(); return; }
       const i = Number(btn.dataset.date);
       openCalendar(btn, state.scannedFiles[i].date, (ds) => {
-        state.scannedFiles[i].date = ds;
-        state.scannedFiles[i].dateLocked = true;   // user choice wins over metadata
+        const c = state.scannedFiles[i];
+        if (ds) { c.date = ds; c.dateLocked = true; }   // user choice wins over metadata
+        else {
+          // Clear → back to the file's natural date (phone filename / mtime), UNLOCKED so ffprobe can
+          // correct it. Locking to '' (the old always-lock path) is what made a wrong date un-clearable.
+          c.date = (typeof phoneDateOf === 'function' && phoneDateOf(c.name)) || toDateStr(c.mtimeMs) || '';
+          c.dateLocked = false;
+        }
         refreshNames();
       });
     });
@@ -2690,7 +2729,14 @@ function ttIlloFor(id) {
 }
 function cancelTaskById(id) {
   if (id === 'faces') { faceScanAborted = true; showToast('Cancelling face scan…'); }
-  else if (id === 'ai') { aiAborted = true; showToast('Cancelling AI… (finishes the current clip)', 3500); }
+  else if (id === 'ai') {
+    aiAborted = true;
+    // Abort the request that is ACTUALLY in flight (audit #78). The flag alone is only checked
+    // between clips, so Cancel used to sit at "Cancelling…" for the rest of the current call —
+    // up to 180 s for a vision pass, or the whole tool loop for naming.
+    try { window.api.aiCancel(); } catch { /* main may already be gone */ }
+    showToast('Cancelling AI…', 3000);
+  }
   else if (id === 'compress') { window.api.compressCancel(); showToast('Cancelling compression…'); }
 }
 function isCancellable(id) { return id === 'faces' || id === 'ai' || id === 'compress'; }
@@ -3510,7 +3556,9 @@ async function aiAutoEnhance() {
       setTask('ai', aiModelLabel(), done + 1, unnamed.length, 'naming', state.scannedFiles[i].name);
       markClipAnalyzing(i, 'naming');
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, 'empty', { quiet: true });
+      // Guarded for the same reason as the other two batch loops (audit #23) — this one runs over
+      // every unnamed clip, so an unbounded call here stalls exactly the run it was meant to finish.
+      const r = await aiCallGuard(aiSuggestClip(i, 'empty', { quiet: true }), 300000);
       queueQuestions(i, r);
       markClipAnalyzing(i, false); flushDraftSave(); done += 1;
     }
@@ -4006,7 +4054,13 @@ async function aiAnalyzeSelected(preset = null) {
       // noPerceive: the observation is already in hand. If it somehow isn't, fall back rather than
       // reloading the vision model mid-phase and thrashing the GPU.
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, mode, { observation: observations[i] || '', quiet: true, noPerceive: true });
+      // GUARDED (audit #23). Naming was the one phase with no bound, while perceive and improve both
+      // had one. The tool loop is maxSteps:5 with a 120 s per-call timeout, so a wedged clip could hold
+      // the batch ~10 min and then fall through to the legacy path for another 180 s — on a 200-clip
+      // card that is how a run appears to "just stop". 300 s is deliberately LOOSER than the 200 s
+      // perceive guard: naming legitimately takes several tool steps, and a guard that skips clips
+      // which would have succeeded is worse than the stall it prevents.
+      const r = await aiCallGuard(aiSuggestClip(i, mode, { observation: observations[i] || '', quiet: true, noPerceive: true }), 300000);
       queueQuestions(i, r);
       markClipAnalyzing(i, false);
       flushDraftSave();   // persist each named clip immediately — survives a mid-run crash
@@ -4024,7 +4078,8 @@ async function aiAnalyzeSelected(preset = null) {
       setTask('ai', aiModelLabel(), done + 1, idxs.length, cached ? 'reusing' : 'analyzing', clip.name);
       markClipAnalyzing(i, cached ? 'reusing' : 'analyzing');
       // eslint-disable-next-line no-await-in-loop
-      const r = await aiSuggestClip(i, mode, { observation: cached, quiet: true });
+      // Guarded for the same reason as the multi-pass loop above (audit #23).
+      const r = await aiCallGuard(aiSuggestClip(i, mode, { observation: cached, quiet: true }), 300000);
       queueQuestions(i, r);
       markClipAnalyzing(i, false);
       flushDraftSave();   // persist each named clip immediately — survives a mid-run crash
@@ -4039,7 +4094,10 @@ async function aiAnalyzeSelected(preset = null) {
   clearTask('ai');
   await releaseGpu();   // give the VRAM back — this also runs on abort, so cancelling frees it too
   const q = aiQuestions.length;
-  if (failCount && !okCount) showToast(`AI couldn't name any clips — ${lastErr || 'check the model in AI settings'}`, 6000);
+  // A CANCELLED run (aborted before it named anything) used to report "AI analysis done · Named 0
+  // clips" — which reads as "it ran and found nothing", not "you stopped it". Say what happened.
+  if (aiAborted) showToast(`Analyse cancelled${okCount ? ` — ${okCount} named before you stopped` : ''}${q ? ` · ${q} to review` : ''}`, 4500);
+  else if (failCount && !okCount) showToast(`AI couldn't name any clips — ${lastErr || 'check the model in AI settings'}`, 6000);
   else if (failCount) showToast(`AI named ${okCount}, ${failCount} failed${lastErr ? ` (${lastErr})` : ''} · ${q} to review`, 5000);
   else { showToast(`AI analysed ${okCount} clip${okCount !== 1 ? 's' : ''}${q ? ` · ${q} to review` : ''}${mode === 'empty' ? ' (filled empty fields only)' : ''}`); pcNotify('AI analysis done', `Named ${okCount} clip${okCount !== 1 ? 's' : ''}${q ? ` · ${q} to review` : ''}.`); }
   // OFFER THE RETRY. A toast saying "12 failed" is not actionable — it disappears, and the only
@@ -4577,6 +4635,7 @@ window.api.onAiMenu((action) => {
     if (aiCtxIndex >= 0 && state.scannedFiles[aiCtxIndex]) runAiOnClip(aiCtxIndex);
     else showToast('Right-click a clip\'s description first');
   } else if (action === 'analyze') aiAnalyzeSelected();
+  else if (action === 'scan-faces') scanFacesSelected();
 });
 // When the AI learns new rules (feedback / edits / reflect) and you already have
 // analyzed clips, nudge — from the bottom — that you can re-apply them.
@@ -4864,7 +4923,12 @@ function updateBatchBar() {
   const count = sel.length;
   $('applyBatch').disabled = count === 0;
   $('applyBatch').textContent = `Apply to ${count}`;
-  $('selectAllClips').checked = count > 0 && count === state.scannedFiles.length;
+  // Compare against the FILTERED total when a filter is active — "select all matching" ticks only the
+  // visible clips, so measuring against the full count left the box unchecked while every visible clip
+  // was selected (its state contradicting the selection).
+  const selectableTotal = (typeof clipFilterActive === 'function' && clipFilterActive())
+    ? state.scannedFiles.filter(clipMatchesFilter).length : state.scannedFiles.length;
+  $('selectAllClips').checked = count > 0 && count === selectableTotal;
 
   // Default the batch date so a same-day batch shares one identical name (versions then
   // differentiate) — but ONLY when every selected clip already has that same date.
@@ -4914,6 +4978,14 @@ async function applyBatch() {
     const d = await decideCopyDate();
     if (d === null) return;          // cancelled
     useDate = d;
+  }
+  // #34: batch-apply overwrites subject/description/location/date across EVERY selected clip with no
+  // way back — "Apply to 200" could clobber a whole day's careful names irreversibly. Drop an
+  // automatic restore point first, exactly like the AI operations do (and honouring the same
+  // auto-version preference). Gated to a batch big enough to be worth it so a 2-clip tweak doesn't
+  // spam the version history. Placed AFTER the copy-date dialog so a cancel leaves no stray point.
+  if (sel.length >= 8 && uiPrefs.autoVersionOnAi !== false) {
+    await saveVersionPoint(`Before batch apply · ${sel.length} clips`, true);
   }
   // Only apply fields you actually filled — so you can batch-tag one field
   // without wiping each clip's name (and vice versa).
@@ -5346,14 +5418,23 @@ function focusClip(i) {
 
 // Jump to the next clip with no name, starting after the focused one (wraps).
 function jumpNextUnnamed() {
-  const total = state.scannedFiles.length;
-  if (!total) return;
-  let start = 0;
-  const card = document.activeElement && document.activeElement.closest && document.activeElement.closest('.rename-card');
-  if (card) start = Number(card.dataset.i) + 1;
-  for (let off = 0; off < total; off += 1) {
-    const i = (start + off) % total;
-    if (!isRenamed(state.scannedFiles[i])) { focusClip(i); return; }
+  // Walk the VISUAL order actually on screen (cards are laid out day-grouped, newest first),
+  // not the raw array index — otherwise "next unnamed" leaps to a clip on the far side of the
+  // list from where the user is looking. All cards are in the DOM (only previews lazy-load),
+  // so their document order IS the visual order.
+  const cards = Array.from(document.querySelectorAll('#renameList .rename-card'));
+  if (!cards.length) {
+    // Fallback (list not built yet): original array-order scan.
+    const total = state.scannedFiles.length;
+    for (let i = 0; i < total; i += 1) if (!isRenamed(state.scannedFiles[i])) { focusClip(i); return; }
+    return;
+  }
+  const active = document.activeElement && document.activeElement.closest && document.activeElement.closest('.rename-card');
+  const startPos = active ? cards.indexOf(active) : -1;
+  for (let off = 1; off <= cards.length; off += 1) {
+    const card = cards[(startPos + off) % cards.length];
+    const i = Number(card.dataset.i);
+    if (state.scannedFiles[i] && !isRenamed(state.scannedFiles[i])) { focusClip(i); return; }
   }
 }
 
@@ -5537,6 +5618,8 @@ function showToast(msg, ms = 1800) {
   if (!appToastEl) {
     appToastEl = document.createElement('div');
     appToastEl.className = 'zoom-toast app-toast';
+    appToastEl.setAttribute('role', 'status');       // toasts are the app's primary feedback channel —
+    appToastEl.setAttribute('aria-live', 'polite');   // announce them to screen readers instead of silence
     document.body.appendChild(appToastEl);
   }
   appToastEl.textContent = msg;
@@ -5551,6 +5634,8 @@ function showToastAction(msg, actionLabel, onAction, ms = 8000) {
   if (!appToastEl) {
     appToastEl = document.createElement('div');
     appToastEl.className = 'zoom-toast app-toast';
+    appToastEl.setAttribute('role', 'status');       // toasts are the app's primary feedback channel —
+    appToastEl.setAttribute('aria-live', 'polite');   // announce them to screen readers instead of silence
     document.body.appendChild(appToastEl);
   }
   appToastEl.textContent = '';
@@ -5707,6 +5792,13 @@ document.addEventListener('keydown', (e) => {
   if (!key) return;
   const safeWhileTyping = /Ctrl|Alt|^F\d/.test(key) || key.includes('+');
 
+  // Ctrl+Space toggles the focused clip's checkbox while naming — build a batch without reaching for
+  // the mouse (bare Space is remapped to a hyphen inside the name fields, so it can't do this itself).
+  if (key === 'Ctrl+Space') {
+    const card = e.target && e.target.closest && e.target.closest('.rename-card');
+    if (card) { const i = Number(card.dataset.i); if (i >= 0 && state.scannedFiles[i]) { e.preventDefault(); setClipSelected(i, !state.scannedFiles[i].selected); return; } }
+  }
+
   // Text shortcuts (session temp first, then saved): insert text into the field.
   // Only modifier/function combos fire so a bare key never hijacks normal typing.
   if (isTypingTarget(e.target) && safeWhileTyping) {
@@ -5812,12 +5904,14 @@ function openCalendar(anchor, currentStr, onPick) {
       const ds = `${vy}-${String(vm + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       html += `<button type="button" class="cal-day${ds === currentStr ? ' selected' : ''}" data-d="${ds}">${d}</button>`;
     }
-    html += '</div><div class="cal-foot"><button type="button" class="cal-today">Today</button></div>';
+    html += `</div><div class="cal-foot"><button type="button" class="cal-today">Today</button>${currentStr ? '<button type="button" class="cal-clear">Clear date</button>' : ''}</div>`;
     cal.innerHTML = html;
     cal.querySelector('.cal-prev').onclick = () => { vm -= 1; if (vm < 0) { vm = 11; vy -= 1; } render(); };
     cal.querySelector('.cal-next').onclick = () => { vm += 1; if (vm > 11) { vm = 0; vy += 1; } render(); };
     cal.querySelector('.cal-title').onclick = () => { mode = 'month'; render(); };
     cal.querySelector('.cal-today').onclick = () => { onPick(toDateStr(Date.now())); closePopover(); };
+    const clr = cal.querySelector('.cal-clear');   // clearing was impossible before — needed a version restore
+    if (clr) clr.onclick = () => { onPick(''); closePopover(); };
     cal.querySelectorAll('.cal-day[data-d]').forEach((b) => {
       b.onclick = () => { onPick(b.dataset.d); closePopover(); };
     });
@@ -5922,6 +6016,7 @@ const MENUS = {
         { label: 'Auto-name everything (background)', desc: 'Analyzes every still-unnamed clip on its own while you keep working.', action: aiAutoEnhance },
         { sep: true },
         { header: 'People' },
+        { label: 'Scan faces on selected clips', desc: 'Just find the faces in the ticked clips and open the review to name them — no vision naming, no descriptions.', action: scanFacesSelected },
         { label: 'People & faces…', desc: 'Tag who’s in each clip so names and metadata can use real names.', action: showPeopleManager },
         { label: 'Use names in descriptions (instant)', desc: 'Swaps generic words like “a man” for the recognized name. No AI call, instant.', action: applyNamesToDescriptions },
         { sep: true },
@@ -6178,6 +6273,7 @@ function clipContextItems(i) {
         { label: 'Analyze selected clips', action: aiAnalyzeSelected },
         { label: 'Improve descriptions (use all data)', action: aiImproveSelected },
         { sep: true },
+        { label: 'Scan faces on selected clips', action: scanFacesSelected },
         { label: 'AI settings…', action: showAiSettings },
         { label: 'People & faces…', action: showPeopleManager }
       ] }
@@ -6221,6 +6317,7 @@ function defaultContextItems() {
     { label: 'AI', submenu: () => [
       { label: 'AI settings…', action: showAiSettings },
       { label: 'Analyze selected clips', action: aiAnalyzeSelected },
+      { label: 'Scan faces on selected clips', action: scanFacesSelected },
       { label: 'People & faces…', action: showPeopleManager }
     ] },
     { label: 'Filing & destinations', submenu: () => [
@@ -6257,8 +6354,13 @@ function selectAllClips(on) {
   // Batch: set state for ALL clips, then touch only the DOM cards that exist (windowed)
   // and refresh the bar ONCE. (Calling setClipSelected per clip re-ran updateBatchBar +
   // rebuilt a growing checked-strip ~n times = O(n²) → froze/crashed on a 3000-clip roll.)
-  (state.scannedFiles || []).forEach((c) => { c.selected = on; });
+  // RESPECT THE FILTER — same rule the batch-bar select already follows: a bulk edit must never reach
+  // a clip the user can't see (filtering to "Unnamed" then Select-All + Apply overwrote finished clips).
+  const scoped = typeof clipFilterActive === 'function' && clipFilterActive();
+  (state.scannedFiles || []).forEach((c) => { if (scoped && !clipMatchesFilter(c)) return; c.selected = on; });
   document.querySelectorAll('#renameList .rename-card').forEach((card) => {
+    const c = state.scannedFiles[Number(card.dataset.i)];
+    if (scoped && !clipMatchesFilter(c)) return;
     const cb = card.querySelector('.clip-check'); if (cb) cb.checked = on;
     card.classList.toggle('selected', on);
   });
@@ -6266,8 +6368,9 @@ function selectAllClips(on) {
 }
 function invertClipSelection() {
   // Batch (like selectAllClips) — per-clip setClipSelected re-ran updateBatchBar+strip
-  // once per clip = O(n²) freeze on big rolls.
-  (state.scannedFiles || []).forEach((c) => { c.selected = !c.selected; });
+  // once per clip = O(n²) freeze on big rolls. Respects the filter (see selectAllClips).
+  const scoped = typeof clipFilterActive === 'function' && clipFilterActive();
+  (state.scannedFiles || []).forEach((c) => { if (scoped && !clipMatchesFilter(c)) return; c.selected = !c.selected; });
   document.querySelectorAll('#renameList .rename-card').forEach((card) => {
     const i = Number(card.dataset.i); const on = !!(state.scannedFiles[i] && state.scannedFiles[i].selected);
     const cb = card.querySelector('.clip-check'); if (cb) cb.checked = on;
@@ -6302,6 +6405,7 @@ function getCommands() {
     { label: 'AI: Analyze selected clips', hint: 'ai', run: aiAnalyzeSelected },
     { label: 'AI: Improve descriptions (use all data)', hint: 'ai', run: aiImproveSelected },
     { label: 'AI: Learn rules from this analysis', hint: 'ai', run: learnFromAnalysisNow },
+    { label: 'AI: Scan faces on selected clips', hint: 'ai', run: scanFacesSelected },
     { label: 'AI: People & faces…', hint: 'ai', run: showPeopleManager },
     { label: 'AI: Model store…', hint: 'ai', run: () => showModelStore() },
     { label: 'Filing: Visualize destinations…', hint: 'filing', run: showDestinationMapAuto },
@@ -7067,6 +7171,26 @@ const canon = (s) => String(s).replace(/[^a-z0-9]/gi, '').toLowerCase();
 //
 // Now there is one plan. The map is the source of truth; Run just executes it (and adds the
 // embed / NAS mirror / Resolve CSV on top).
+// How many clips have no REAL home in this plan (audit #40).
+//
+// The Apply dialog used to count only clips with no placement at all — but recomputeAuto ALWAYS
+// assigns one: a clip it can't place gets `<category>/_Unsorted`. So the count was permanently 0,
+// the warning never rendered, and low-confidence clips filed silently into real _Unsorted folders
+// in his tree. Count what actually happens.
+//
+// The `_Unsorted` test is ANCHORED to the trailing leaf: a genuine project called "Unsorted Beach
+// Day" is a real home and must not be swept into the warning — a warning that cries wolf on normal
+// runs stops being read, which would be worse than the silence it replaced.
+function unplacedCounts(clips, placement) {
+  let misc = 0; let unsorted = 0;
+  for (const c of (clips || [])) {
+    const rel = placement && placement[c.key];
+    if (!rel) { misc += 1; continue; }
+    if (/(^|\/)_Unsorted$/i.test(String(rel))) unsorted += 1;
+  }
+  return { misc, unsorted, total: misc + unsorted };
+}
+
 let lastDestPlan = null;   // { root, byPath: { [sourcePath]: 'Client/Alps-2026/2026-07-12' } }
 function currentDestPlan() { return lastDestPlan; }
 // Record successfully-filed clips into the persistent project ledger, then (if AI
@@ -7106,11 +7230,14 @@ async function recordToLedger(clips, placement, results) {
 async function undoLastOrganize() {
   let info; try { info = await window.api.organizeUndoInfo(); } catch { info = null; }
   if (!info || !info.ok) { showToast('Nothing to undo — no recent organize on record'); return; }
-  const ok = await confirmDialog('Undo last organize?', `Move the ${info.count} filed clip${info.count !== 1 ? 's' : ''} back out of your Projects tree to where they came from?`, 'Undo', 'Cancel');
+  // Say that the project MEMORY is reversed too, not just the files. Undo used to leave the
+  // ledger behind, so an undone run kept matching future imports — the user needs to know
+  // that's no longer the case, because "forget what it learned" is the point of undoing.
+  const ok = await confirmDialog('Undo last organize?', `Move the ${info.count} filed clip${info.count !== 1 ? 's' : ''} back out of your Projects tree to where they came from, and forget what this run added to your project memory?`, 'Undo', 'Cancel');
   if (!ok) return;
   showToast('Undoing…', 2000);
   let r; try { r = await window.api.organizeUndo(); } catch (e) { r = { ok: false, error: e.message }; }
-  if (r && r.ok) showToast(`Moved ${r.undone} clip${r.undone !== 1 ? 's' : ''} back${r.failed ? ` · ${r.failed} couldn’t be moved (already gone/renamed)` : ''} ✓`, 5500);
+  if (r && r.ok) showToast(`Moved ${r.undone} clip${r.undone !== 1 ? 's' : ''} back${r.failed ? ` · ${r.failed} couldn’t be moved (already gone/renamed)` : ''}${r.ledgerReversed ? ` · ${r.ledgerReversed} project${r.ledgerReversed !== 1 ? 's' : ''} forgotten` : ''} ✓`, 5500);
   else showToast(r && r.error ? r.error : 'Undo failed', 5000);
 }
 
@@ -7570,7 +7697,13 @@ async function showDestinationMap(rawClips, opts = {}) {
     const clean = String(dest || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim();
     if (!clean) return;
     moveKeys(g.keys.slice(), clean);
-    if (remember && await learnRouteFromGroup(g.keys, clean)) showToast('Got it — I’ll auto-file these next time ✓', 3800);
+    if (remember) {
+      // #42: "Remember" needs a subject/location to build a match rule from. On the Organize stage
+      // those are usually still empty, so learnRouteFromGroup silently returned false — the user
+      // ticked Remember and got NO rule and NO word about why. Tell them, instead of no-op-ing.
+      if (await learnRouteFromGroup(g.keys, clean)) showToast('Got it — I’ll auto-file these next time ✓', 3800);
+      else showToast('Can’t remember this one yet — these clips have no subject/keywords for me to match future footage on. Name them first, then tick Remember.', 5200);
+    }
   }
   const expandedGroups = new Set();   // gkeys whose clip list is shown
   function renderPlan() {
@@ -8382,12 +8515,17 @@ async function showDestinationMap(rawClips, opts = {}) {
       // "Needs you"/_Unsorted, which lands in `misc`. It went straight through with no confirmation
       // at all, which is a lot of file movement to trigger with one click. Say what will happen,
       // and call out the clips that have no real home yet, since those are the ones you'd regret.
-      const miscN = clips.filter((c) => !placement[c.key]).length;
+      // Count what will ACTUALLY happen — including the _Unsorted placements the old check was blind
+      // to (audit #40). Name the real destination too: saying "misc" when the clips land in
+      // `<category>/_Unsorted` sent people looking for a folder that was never created.
+      const { misc: miscN, unsorted: unsortedN, total: homelessN } = unplacedCounts(clips, placement);
       const folders = new Set(moves.map((m) => m.rel)); folders.delete('misc');
+      const where = (miscN && unsortedN) ? '<b>misc</b> and <b>_Unsorted</b>'
+        : (miscN ? '<b>misc</b>' : '<b>_Unsorted</b>');
       const ok = await confirmDialog(
         `File ${moves.length} clip${moves.length !== 1 ? 's' : ''} into your Projects tree?`,
         `They move into ${escapeHtml(rootClean)} across ${folders.size} folder${folders.size !== 1 ? 's' : ''}${embed ? ', with their metadata embedded' : ''}.`
-        + (miscN ? `<br><br>⚠ ${miscN} clip${miscN !== 1 ? 's have' : ' has'} no folder on the map and will go into <b>misc</b> — go back and place ${miscN !== 1 ? 'them' : 'it'} if that's not what you want.` : '')
+        + (homelessN ? `<br><br>⚠ ${homelessN} clip${homelessN !== 1 ? 's have' : ' has'} no real home on the map and will go into ${where} — go back and place ${homelessN !== 1 ? 'them' : 'it'} if that's not what you want.` : '')
         + `<br><br>You can undo this straight afterwards.`,
         'File them', 'Cancel'
       );
@@ -8398,8 +8536,11 @@ async function showDestinationMap(rawClips, opts = {}) {
       // Without the finally, Apply stayed disabled reading "Filing…" and the aiActivity
       // spinner span forever — the dialog was dead with no way back.
       let r = null;
+      // Honor "Keep the originals" — Apply used to always MOVE, deleting the L: archive source. Default
+      // to copy (safe) when the toggle isn't in the DOM.
+      const copy = $('finKeepSource') ? !!$('finKeepSource').checked : true;
       try {
-        r = await window.api.projectsMove({ moves, embed });
+        r = await window.api.projectsMove({ moves, embed, copy, root: rootClean });
       } catch (e) {
         const msg = (e && e.message) || String(e);
         aiActivityDone(`Filing failed — ${msg}`);
@@ -9013,7 +9154,32 @@ async function showPlacementReview(clips, opts = {}) {
 // ---------------------------------------------------------------------------
 let _faceReady = null;
 let faceScanAborted = false;
+// True only while a face scan is running. Used to coalesce the faces-pending saves far harder
+// during a scan — see PENDING_SAVE_MS (audit #67).
+let faceScanActive = false;
 function faceDist(a, b) { let s = 0; const n = Math.min(a.length, b.length); for (let i = 0; i < n; i += 1) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
+
+// --- RECOGNITION DISTANCES (euclidean, face-api 128-d descriptors) ----------------------------
+// These are MEASURED values, not preferences — see usb-app-tool-strings-are-input. They were bare
+// literals repeated across five call sites, which is how thresholds that interact silently drift
+// apart (audit #91). One name per decision, so a retune is one edit and shows up in review.
+//
+// Measured 2026-07-18 on the face fixture (three genuinely different people, real face-api run):
+// the closest DISTINCT pair was 0.6028 (others 0.6511, 0.7116). So 0.5 has ~0.10 of margin on that
+// sample — it does NOT fuse those three.
+//
+// KNOWN WEAKNESS (audit #13, deliberately NOT changed blind): clustering at 0.50 is LOOSER than the
+// auto-tag threshold of 0.46 — the app is more willing to fuse two UNKNOWN faces than to tag a known
+// one, which is backwards, because the two errors are not symmetric:
+//   • a bad MERGE is expensive — confirming the fused card tags BOTH people and poisons the
+//     person's training set (only confirmed faces vote, so the damage compounds);
+//   • a bad SPLIT is cheap — you just see two cards for one person and name both.
+// Close relatives (Jake shoots siblings) are exactly where 0.50 is suspect, and the fixture has no
+// sibling pair to prove it with. Retuning needs a measurement against real footage FIRST — pick
+// clips with two similar-looking family members, print faceDist for the pairs, and only then move
+// this number. Do not "tighten it to be safe": that fragments one person into many cards.
+const FACE_CLUSTER_DIST = 0.5;        // merge two unknown faces into ONE review card
+const FACE_FRAME_DEDUPE_DIST = 0.45;  // the same face recurring across frames of ONE clip
 
 // face-api.min.js is 1.3 MB and bundles TensorFlow.js. It used to sit in index.html as a
 // blocking <script> ahead of renderer.js, so EVERY launch paid to read, parse and execute
@@ -9098,6 +9264,7 @@ async function detectFacesForClip(clip, onFrame) {
   const frames = (r && r.ok && Array.isArray(r.frames)) ? r.frames : [];
   if (!frames.length) return { ready: true, faces: [], scene: null };
   const collected = [];   // {descriptor, thumb, area}
+  let detectErrors = 0;   // frames where detectAllFaces THREW (GPU/WebGL hiccup) — not the same as "no faces"
   // THE GROUP SHOT. detectAllFaces already finds everyone in a frame — but all we ever kept was a
   // 144px crop per person, so a frame with three people became three disembodied heads and the shot
   // they came from was thrown away. Keep the best one: the frame showing the MOST faces at once
@@ -9117,19 +9284,22 @@ async function detectFacesForClip(clip, onFrame) {
     const src = faceSource(img);
     let dets = [];
     // eslint-disable-next-line no-await-in-loop
-    try { dets = await fa.detectAllFaces(src.el, new fa.SsdMobilenetv1Options({ minConfidence: 0.5 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; }
+    try { dets = await fa.detectAllFaces(src.el, new fa.SsdMobilenetv1Options({ minConfidence: 0.4 })).withFaceLandmarks().withFaceDescriptors(); } catch { dets = []; detectErrors += 1; }
     const inFrame = [];   // everyone visible in THIS frame, together
     for (const d of dets) {
       const box = d.detection.box; const area = box.width * box.height;
-      // Skip faces that are too SMALL or low-confidence — their descriptors are noisy
-      // and pollute a person's training set, which is what hurts recognition accuracy.
-      const minSide = Math.max(64, src.w * 0.055);
+      // A face has to be big and confident enough that its descriptor is worth learning from — too
+      // small or too unsure and it just pollutes a person's training set. But the OLD floors (64px /
+      // 5.5% / score 0.55) were tuned for solo clips and quietly dropped the back-row and side faces
+      // in a group shot, so a table of nine showed as three. Relaxed so more real faces are offered to
+      // NAME (the user's confirmation is the real quality gate); still filters true noise. TUNABLE.
+      const minSide = Math.max(44, src.w * 0.04);
       if (box.width < minSide || box.height < minSide) continue;
-      if ((d.detection.score || 0) < 0.55) continue;
+      if ((d.detection.score || 0) < 0.42) continue;
       const desc = Array.from(d.descriptor);
       const thumb = cropFace(src, box);
       inFrame.push({ descriptor: desc, thumb, area, box: { x: box.x, y: box.y, width: box.width, height: box.height } });
-      const existing = collected.find((c) => faceDist(c.descriptor, desc) < 0.45);
+      const existing = collected.find((c) => faceDist(c.descriptor, desc) < FACE_FRAME_DEDUPE_DIST);
       if (existing) { if (area > existing.area) { existing.thumb = thumb; existing.area = area; existing.descriptor = desc; } }
       else collected.push({ descriptor: desc, thumb, area });
     }
@@ -9151,6 +9321,9 @@ async function detectFacesForClip(clip, onFrame) {
     ready: true,
     faces: collected.map((c) => ({ descriptor: c.descriptor, thumb: c.thumb })),
     scene: scene ? { img: scene.img, w: scene.w, h: scene.h, faces: scene.faces } : null,
+    // Detection actually failed on a frame AND we ended up with nothing — the "no faces" result is
+    // untrustworthy (likely a transient GPU/WebGL error), so callers must not mark the clip scanned.
+    detectError: detectErrors > 0 && !collected.length,
   };
 }
 
@@ -9164,10 +9337,22 @@ async function detectFacesForClip(clip, onFrame) {
 // are: a scan MERGES into what is already waiting instead of replacing it.
 let faceScenes = [];
 let _scenesLoaded = false;
+// A load that FAILED is not the same as "there are no group shots". This mirrors main's
+// `storeReadFailed` latch (see AGENTS.md 2026-07-09): run on empty defaults so the UI still works,
+// but REFUSE to write, because saving now would replace every real group shot with this session's
+// empty list — and the old code latched `_scenesLoaded = true` on the failure path, so it never
+// even retried the read.
+let _scenesLoadFailed = false;
 async function ensureFaceScenes() {
   if (_scenesLoaded) return faceScenes;
-  try { faceScenes = (await window.api.getFaceScenes()) || []; } catch { faceScenes = []; }
-  _scenesLoaded = true;
+  try {
+    faceScenes = (await window.api.getFaceScenes()) || [];
+    _scenesLoaded = true; _scenesLoadFailed = false;
+  } catch {
+    // Deliberately do NOT set _scenesLoaded: leaving it false means a later call retries the read
+    // instead of running the rest of the session on a phantom empty store.
+    faceScenes = []; _scenesLoadFailed = true;
+  }
   return faceScenes;
 }
 // One scene per clip — a second scan of the same clip replaces its old group shot rather than
@@ -9181,6 +9366,9 @@ async function noteFaceScene(clip, scene) {
   if (at >= 0) faceScenes[at] = rec; else faceScenes.push(rec);
 }
 function saveFaceScenesNow() {
+  // Never write a list we never successfully read. faces:saveScenes REPLACES the whole store, so
+  // saving an empty/partial session over a healthy one is a silent wipe of every saved group shot.
+  if (_scenesLoadFailed || !_scenesLoaded) return Promise.resolve();
   try { return window.api.saveFaceScenes(faceScenes); } catch { return Promise.resolve(); }
 }
 
@@ -9211,7 +9399,7 @@ async function collectClipFaces(clip, clusters, keys) {
     const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
     const matched = !!(m && m.match);   // backend already applied the strict gate
     // Cluster the face (recognized or not) for the Review grid — never auto-apply.
-    let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
+    let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < FACE_CLUSTER_DIST);
     if (!c) {
       c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null };
       clusters.push(c);
@@ -9334,9 +9522,25 @@ const FACE_SUGGEST_DIST = 0.54;   // ceiling passed to people:match; the backend
 // --- persist the review across restarts (crops + descriptors + state) --------
 // Only the UNRESOLVED clusters are stored (confirmed faces already live in
 // people.json; skipped ones are dismissed). clipKeys is a Set → stored as array.
+// #45: a done/skipped cluster whose face appears in a saved group SHOT has to persist too. It used to
+// be filtered out here — so on reopen clusterOf() couldn't resolve it, a partly-named shot fell below
+// liveScenes' "≥2 resolvable" bar and VANISHED, stranding the still-unnamed people in it (Jake: "why
+// isn't it remembering face scanning across sessions!!!"). We keep ONLY scene-referenced resolved
+// clusters — a solo named face already lives in people.json — so faces-pending.json stays bounded, and
+// because every kept resolved cluster is on a scene, render()'s onScene filter keeps them out of the
+// flat grid (no "just confirmed" clutter on reopen).
+function _clusterInAnyScene(c) {
+  if (!c || !c.descriptor) return false;
+  for (const s of (faceScenes || [])) {
+    for (const f of (s.faces || [])) {
+      if (f && f.descriptor && faceDist(c.descriptor, f.descriptor) < FACE_CLUSTER_DIST) return true;
+    }
+  }
+  return false;
+}
 function _serializePending(clusters) {
   return (clusters || [])
-    .filter((c) => c && !c.skipped && !c.done && c.descriptor)
+    .filter((c) => c && c.descriptor && (!(c.done || c.skipped) || _clusterInAnyScene(c)))
     .map((c) => ({
       thumb: c.thumb || '',
       descriptor: c.descriptor,
@@ -9344,20 +9548,46 @@ function _serializePending(clusters) {
       clipKeys: [...(c.clipKeys || [])],
       suggest: c.suggest || null,
       rejected: !!c.rejected,
+      done: !!c.done,
+      skipped: !!c.skipped,
+      assignedName: c.assignedName || '',
     }));
 }
+// How long to coalesce faces-pending writes.
+//
+// 700 ms is right for interactive edits in the review grid. DURING A SCAN it is wrong: a save fires
+// after every clip, and each one blocks the MAIN process — writeJsonAtomic uses writeSync + fsyncSync
+// (main-mod/01-core.js), so previews and copy progress stall with it. Measured 2026-07-18: a realistic
+// post-#66 store of 250 clusters serialises to 3.1 MB and ~13 ms BEFORE the synchronous write, and a
+// 250-clip scan fires that after every clip.
+//
+// Safe to trade durability for responsiveness HERE specifically because faces-pending is DERIVED
+// data: the worst case after a crash is re-scanning some clips, not lost footage and not lost names.
+// Drafts keep their tight debounce precisely because they are NOT derived. The scan's `finally`
+// always flushes, so ending a scan never leaves work unsaved.
+const PENDING_SAVE_MS = () => (faceScanActive ? 8000 : 700);
 let _pendingSaveTimer = null;
+// See loadPendingFaces: true once a read has failed, which makes the in-memory list a phantom.
+// faces:savePending REPLACES the whole store, so writing while this is set wipes the faces waiting
+// to be reviewed from every other card.
+let _pendingLoadFailed = false;
 function schedulePendingSave(clusters) {
   clearTimeout(_pendingSaveTimer);
-  _pendingSaveTimer = setTimeout(() => { try { window.api.savePendingFaces(_serializePending(clusters)); } catch { /* ignore */ } }, 700);
+  if (_pendingLoadFailed) return;
+  _pendingSaveTimer = setTimeout(() => { try { window.api.savePendingFaces(_serializePending(clusters)); } catch { /* ignore */ } }, PENDING_SAVE_MS());
 }
 function savePendingNow(clusters) {
   clearTimeout(_pendingSaveTimer);
+  if (_pendingLoadFailed) return Promise.resolve();
   try { return window.api.savePendingFaces(_serializePending(clusters)); } catch { return Promise.resolve(); }
 }
 async function loadPendingFaces() {
   let list = [];
-  try { list = await window.api.getPendingFaces(); } catch { list = []; }
+  // Same fail-open as the scenes store: `catch { list = [] }` made a rejected IPC indistinguishable
+  // from "no unreviewed faces", and the next save then replaced every other card's pending faces
+  // with this session's empty list. Record the failure so the savers can refuse.
+  try { list = await window.api.getPendingFaces(); _pendingLoadFailed = false; }
+  catch { list = []; _pendingLoadFailed = true; }
   return (list || []).filter((c) => c && Array.isArray(c.descriptor)).map((c) => ({
     thumb: c.thumb || '',
     descriptor: c.descriptor,
@@ -9365,15 +9595,39 @@ async function loadPendingFaces() {
     clipKeys: new Set(c.clipKeys || []),
     suggest: c.suggest || null,
     rejected: !!c.rejected,
-    done: false,
+    // Restore resolved state (was hardcoded false) — the other half of #45: a named face in a saved
+    // group shot must come back NAMED, so the scene resolves it instead of stranding it as unnamed.
+    done: !!c.done,
+    skipped: !!c.skipped,
+    assignedName: c.assignedName || '',
   }));
+}
+
+// Standalone "just scan faces" on the ticked clips → straight into the face review. Face scanning was
+// only reachable bundled inside Analyze (which also runs the vision naming) or two clicks deep in the
+// People dashboard; there was no way to run ONLY a face scan. This is that entry point.
+function scanFacesSelected() {
+  const sel = currentSelectedClips();
+  if (!sel.length) { showToast('Tick some clips first (or open a card)'); return; }
+  return scanFacesForClips(sel);
 }
 
 async function scanFacesForClips(clipList, opts = {}) {
   if (!clipList || !clipList.length) { showToast('Select some clips first'); return; }
-  // Skip clips already scanned in a previous (or interrupted) run — face scanning is
-  // slow and the result is remembered, so never redo a clip unless explicitly forced.
-  const toScan = opts.force ? clipList : clipList.filter((c) => !c._facesScanned);
+  // Skip clips already scanned in a previous (or interrupted) run — face scanning is slow and the
+  // result is remembered, so never redo a clip unless explicitly forced.
+  //
+  // Consult the PERSISTED drafts, not only the in-memory `_facesScanned` flag. That flag was the whole
+  // "it re-scans from scratch every session" bug: it isn't present on every clip representation (the
+  // Organize screen builds fresh clip objects without it), and a restore can miss it — so a clip we
+  // scanned last session got scanned again. The draft record (keyed by name__size) is the durable
+  // truth; a clip is "already scanned" if EITHER source says so.
+  let scannedKeys = new Set();
+  if (!opts.force) {
+    try { const drafts = (await window.api.getDrafts()) || {}; for (const k of Object.keys(drafts)) { if (drafts[k] && drafts[k].facesScanned) scannedKeys.add(k); } } catch { /* fall back to the in-memory flag alone */ }
+  }
+  const isScanned = (c) => !!c._facesScanned || scannedKeys.has(clipKey(c));
+  const toScan = opts.force ? clipList : clipList.filter((c) => !isScanned(c));
   const skipped = clipList.length - toScan.length;
   if (!toScan.length) {
     // Everything here was scanned before → don't re-scan. Reopen the SAVED review
@@ -9392,6 +9646,7 @@ async function scanFacesForClips(clipList, opts = {}) {
   const probe = await ensureFaceModels();
   if (!probe.ok) { showFaceSetup(probe.error); return; }
   faceScanAborted = false;
+  faceScanActive = true;   // coalesce faces-pending writes hard while scanning (audit #67)
   aiFollow = true; aiAborted = false; showFollowBtn(false);
   clearActivity();
   // Start from the saved review so a new scan MERGES into what's already waiting
@@ -9419,20 +9674,32 @@ async function scanFacesForClips(clipList, opts = {}) {
       // eslint-disable-next-line no-await-in-loop
       await noteFaceScene(clip, res.scene);   // the frame that shows them TOGETHER — see noteFaceScene
       if (res.scene) pushActivity(`${res.scene.faces.length} people in one shot — you can name them on the frame`, 'face');
-      pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
-      // Remember this clip was scanned (even if nothing matched) so we never re-nag,
-      // and PERSIST it now so a mid-stream cutoff still remembers what's done.
-      clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
-      const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
-      flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
+      // #84: a GPU/WebGL hiccup makes detectAllFaces throw, which used to look identical to "no
+      // faces" — so we'd mark the clip scanned and NEVER retry it. When detection actually errored
+      // and found nothing, leave the clip UNscanned so a later scan (GPU recovered) tries again.
+      if (res.detectError) {
+        pushActivity(`Face detection failed on ${clip.name} — will retry later`, 'face');
+      } else {
+        pushActivity(res.faces.length ? `Detected ${res.faces.length} face${res.faces.length !== 1 ? 's' : ''}` : 'No faces found', 'face');
+        // Remember this clip was scanned (even if nothing matched) so we never re-nag,
+        // and PERSIST it now so a mid-stream cutoff still remembers what's done.
+        clip._facesScanned = true; if (clip._ref) clip._ref._facesScanned = true;
+        const byKeyClip = state.scannedFiles.find((c) => clipKey(c) === clipKey(clip)); if (byKeyClip) byKeyClip._facesScanned = true;
+        flushDraftSave();   // persist scanned-flag immediately — a mid-stream cutoff is remembered
+      }
       for (const f of res.faces) {
         // eslint-disable-next-line no-await-in-loop
         const m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST });
+        // #46: this face is in the IGNORE bin — a statue/TV/poster/passer-by the user dismissed.
+        // matchPerson already recognises it (match:null, ignored:true) but "Ignore" only ever
+        // suppressed MATCHING, not CLUSTERING — so it fell through below and re-formed a "New face —
+        // name it?" cluster on EVERY future scan. Drop it here: don't cluster, don't offer, don't re-ask.
+        if (m && m.ignored) continue;
         const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
         const matched = !!(m && m.match);   // backend already applied the strict gate
         // NEVER auto-tag or auto-confirm. Recognized faces become SUGGESTIONS you confirm
         // in the Review grid, and are saved to the person's profile as UNCONFIRMED.
-        let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < 0.5);
+        let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < FACE_CLUSTER_DIST);
         if (!c) { c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null }; clusters.push(c); pushActivity(matched ? `Looks like ${m.match.name} — needs your confirmation` : 'New face — will ask you to name it', 'face', f.thumb); }
         c.descriptors.push(f.descriptor); c.clipKeys.add(clipKey(clip));   // stable across replug — see collectClipFaces
         if (matched) {
@@ -9450,6 +9717,10 @@ async function scanFacesForClips(clipList, opts = {}) {
     showToast(`Face scan stopped — ${msg}. The ${done} clip${done !== 1 ? 's' : ''} already scanned are remembered.`, 5500);
   } finally {
     clearAllAnalyzing(); clearTask('faces');
+    // Leave scan mode and FLUSH: the coarse 8 s debounce above means a pending write can still be
+    // in flight, and ending a scan must never leave the review unsaved (audit #67).
+    faceScanActive = false;
+    try { savePendingNow(clusters); } catch { /* the grid below re-saves on any edit anyway */ }
   }
   scheduleDraftSave();   // make sure the last clips' scanned-flags persist
   if (faceScanAborted) { showToast(`Face scan stopped — ${done} scanned so far are remembered (resume to do the rest).`, 4500); }
@@ -9498,10 +9769,22 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   function tagClips(cl, name) {
     for (const k of cl.clipKeys) { const c = byKey[k]; if (c) c.people = [...new Set([...(c.people || []), name])]; }
     flushDraftSave();
+    // …and the ones that are NOT in memory (audit #26/#27). `byKey` is built from state.scannedFiles,
+    // so a cluster restored from faces-pending.json — which legitimately references clips from
+    // earlier sessions, already renamed and filed — tagged NONE of them, silently. Send every key:
+    // the backend is add-only and idempotent, so in-memory clips (whose persisted record may lag)
+    // are harmless to include, and it never creates a record for a key it doesn't know.
+    // Fire-and-forget: the in-memory tag above already succeeded, so a failure here must not block
+    // naming — it just means the persisted half retries on the next confirm.
+    try { window.api.tagPersonOnClips({ name, keys: [...cl.clipKeys] }); } catch { /* non-fatal */ }
   }
   function untagClips(cl, name) {
     for (const k of cl.clipKeys) { const c = byKey[k]; if (c && Array.isArray(c.people)) c.people = c.people.filter((n) => n !== name); }
     flushDraftSave();
+    // …and reverse the PERSISTED tag too. tagClips writes through to finalMeta/drafts (#26), so
+    // without this the undo only removed the name from clips that happen to be in memory — the
+    // filed ones kept it forever.
+    try { window.api.untagPersonOnClips({ name, keys: [...cl.clipKeys] }); } catch { /* non-fatal */ }
   }
   async function assign(cl, name) {
     name = String(name || '').trim();
@@ -9513,8 +9796,21 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     if (!names.includes(name)) names.push(name);
     render();
   }
-  function cardHTML(cl) {
-    const thumb = personThumbHTML(cl.thumb);
+  // A tight crop of a SPECIFIC face out of the group photo, done in pure CSS (a background sprite) —
+  // no canvas, no async decode. Used so the naming card shows the face you actually clicked, instead
+  // of the cluster's canonical thumb (which is a crop from some OTHER clip and looks like a stranger).
+  function faceCropHTML(img, box, iw, ih) {
+    if (!img || !box || !box.width) return personThumbHTML('');
+    const D = 96;                         // thumb size, px
+    const s = D / box.width;              // scale so the face box fills the thumb width
+    const bw = Math.round((iw || 0) * s); const bh = Math.round((ih || 0) * s);
+    const px = Math.round(-box.x * s); const py = Math.round(-box.y * s);
+    const style = `width:${D}px;height:${D}px;background-image:url('${escapeAttr(img)}');`
+      + `background-size:${bw}px ${bh}px;background-position:${px}px ${py}px;background-repeat:no-repeat;`;
+    return `<span class="person-thumb fgc-facecrop" style="${style}"></span>`;
+  }
+  function cardHTML(cl, opts = {}) {
+    const thumb = (opts.faceImg && opts.faceBox) ? faceCropHTML(opts.faceImg, opts.faceBox, opts.iw, opts.ih) : personThumbHTML(cl.thumb);
     const seen = `${cl.clipKeys.size} clip${cl.clipKeys.size !== 1 ? 's' : ''}`;
     if (cl.done) {
       return `<div class="face-grid-card-item confirmed" data-i="${cl._i}">
@@ -9558,7 +9854,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   // A scene face is linked back to its cluster BY DESCRIPTOR, not by a stored index: clusters are
   // rebuilt from faces-pending.json on every reopen and merged across scans, so any index we wrote
   // down would silently point at the wrong person the next time round.
-  const clusterOf = (desc) => clusters.findIndex((c) => c && !c.skipped && faceDist(c.descriptor, desc) < 0.5);
+  const clusterOf = (desc) => clusters.findIndex((c) => c && !c.skipped && faceDist(c.descriptor, desc) < FACE_CLUSTER_DIST);
   const unresolved = (ci) => ci >= 0 && clusters[ci] && !clusters[ci].done && !clusters[ci].skipped;
 
   function liveScenes() {
@@ -9586,10 +9882,18 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
 
     const left = s.cis.filter(unresolved).length;
     const sel = (s._sel != null && s.cis[s._sel] >= 0) ? clusters[s.cis[s._sel]] : null;
+    const selBox = (sel && s.faces[s._sel]) ? s.faces[s._sel].box : null;
+    // The naming card is a POPUP centred over the photo (dim backdrop), not a card below it you had to
+    // scroll to find. Its thumbnail is the face you actually clicked, cropped from THIS photo.
+    const pop = sel
+      ? `<div class="fsc-pop-wrap">${cardHTML(sel, { faceImg: s.img, faceBox: selBox, iw: s.w, ih: s.h })}</div>`
+      : '';
+    // The popup anchors to the whole .face-scene (not inside .fsc-photo, which is overflow:hidden and
+    // would clip the card on a wide/short group shot). Backdrop dims the scene; card centres over it.
     return `<div class="face-scene">
       <div class="fsc-photo"><img src="${escapeAttr(s.img)}" alt=""/>${boxes}</div>
       <div class="fsc-bar muted small">${escapeHtml(s.name || 'this shot')} · ${s.cis.filter((ci) => ci >= 0).length} people · ${left ? `${left} still to name — click a face` : 'all named ✓'}</div>
-      ${sel ? `<div class="fsc-pick">${cardHTML(sel)}</div>` : ''}
+      ${pop}
     </div>`;
   }
 
@@ -9601,8 +9905,13 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     const live = clusters.filter((c) => !c.skipped && !onScene.has(c._i));
     const suggested = live.filter((c) => !c.done && c.suggest && !c.rejected);
     const fresh = live.filter((c) => !c.done && (!c.suggest || c.rejected));
-    const recognized = live.filter((c) => c.done && c.autoMatched);
-    const confirmed = live.filter((c) => c.done && !c.autoMatched);
+    // `autoMatched` was READ here and in the Undo handler but never SET anywhere, so the
+    // "Recognized automatically" section below could never render and this split was always
+    // (everything, nothing). The Undo half of that dead flag was a real bug — it made Undo skip
+    // untagging entirely — so the flag is gone rather than left lying around to be misread again.
+    // Nothing auto-confirms in this app by design (see collectClipFaces: a recognised face becomes a
+    // SUGGESTION), which is why there was never anything to put in that section.
+    const confirmed = live.filter((c) => c.done);
 
     const sceneHTML = scenes.length
       ? `<div class="fg-section">Who's in this shot? <span class="fg-count">${scenes.length}</span></div>${scenes.map(sceneCardHTML).join('')}`
@@ -9610,7 +9919,6 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     scroll.innerHTML = sceneHTML
       + section('Suggested — confirm or correct', suggested)
       + section('New faces — who is this?', fresh)
-      + section('Recognized automatically — fix any that are wrong', recognized)
       + section('Just confirmed', confirmed);
     if (!scenes.length && !live.length) scroll.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">All faces handled ✓</p>';
     wire();
@@ -9630,8 +9938,27 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       b.addEventListener('click', () => {
         const s = faceScenes.find((x) => x.clipKey === scenes[Number(b.dataset.si)].clipKey);
         if (!s) return;
+        // Second-screen integration: mirror THIS shot's full-resolution file to the pop-out preview
+        // window (if it's open) so faces are big and clear over there while you name on the main
+        // screen. previewSet no-ops when the window is closed, so this is always safe to call.
+        const clip = byKey[s.clipKey];
+        if (clip && clip.sourcePath) { try { window.api.previewSet(clip.sourcePath, clip.name || '', { kind: 'photo' }); } catch { /* ignore */ } }
         const fi = Number(b.dataset.fi);
         s._sel = (s._sel === fi) ? null : fi;      // click the same face again to close it
+        render();
+        // Bring the popup fully into view if the photo is taller than the scroll viewport. rAF:
+        // render() just replaced innerHTML.
+        if (s._sel != null) requestAnimationFrame(() => {
+          const pop = scroll.querySelector('.fsc-pop-wrap');
+          if (pop) pop.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+      });
+    });
+    // Clicking the dim backdrop (not the card) closes the popup — a natural "dismiss".
+    scroll.querySelectorAll('.fsc-pop-wrap').forEach((w) => {
+      w.addEventListener('mousedown', (e) => {
+        if (e.target !== w) return;   // ignore clicks that land on the card itself
+        for (const s of faceScenes) s._sel = null;
         render();
       });
     });
@@ -9649,7 +9976,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
       if (!cl) return;
       const yes = card.querySelector('.fgc-yes'); if (yes) yes.addEventListener('click', () => flash(card, 'ok', () => assign(cl, cl.suggest.name)));
       const no = card.querySelector('.fgc-no'); if (no) no.addEventListener('click', () => flash(card, 'no', () => { cl.rejected = true; render(); }));
-      const undo = card.querySelector('.fgc-undo'); if (undo) undo.addEventListener('click', () => { if (cl.autoMatched && cl.assignedName) untagClips(cl, cl.assignedName); cl.done = false; cl.autoMatched = false; cl.assignedName = ''; cl.suggest = null; render(); });
+      const undo = card.querySelector('.fgc-undo'); if (undo) undo.addEventListener('click', () => { if (cl.assignedName) untagClips(cl, cl.assignedName); cl.done = false; cl.assignedName = ''; cl.suggest = null; render(); });
       const save = card.querySelector('.fgc-save'); const inp = card.querySelector('.fgc-input');
       if (save && inp) save.addEventListener('click', () => { if (inp.value.trim()) flash(card, 'ok', () => assign(cl, inp.value)); });
       if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && inp.value.trim()) { e.preventDefault(); flash(card, 'ok', () => assign(cl, inp.value)); } });
@@ -9659,6 +9986,13 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   }
   ov.querySelector('.fg-confirm-all').addEventListener('click', async () => {
     const pending = clusters.filter((c) => !c.done && !c.skipped && c.suggest && !c.rejected);
+    // #83: this bulk-tags EVERY suggested person across all their clips in one click — borderline
+    // suggestions included — with no batch undo, so a single wrong suggestion can mislabel many clips
+    // at once. Drop an automatic restore point first, exactly like batch-apply (#34) and the AI ops,
+    // gated to a confirm big enough to be worth it and honouring the auto-version preference.
+    if (pending.length >= 5 && typeof saveVersionPoint === 'function' && uiPrefs.autoVersionOnAi !== false) {
+      await saveVersionPoint(`Before confirming ${pending.length} face suggestions`, true);
+    }
     for (const c of pending) { /* eslint-disable-next-line no-await-in-loop */ await assign(c, c.suggest.name); }
   });
   render();
@@ -9922,7 +10256,9 @@ function removeClipPersonName(name) {
 function currentSelectedClips() {
   const fin = document.getElementById('finalize');
   if (fin && !fin.classList.contains('hidden') && finScan && finScan.files) {
-    return (finSelected().length ? finSelected() : finMatched()).map((f) => ({ key: f.name, name: f.name, sourcePath: f.sourcePath, people: (f.meta && f.meta.people) || [], _ref: f }));
+    // Carry `size` so clipKey(name__size) matches the drafts/scan record — without it a face scan from
+    // the Organize screen couldn't tell an already-scanned clip and re-did everything from scratch.
+    return (finSelected().length ? finSelected() : finMatched()).map((f) => ({ key: f.name, name: f.name, size: f.size, sourcePath: f.sourcePath, people: (f.meta && f.meta.people) || [], _facesScanned: !!(f.meta && f.meta.facesScanned), _ref: f }));
   }
   const sel = (state.scannedFiles || []).filter((c) => c.selected);
   return (sel.length ? sel : (state.scannedFiles || []));
@@ -10685,6 +11021,7 @@ async function phoneEnterChooser() {
   $('phBar').classList.add('hidden');
   $('phGrid').innerHTML = '';
   $('phCopyWrap').classList.add('hidden');
+  $('phCopyBtn').classList.remove('hidden');   // restored after a pull was hidden it (see phoneCopy)
   $('phAlbums').innerHTML = '<span class="muted small">Finding albums…</span>';
   $('phNewSummary').textContent = 'Checking what’s new…';
   $('phNewSub').textContent = '';
@@ -10954,6 +11291,36 @@ function phoneDateOf(name) {
   }
   return '';
 }
+
+// The capture date for one pulled item (audit #58).
+//
+// This used to be `phoneDateOf(name) || toDateStr(mtimeMs)`, and mtime after an MTP/ADB pull is when
+// the file LANDED ON DISK — i.e. today. Plenty of phone media carries no date in its name (WhatsApp,
+// screenshots, many Android cameras), so a shoot from last month arrived dated today. That is not
+// cosmetic: the shoot DATE predicts the subject ~88% of the time (usb-app-shoots-in-batches) and
+// drives day-grouping, ledger same-shoot matching, and get_shoot_context — the AI's strongest signal.
+//
+// Order matters. The FILENAME wins when it has a date: it is authoritative and free, whereas probing
+// spawns an ffprobe per file — unaffordable across a card of hundreds when most names already carry
+// the date.
+//
+// VIDEOS ONLY. The container's `creation_time` is what ffprobe can read. Stills need
+// EXIF:DateTimeOriginal and ffprobe returns EMPTY tags for a JPEG (verified), so probing a photo
+// costs a spawn and yields nothing — the photo half needs the vendored Windows exiftool and is
+// deliberately left for a session that can run it, rather than guessed at.
+async function captureDateFor(sourcePath, name, mtimeMs, isPhoto) {
+  const fromName = phoneDateOf(name);
+  if (fromName) return fromName;
+  if (!isPhoto && sourcePath) {
+    try {
+      const meta = await window.api.getMeta(sourcePath);
+      const iso = meta && meta.dateISO;
+      if (iso) { const d = toDateStr(Date.parse(iso)); if (d) return d; }
+    } catch { /* unreadable → fall through to mtime, never fail staging over a date */ }
+  }
+  return toDateStr(mtimeMs);
+}
+
 function phoneRenderGrid() {
   const host = $('phGrid');
   const items = phoneVisibleMedia();
@@ -11017,6 +11384,10 @@ async function phoneCopy() {
   phoneState.copying = true; phoneUpdateBar();
   $('phChooser').classList.add('hidden');
   $('phCopyWrap').classList.remove('hidden');
+  // Hide the "Pull N off phone & rename" primary button while the pull runs — the progress panel has
+  // its own Cancel, and leaving the Pull button sitting under a 62% bar reads as a broken screen.
+  // phoneEnterChooser() brings it back when we return to choosing.
+  $('phCopyBtn').classList.add('hidden');
   $('phCopyBar').style.width = '0%'; $('phCopyPct').textContent = '0%';
   $('phCopyLabel').textContent = 'Pulling off your phone…';
   $('phCopySub').textContent = `${nPho} photo${nPho !== 1 ? 's' : ''} → Photos Temp · ${nVid} video${nVid !== 1 ? 's' : ''} → Video Temp`;
@@ -11058,6 +11429,12 @@ async function phoneCopy() {
   }
   if (res && res.ok && Array.isArray(res.staged) && res.staged.length) {
     if (typeof pcNotify === 'function') pcNotify('Phone ready', `${nPho} photo${nPho !== 1 ? 's' : ''} in Photos Temp · ${nVid} video${nVid !== 1 ? 's' : ''} ready to name.`);
+    // #87: some selected items can fail to transfer (device declined the file, or it staged
+    // truncated and was rejected) even on an otherwise-successful pull. The progress bar hitting
+    // 100% otherwise implies EVERYTHING came off the phone — call out the ones that didn't, since
+    // they're still on the phone and a re-pull will retry them.
+    const missed = res.incomplete || 0;
+    if (missed > 0) showToast(`Heads up: ${missed} item${missed !== 1 ? 's' : ''} didn’t transfer off the phone and ${missed !== 1 ? 'were' : 'was'} left on it — pull again to retry ${missed !== 1 ? 'them' : 'it'}.`, 6500);
     enterRenameWithPhoneFiles(res.staged);
   } else {
     $('phCopyLabel').textContent = `Couldn’t prepare media${res && res.error ? `: ${res.error}` : ''}`;
@@ -11078,18 +11455,18 @@ async function enterRenameWithPhoneFiles(staged) {
   // (:520 gates on state.copied.length) would happily list them. You were one pill-click from
   // deleting a card from inside the phone flow. A new flow starts with nothing to delete.
   state.copied = [];
-  state.scannedFiles = staged.map((f) => {
+  state.scannedFiles = await Promise.all(staged.map(async (f) => {
     const clip = {
       ...f,
       origBase: f.name.slice(0, f.name.length - (f.ext || '').length),
-      date: phoneDateOf(f.name) || toDateStr(f.mtimeMs),
+      date: await captureDateFor(f.sourcePath, f.name, f.mtimeMs, f.kind === 'photo'),
       dateLocked: !!phoneDateOf(f.name),
       subject: '', description: '', version: 1, selected: false,
       isPhoto: f.kind === 'photo'
     };
     for (const fld of organizeFields) clip[fld.id] = '';
     return clip;
-  });
+  }));
   $('phone').classList.add('hidden');
   $('finalize').classList.add('hidden');
   $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
@@ -11379,11 +11756,14 @@ function buildPhotoJobs(photos, includePhotosTemp) {
   let routedN = 0;
   for (const p of photos) {
     const fname = finalName(p);
-    if (includePhotosTemp && photosTemp) jobs.push({ src: p.sourcePath, dest: `${photosTemp}\\${fname}` });
-    for (const d of dests) jobs.push({ src: p.sourcePath, dest: `${d}\\${fname}` });
+    // The AI's record rides WITH the copy job so phone:distribute can embed it into the photo file —
+    // videos get this via finalize:run, photos got nothing but copied bytes. Same shape as finalMeta.
+    const meta = flowMetaOf(p);
+    if (includePhotosTemp && photosTemp) jobs.push({ src: p.sourcePath, dest: `${photosTemp}\\${fname}`, meta });
+    for (const d of dests) jobs.push({ src: p.sourcePath, dest: `${d}\\${fname}`, meta });
     if (projRoot) {
       const route = phoneRouteFor(p);
-      if (route) { const sub = `${route.dest.replace(/\//g, '\\')}${route.byDay && p.date ? `\\${p.date}` : ''}`; jobs.push({ src: p.sourcePath, dest: `${projRoot}\\${sub}\\${fname}` }); routedN += 1; }
+      if (route) { const sub = `${route.dest.replace(/\//g, '\\')}${route.byDay && p.date ? `\\${p.date}` : ''}`; jobs.push({ src: p.sourcePath, dest: `${projRoot}\\${sub}\\${fname}`, meta }); routedN += 1; }
     }
   }
   return { jobs, dests, routedN };
@@ -11689,8 +12069,15 @@ async function runCopy() {
 async function verifyFlowCopies() {
   if (!state.copied || !state.copied.length) return { ok: 0, fail: 0 };
   let results = [];
+  // #86: verification HASHES the whole of every copy, so a big card sat on "Verifying copies…" for
+  // minutes looking frozen. Reflect per-clip progress in the label; detach the listener in finally.
+  const label = $('copyLabel');
+  const off = (window.api.onVerifyProgress && label) ? window.api.onVerifyProgress((p) => {
+    if (p && p.total) label.textContent = `Verifying copies… ${Math.min(p.done + 1, p.total)}/${p.total}`;
+  }) : null;
   try { results = await window.api.verifyCopies(state.copied.map((c) => ({ source: c.sourcePath, dest: c.destPath }))); }
   catch { results = []; }
+  finally { if (off) { try { off(); } catch { /* ignore */ } } }
   const bySrc = {}; results.forEach((r) => { if (r) bySrc[r.source] = r; });
   let ok = 0; let fail = 0;
   for (const c of state.copied) { const v = bySrc[c.sourcePath]; c._verified = !!(v && v.ok); c._verifyReason = (v && v.reason) || ''; if (c._verified) ok += 1; else { fail += 1; logIssue('Copy verify', `${c.name}: ${c._verifyReason || 'mismatch'}`); } }
@@ -11700,18 +12087,27 @@ async function verifyFlowCopies() {
 }
 // Persist each clip's full metadata keyed by its final filename (carry-forward to
 // Organize). Called after copy and again after background analysis enriches it.
+// The canonical AI-derived record for a clip/photo — the same shape finalMeta stores and
+// buildEmbedTags reads. Shared so the photo copy jobs can carry it into the file (see buildPhotoJobs
+// → phone:distribute) instead of it living only in a sidecar the photo never reaches.
+function flowMetaOf(clip) {
+  const rec = {
+    subject: clip.subject || '', description: clip.description || '', date: clip.date || '',
+    location: clip.location || '', context: clip.context || '',
+    shotType: clip.shotType || '', observation: clip.observation || '',
+    people: Array.isArray(clip.people) ? clip.people : [],
+    peopleAuto: Array.isArray(clip.peopleAuto) ? clip.peopleAuto : []   // unconfirmed face guesses
+  };
+  for (const fld of organizeFields) rec[fld.id] = clip[fld.id] || '';
+  rec.tags = Array.isArray(clip.tags) ? clip.tags : [];
+  rec.ledgerRel = clip._ledgerRel || clip.ledgerRel || '';
+  rec.keywords = [clip.subject, clip.location, clip.shotType, ...organizeFields.map((f) => clip[f.id]), ...rec.tags].filter(Boolean);
+  return rec;
+}
 function saveFlowFinalMeta(clips) {
   const map = {};
   for (const clip of clips) {
-    const rec = {
-      subject: clip.subject || '', description: clip.description || '', date: clip.date || '',
-      location: clip.location || '', context: clip.context || '',
-      shotType: clip.shotType || '', observation: clip.observation || '',
-      people: Array.isArray(clip.people) ? clip.people : [],
-      peopleAuto: Array.isArray(clip.peopleAuto) ? clip.peopleAuto : []   // unconfirmed face guesses
-    };
-    for (const fld of organizeFields) rec[fld.id] = clip[fld.id] || '';
-    rec.tags = Array.isArray(clip.tags) ? clip.tags : [];
+    const rec = flowMetaOf(clip);
     // The same-shoot decision the user ALREADY confirmed ("Part of an existing project?" →
     // "Will file N clips into 'X' at the organize step"). It was only ever persisted into
     // renameDrafts — and the drafts for copied clips are deleted immediately after the copy —
@@ -11935,8 +12331,14 @@ $('deleteConfirmBtn').addEventListener('click', async () => {
   let verify = [];
   if (toCheck.length) {
     btn.disabled = true; btn.textContent = 'Verifying copies…';
+    // #86: full-hash verify before the irreversible delete — show progress so this critical wait
+    // never looks hung. Listener detached in finally regardless of outcome.
+    const off = window.api.onVerifyProgress ? window.api.onVerifyProgress((p) => {
+      if (p && p.total) btn.textContent = `Verifying copies… ${Math.min(p.done + 1, p.total)}/${p.total}`;
+    }) : null;
     try { verify = await window.api.verifyCopies(toCheck.map((i) => ({ source: state.copied[i].sourcePath, dest: state.copied[i].destPath }))); }
     catch { verify = []; }
+    finally { if (off) { try { off(); } catch { /* ignore */ } } }
     btn.disabled = false; btn.textContent = restore;
   }
   const bySource = {}; verify.forEach((v) => { if (v) bySource[v.source] = v; });
@@ -12808,7 +13210,18 @@ async function openCompress() {
     const idxMap = files.map((f) => cmpState.files.indexOf(f));
     setTask('compress', 'Compressing', 0, files.length, 'starting', '');
     if (cmpOff) cmpOff();
+    // #88: a 50-clip 4K job showed per-file % but no batch ETA — no sense of how long the whole run
+    // will take. Time the completed files and extrapolate a rough "~Nm left" from the average.
+    const cmpStart = performance.now();
+    let cmpDoneN = 0;
+    const etaLabel = () => {
+      if (!cmpDoneN || cmpDoneN >= files.length) return '';
+      const perFile = (performance.now() - cmpStart) / 1000 / cmpDoneN;
+      const left = Math.round(perFile * (files.length - cmpDoneN));
+      return left > 0 ? ` · ~${left >= 60 ? `${Math.round(left / 60)}m` : `${left}s`} left` : '';
+    };
     cmpOff = window.api.onCompressProgress((p) => {
+      if (p.phase === 'done' || p.phase === 'skipped' || p.phase === 'error') cmpDoneN += 1;
       const masterI = idxMap[p.index];
       const stat = ov.querySelector(`[data-stat="${masterI}"]`); const fill = ov.querySelector(`[data-fill="${masterI}"]`);
       if (fill && typeof p.pct === 'number') fill.style.width = `${p.pct}%`;   // don't reset to 0 on indeterminate ticks
@@ -12819,7 +13232,7 @@ async function openCompress() {
         else if (p.indeterminate) stat.textContent = 'Compressing…';   // no duration → no %, show activity
         else stat.textContent = `${p.pct || 0}%`;
       }
-      setTask('compress', 'Compressing', (p.index || 0) + 1, files.length, p.phase || 'compressing', p.name || '');
+      setTask('compress', 'Compressing', (p.index || 0) + 1, files.length, `${p.phase || 'compressing'}${etaLabel()}`, p.name || '');
     });
     // compress:run can REJECT (ffmpeg missing, EPERM on the out dir) — not just resolve
     // {ok:false}. The cleanup below therefore has to live in a `finally`: without it one
@@ -12966,6 +13379,21 @@ $('finRunBtn').addEventListener('click', async () => {
   const dest = usePlan ? plan.root : finEffectiveDest();
   if (options.organize && !dest) { showToast('Pick a destination folder first'); return; }
   if (options.nas && !finNasPathVal) { showToast('Pick a NAS folder, or untick the NAS backup'); return; }
+
+  // #43: a folder map EXISTS but NONE of the ticked clips are on it (the user re-selected a
+  // different set after mapping). usePlan is false, so filing would fall through to the finLevels
+  // path — normally empty — and flat-dump every clip into the ROOT of the destination, beside the
+  // real project folders. That's the "planned a tree, Run dumped to root" failure. Stop and send
+  // them back to the map rather than silently misfiling their footage.
+  const planExists = !!(plan && plan.root && plan.byPath && Object.keys(plan.byPath).length);
+  if (options.organize && planExists && !usePlan) {
+    await confirmDialog(
+      'These clips aren’t on your Organize map',
+      'You mapped folders on the Organize step, but none of the ticked clips are placed there. Running now would file them into the ROOT of the destination instead of your project folders — so this run is stopped. Go back to Organize and place these clips (or tick the ones you already mapped), then Run again.',
+      'OK', 'Cancel'
+    );
+    return;
+  }
 
   if (options.organize) {
     const unplanned = usePlan ? matched.filter((c) => !planned(c)).length : 0;
@@ -13133,4 +13561,43 @@ function escapeAttr(s) { return escapeHtml(s); }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
+})();
+
+// ---------------------------------------------------------------------------
+// Accessibility: every modal in this app is an ad-hoc `.modal-overlay` > `.modal-card`
+// built inline at ~a dozen call sites — none carried dialog semantics, so screen
+// readers announced them as anonymous groups and never trapped/announced them as
+// dialogs. One observer stamps role="dialog"/aria-modal on any modal card as it
+// mounts, covering every call site without touching each one.
+// ---------------------------------------------------------------------------
+(function modalDialogSemantics() {
+  function stamp(card) {
+    if (!card || card.getAttribute('role')) return;
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    // Prefer an explicit heading as the accessible name; otherwise fall back to
+    // the overlay's own aria-label if a call site set one.
+    const h = card.querySelector('h1,h2,h3,.modal-title');
+    if (h) {
+      if (!h.id) h.id = `mdlttl-${Math.round(performance.now() * 1000) % 1e9}-${card.childElementCount}`;
+      card.setAttribute('aria-labelledby', h.id);
+    }
+  }
+  function scan(node) {
+    if (node.nodeType !== 1) return;
+    if (node.classList && node.classList.contains('modal-overlay')) {
+      const card = node.querySelector('.modal-card');
+      if (card) stamp(card);
+    } else if (node.querySelector) {
+      node.querySelectorAll('.modal-overlay > .modal-card').forEach(stamp);
+    }
+  }
+  function begin() {
+    document.querySelectorAll('.modal-overlay > .modal-card').forEach(stamp);
+    new MutationObserver((muts) => {
+      for (const mu of muts) mu.addedNodes.forEach(scan);
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', begin);
+  else begin();
 })();

@@ -132,7 +132,9 @@ test('a partial ENCODE can never masquerade as a finished clip', () => {
   const body = h.slice(0, h.indexOf('\n});'));
 
   assert.match(body, /const partDir = path\.join\(out, '\.partial'\)/, 'the encode is staged');
-  assert.match(body, /buildCompressArgs\(src, partPath, s\)/, 'ffmpeg writes to the staging path, NOT the final one');
+  // (#64 added a 4th arg for the hardware-encoder probe; what this pins is the DESTINATION being
+  // partPath, not the exact arity.)
+  assert.match(body, /buildCompressArgs\(src, partPath, s(,[^)]*)?\)/, 'ffmpeg writes to the staging path, NOT the final one');
   assert.match(body, /await fsp\.rename\(partPath, outPath\)/, 'and it is only promoted after ffmpeg exits 0');
 
   // The staging path keeps the .mp4 extension (ffmpeg picks its muxer from it) — the DIRECTORY is

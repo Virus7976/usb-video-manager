@@ -297,7 +297,7 @@ test('rankCandidateFolders: a standing-route dest is always kept even if it scor
 // ---------------------------------------------------------------------------
 test('compressSettings: undefined -> the balanced preset with skipExisting on', () => {
   assert.deepEqual(call('compressSettings', undefined),
-    { codec: 'h264', crf: 23, preset: 'medium', scale: '1080', audio: 'aac', skipExisting: true });
+    { codec: 'h264', crf: 23, preset: 'medium', scale: '1080', audio: 'aac', gpu: false, skipExisting: true });
 });
 
 test('compressSettings: an unknown preset name falls back to balanced', () => {
@@ -308,14 +308,14 @@ test('compressSettings: an unknown preset name falls back to balanced', () => {
 
 test('compressSettings: overrides win and skipExisting:false is honored', () => {
   assert.deepEqual(call('compressSettings', { preset: 'balanced', overrides: { crf: 18 }, skipExisting: false }),
-    { codec: 'h264', crf: 18, preset: 'medium', scale: '1080', audio: 'aac', skipExisting: false });
+    { codec: 'h264', crf: 18, preset: 'medium', scale: '1080', audio: 'aac', gpu: false, skipExisting: false });
 });
 
 test('buildCompressArgs: the default balanced argv is well-formed', () => {
   const s = call('compressSettings', {});
   assert.deepEqual(call('buildCompressArgs', 'in.mp4', 'out.mp4', s), [
     '-y', '-i', 'in.mp4',
-    '-vf', 'scale=-2:1080',
+    '-vf', 'scale=-2:min(1080\\,ih)',   // clamp to source height — never upscale a smaller clip
     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23',
     '-preset', 'medium',
     '-c:a', 'aac', '-b:a', '160k',
@@ -332,6 +332,14 @@ test('buildCompressArgs: h265 uses libx265 + hvc1 tag and its own crf', () => {
   assert.equal(a[a.indexOf('-crf') + 1], '28');
 });
 
+test('buildCompressArgs: scale height is clamped to source (no upscaling)', () => {
+  const s = call('compressSettings', { preset: 'balanced' });   // scale:1080
+  const a = call('buildCompressArgs', 'in.mp4', 'out.mp4', s);
+  // The height must be an ffmpeg min() expression, and its inner comma must be escaped so the
+  // filtergraph parser keeps it as one filter argument (not a second, empty filter).
+  assert.equal(a[a.indexOf('-vf') + 1], 'scale=-2:min(1080\\,ih)');
+});
+
 test('buildCompressArgs: scale=source omits the -vf filter entirely', () => {
   const s = call('compressSettings', { preset: 'hq' });   // scale:'source'
   const a = call('buildCompressArgs', 'in.mp4', 'out.mp4', s);
@@ -344,7 +352,7 @@ test('buildCompressArgs: CRF, preset and scale are placed at their own argv slot
   const s = call('compressSettings', { preset: 'balanced' });
   const a = call('buildCompressArgs', 'in.mp4', 'out.mp4', s);
   // Each flag and its value are DISTINCT elements (flag immediately precedes value).
-  assert.equal(a[a.indexOf('-vf') + 1], 'scale=-2:1080');
+  assert.equal(a[a.indexOf('-vf') + 1], 'scale=-2:min(1080\\,ih)');
   assert.equal(a[a.indexOf('-crf') + 1], '23');
   assert.equal(a[a.indexOf('-preset') + 1], 'medium');
 });

@@ -85,7 +85,10 @@ export function loadMain({ userData } = {}) {
     // ever tested. A test can swap in its own transport with:
     //     app.get('globalThis').fetch = async (url, init) => ({ ok: true, json: async () => ({…}) })
     // …so the model layer is testable with no Ollama and no GPU.
-    fetch, AbortSignal,
+    // AbortController joins them for the same reason (audit #78): the transport builds a shared
+    // cancel token so "Cancel" can actually stop an in-flight request, and without this in the
+    // context every Ollama call throws ReferenceError under test while working fine in Electron.
+    fetch, AbortSignal, AbortController,
   });
 
   // The store/config dir is derived from APPDATA at load time (main-mod/01-core.js:69),

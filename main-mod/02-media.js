@@ -256,6 +256,22 @@ function csvCell(v) {
   const s = String(v == null ? '' : v);
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
+// Extract just the FIRST field of a CSV line (RFC-4180 aware) — used to MERGE the Resolve CSV by
+// File Name across runs instead of overwriting it, so the batch-by-batch workflow doesn't clobber
+// earlier rows.
+function csvFirstField(line) {
+  if (line[0] === '"') {
+    let s = '';
+    for (let i = 1; i < line.length; i += 1) {
+      const c = line[i];
+      if (c === '"') { if (line[i + 1] === '"') { s += '"'; i += 1; } else return s; }
+      else s += c;
+    }
+    return s;
+  }
+  const comma = line.indexOf(',');
+  return comma === -1 ? line : line.slice(0, comma);
+}
 
 // Move a file, falling back to copy+verify+unlink across volumes (rename gives
 // EXDEV when the organized destination is on a different drive than the source).
@@ -272,6 +288,25 @@ async function flushToDisk(p) {
   try { const fh = await fsp.open(p, 'r+'); try { await fh.datasync(); } finally { await fh.close(); } }
   catch { /* best-effort */ }
 }
+// Make a just-renamed file's DIRECTORY ENTRY durable (audit #19).
+//
+// flushToDisk above makes the file's BYTES durable, but the entry that names them lives in the
+// parent directory and is its own write. After `rename(tmp, dest)` that entry can still be sitting
+// in the OS cache: a power loss then loses the file entirely, even though its contents reached the
+// platter — and moveFileCrossDevice DELETES the source immediately after, so that is the only copy.
+//
+// writeJsonAtomic (main-mod/01-core.js) has done this for the JSON stores since the store work; the
+// FOOTAGE path never got the same guarantee. Same primitive, same reasoning, now on the path where
+// losing the write is unrecoverable.
+//
+// Best-effort BY DESIGN: Windows cannot fsync a directory handle through Node, so this is a no-op
+// there and must never be the reason a copy fails. (That means the window it closes is real on
+// NAS/ext4/APFS and documented-but-open on Windows — see AGENTS.md.)
+async function flushDirEntry(dirPath) {
+  if (!dirPath) return;
+  try { const dh = await fsp.open(dirPath, 'r'); try { await dh.sync(); } finally { await dh.close(); } }
+  catch { /* unsupported (Windows) or gone — never fail a copy over this */ }
+}
 // Stage → flush → FULL verify → rename. The one way footage is written in this app.
 //
 // Shared by the move and the copy so they can never drift: a second hand-rolled copy of the footage
@@ -285,23 +320,20 @@ async function stageVerifiedCopy(src, dest) {
     // trust instead of the source. Prove the whole file either way.
     if (!(await fingerprintsMatch(src, tmp, { full: true }))) throw new Error('verify failed after copy');
     await fsp.rename(tmp, dest);
+    // The bytes are durable; make the NAME durable too, before anything trusts this copy enough to
+    // delete the source (audit #19). After the rename, so we record a directory that HAS the file.
+    await flushDirEntry(path.dirname(dest));
   } catch (err) {
     try { await fsp.unlink(tmp); } catch { /* best-effort cleanup of the temp copy */ }
     throw err;   // never leave a half-written clip behind under the real name
   }
 }
 
-// COPY the footage to `dest`, leaving the source exactly where it is.
-//
-// Jake files from his L: archive into projects on C:. C: has 31 GB free; the archive is 73 GB. So the
-// project folder on C: is a WORKING copy he can clear out at any time — and the archive on L: must
-// still be there when he does. A move would make the C: copy the only one, on the smaller, fuller disk.
-async function copyFileVerified(src, dest) {
-  await stageVerifiedCopy(src, dest);
-}
-
 async function moveFileCrossDevice(src, dest) {
-  try { await fsp.rename(src, dest); return; }
+  // Same-device fast path: rename IS the move, so the new directory entry is the only record that
+  // the footage exists under this name. Make it durable before returning (audit #19) — the
+  // cross-device path below gets the same treatment inside stageVerifiedCopy.
+  try { await fsp.rename(src, dest); await flushDirEntry(path.dirname(dest)); return; }
   catch (err) { if (err.code !== 'EXDEV') throw err; }
   await stageVerifiedCopy(src, dest);
   await fsp.unlink(src);
@@ -320,19 +352,20 @@ async function copyFileVerified(src, dest, { retries = 1 } = {}) {
   try {
     await fsp.stat(dest);
     if (await fingerprintsMatch(src, dest)) return 'skipped';   // already there, identical
+    // dest exists but DIFFERS → a prior copy of this file was truncated/corrupt; REPAIR it (the atomic
+    // copy below overwrites via rename). NOTE: content alone can't tell "corrupt copy of THIS file"
+    // from "good copy of a DIFFERENT clip that collided on basename". Repair is the intended default —
+    // the real fix for cross-clip name collisions is unique final names (see the clipKey backlog item),
+    // not clobber-avoidance here (which would strand the truncated file forever).
   } catch { /* not there yet → copy it */ }
+  // ATOMIC staged copy: stageVerifiedCopy writes a .part temp → flush → FULL verify → rename into
+  // place, and unlinks the temp on any failure. So a crash/power-loss mid-copy never leaves a
+  // truncated file wearing the real name in the NAS/archive/backup (the old direct-to-dest write did).
   let lastErr = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      await fsp.copyFile(src, dest);
-      await flushToDisk(dest);
-      if (await fingerprintsMatch(src, dest, { full: true })) return 'copied';   // FULL verify of the fresh copy
-      lastErr = new Error('verification failed after copy');
-    } catch (err) { lastErr = err; }
+    try { await stageVerifiedCopy(src, dest); return 'copied'; }
+    catch (err) { lastErr = err; }
   }
-  // Every attempt failed — don't leave a known-corrupt file at dest where a future resume
-  // scan might trust it. Best-effort remove, then surface the failure.
-  try { await fsp.unlink(dest); } catch { /* may not exist */ }
   throw lastErr || new Error('copy failed');
 }
 
@@ -358,7 +391,10 @@ async function organizeMove(srcPath, targetDir, fileName, opts = {}) {
     // duplicate. If it's a different clip that merely shares this name, version ours
     // so a distinct clip is never overwritten or silently left unfiled (the old
     // size-only test could collide two different files of equal size).
-    if (await fingerprintsMatch(srcPath, targetPath)) return { action: 'skip-dup', path: targetPath };
+    // FULL hash: this decides whether to skip filing a clip into his C: project archive, so a sampled
+    // head/mid/tail match on two equal-size-but-different clips must not be trusted as "already there"
+    // (which would leave the real clip unfiled). Same rule as the delete gate.
+    if (await fingerprintsMatch(srcPath, targetPath, { full: true })) return { action: 'skip-dup', path: targetPath };
     const versioned = await uniqueDest(targetDir, fileName);
     await place(srcPath, versioned);
     return { action: verb, path: versioned };
@@ -470,6 +506,14 @@ ipcMain.handle('projects:tree', async (_e, root) => {
 ipcMain.handle('projects:move', async (_e, payload) => {
   const moves = (payload && payload.moves) || [];
   const embed = !!(payload && payload.embed);
+  // COPY vs MOVE. The map's "Apply" used to ALWAYS move — silently deleting the L: archive source and
+  // leaving the C: project tree as the only copy, violating the app's "organize COPIES, never moves"
+  // rule and its most protective invariant. Copy is now the default; only an explicit `copy:false`
+  // (the user unchecked "Keep the originals") moves. A missing flag defaults to the SAFE side (copy).
+  const copy = payload && payload.copy !== undefined ? !!payload.copy : true;
+  // The Projects root, so each folder can be resolved against the DISK (case-correct) rather than
+  // filed at a verbatim joined path. Without this the map forked the tree on any case/spelling drift.
+  const projRoot = (payload && payload.root) ? String(payload.root).replace(/[\\/]+$/, '') : '';
   const et = embed ? getExifTool() : null;
   const results = [];
   for (const mv of moves) {
@@ -489,8 +533,17 @@ ipcMain.handle('projects:move', async (_e, payload) => {
           }
         } catch (e) { embedded = false; embedError = (e && e.message) ? String(e.message).slice(0, 200) : 'embed failed'; }
       }
+      // Resolve the destination folder against what's REALLY on disk, so a plan path like
+      // "2026 - client work" files into his existing "2026 - Client Work" instead of forking a second
+      // folder beside it (finalize:run always did this; the map's Apply skipped it and forked the tree).
+      let toDir = mv.toDir;
+      if (projRoot && typeof mv.rel === 'string' && mv.rel.trim()) {
+        const parts = mv.rel.split(/[\\/]+/).map((x) => safeFolderName(x)).filter(Boolean);
+        // eslint-disable-next-line no-await-in-loop
+        try { toDir = await resolveFolderPath(projRoot, parts); } catch { toDir = mv.toDir; }
+      }
       // eslint-disable-next-line no-await-in-loop
-      const r = await organizeMove(mv.from, mv.toDir, mv.name || path.basename(mv.from));
+      const r = await organizeMove(mv.from, toDir, mv.name || path.basename(mv.from), { copy });
       const out = { from: mv.from, ok: true, action: r.action, path: r.path };
       if (embedded != null) out.embedded = embedded;
       if (embedError) out.embedError = embedError;
@@ -503,8 +556,10 @@ ipcMain.handle('projects:move', async (_e, payload) => {
       results.push({ from: mv.from, ok: false, action: 'error', path: null, error: err.message || String(err) });
     }
   }
-  // Record this run's actual relocations so it can be UNDONE (move files back).
-  const undoable = results.filter((x) => x.ok && x.action === 'moved' && x.path && x.from).map((x) => ({ from: x.from, to: x.path }));
+  // Record this run's actual relocations so it can be UNDONE. Include COPIED clips too (the default
+  // mode) — organize:undo removes the copy for those (see its m.copied branch); recording only 'moved'
+  // meant the default copy mode had no undo at all.
+  const undoable = results.filter((x) => x.ok && (x.action === 'moved' || x.action === 'copied') && x.path && x.from).map((x) => ({ from: x.from, to: x.path, copied: x.action === 'copied' }));
   if (undoable.length) { config.lastOrganize = { ts: Date.now(), moves: undoable }; saveConfig(); }
   return { ok: true, results, undoable: undoable.length };
 });
@@ -522,6 +577,18 @@ ipcMain.handle('organize:undo', async () => {
     try {
       let here = false; try { await fsp.access(m.to); here = true; } catch { /* filed file gone */ }
       if (!here) { failed += 1; continue; }
+      // Undoing a COPY is not the same as undoing a MOVE. A copy left the original untouched, so
+      // "undo" means REMOVE the filed copy — not move it back, which just dumped a versioned duplicate
+      // beside the still-present source. Guarded: only delete the copy while the original is verifiably
+      // there; if the original somehow vanished, restore the copy into its slot instead (never lose the
+      // only remaining file).
+      if (m.copied) {
+        let origHere = false; try { await fsp.access(m.from); origHere = true; } catch { /* original gone */ }
+        // eslint-disable-next-line no-await-in-loop
+        if (origHere) { await fsp.unlink(m.to); } else { await ensureDir(path.dirname(m.from)); await moveFileCrossDevice(m.to, m.from); }
+        undone += 1;
+        continue;
+      }
       await ensureDir(path.dirname(m.from));
       let target = m.from;
       try { await fsp.access(m.from); target = await uniqueDest(path.dirname(m.from), path.basename(m.from)); } catch { /* original slot is free */ }
@@ -530,6 +597,11 @@ ipcMain.handle('organize:undo', async () => {
       undone += 1;
     } catch { failed += 1; }
   }
+  // Reverse this run's PROJECT-LEDGER additions too (audit #37). Undoing the files but keeping
+  // the memory left a phantom project whose dates/subjects kept matching future imports. The
+  // files are already back at this point, so a ledger problem must never fail the undo.
+  let ledgerReversed = 0;
+  try { ledgerReversed = reverseLastLedger(lo.ts); } catch { /* memory only — never fail the undo */ }
   config.lastOrganize = null; saveConfig();
-  return { ok: true, undone, failed };
+  return { ok: true, undone, failed, ledgerReversed };
 });

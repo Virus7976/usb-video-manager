@@ -1,9 +1,9 @@
 {
-  "01-core.js|spawn|try { spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true }); return; }": 1,
+  "01-core.js|spawn|const tk = spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true });": 1,
   "01-core.js|mkdir|fs.mkdirSync(path.dirname(file), { recursive: true });": 1,
+  "01-core.js|copyFile|try { fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`); } catch { /* best-effort */ }": 1,
   "01-core.js|mkdir|fs.mkdirSync(path.dirname(USER_CONFIG), { recursive: true });": 1,
   "02-media.js|copyFile|await fsp.copyFile(src, tmp);": 1,
-  "02-media.js|copyFile|await fsp.copyFile(src, dest);": 1,
   "04-routes-ledger.js|spawn|const ps = killAfter(spawn(": 1,
   "05-windows-phone.js|spawn|const ps = spawn('powershell.exe',": 1,
   "05-windows-phone.js|copyFile|if (!st || st.size !== it.size) { await fsp.copyFile(it.abs, dst); st = await fsp.stat(dst); }": 1,

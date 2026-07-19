@@ -173,5 +173,7 @@ test('finalize:scan asks the FILE before it starts guessing from the filename', 
   assert.ok(iStore < iEmbed, 'the free store lookup runs first — exiftool is only paid on a miss');
   assert.ok(iEmbed < iFuzzy, 'the file\'s OWN record beats a fuzzy filename guess');
   assert.ok(iFuzzy < iName, 'parsing the filename stays the last resort');
-  assert.match(body, /if \(!rec && !f\.isPhoto\)/, 'the read is guarded to a store miss');
+  // Guarded to a store MISS (only pay exiftool then). Photos are NO LONGER excluded — they now carry
+  // the embedded record too, so the round-trip works for the format where reading XMP is cheapest.
+  assert.match(body, /if \(!rec\) \{\n\s+const embedded = await readEmbeddedRecord/, 'the read is guarded to a store miss, photos included');
 });

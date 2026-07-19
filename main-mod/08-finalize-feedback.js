@@ -70,6 +70,10 @@ function gcFaceCrops() {
     }
     for (const c of ((config.ai && config.ai.facesPending) || [])) note(c && c.thumb);
     for (const s of ((config.ai && config.ai.faceScenes) || [])) note(s && s.img);
+    // Ignored faces keep their crop too — faces:ignore moves a face (with a real faces/*.jpg in `.t`)
+    // into this bin. Missing it here meant the next GC unlinked the crop and the Ignored view showed
+    // broken images with the crop gone for good.
+    for (const f of ((config.ai && config.ai.ignored) || [])) note(f && f.t);
 
     let removed = 0;
     for (const name of fs.readdirSync(FACES_DIR)) {
@@ -136,7 +140,11 @@ function aiFacesPending() { ensureStore('ai.facesPending'); config.ai = config.a
 ipcMain.handle('faces:getPending', () => aiFacesPending());
 ipcMain.handle('faces:savePending', (_e, list) => {
   aiFacesPending();                                    // load first, then replace
-  config.ai.facesPending = Array.isArray(list) ? list : [];
+  // Externalize each crop (base64 → a faces/*.jpg file) exactly like people:save and faces:saveScenes.
+  // This handler alone stored the renderer's list verbatim, so the base64 thumbs lived INLINE — that
+  // is what made faces-pending.json balloon to ~9 MB and get fully re-parsed + re-serialized on every
+  // 700 ms debounced save during a scan. A crop that can't be written stays inline (never lose a face).
+  config.ai.facesPending = (Array.isArray(list) ? list : []).map((c) => (c && typeof c.thumb === 'string' && c.thumb.startsWith('data:') ? { ...c, thumb: saveFaceCrop(c.thumb) } : c));
   saveStore('ai.facesPending');
   return { ok: true };
 });
@@ -187,6 +195,17 @@ ipcMain.handle('people:detail', (_e, id) => {
   if (!p) return { ok: false };
   return { ok: true, id: p.id, name: p.name, cover: personCover(p), ...personCounts(p), faces: (p.faces || []).map((f, i) => ({ i, t: f.t || '', confirmed: !!f.confirmed })) };
 });
+// #49 — cap a person's face list to `cap`, shedding UNCONFIRMED faces first so the hand-confirmed
+// enrolment faces (the only ones that vote in recognition) are never pushed out by a pile of auto-saved
+// guesses. Every place that capped by a plain newest-N slice (save/merge/reassign) now routes here.
+function capFacesKeepingConfirmed(faces, cap) {
+  const list = Array.isArray(faces) ? faces : [];
+  if (list.length <= cap) return list;
+  const conf = list.filter((f) => f && f.confirmed);
+  const unconf = list.filter((f) => !(f && f.confirmed));
+  const keptConf = conf.slice(-cap);
+  return keptConf.concat(unconf.slice(-Math.max(0, cap - keptConf.length)));
+}
 ipcMain.handle('people:save', (_e, payload) => {
   // Upsert a person by name; append new faces (descriptor + its thumb). `confirmed`
   // false = a recognized-but-not-yet-confirmed face (shows in the dashboard's
@@ -202,10 +221,17 @@ ipcMain.handle('people:save', (_e, payload) => {
   let p = people.find((x) => x.name.toLowerCase() === name.toLowerCase());
   if (!p) { p = { id: `pp${Date.now()}${Math.random().toString(36).slice(2, 6)}`, name, faces: [], thumb: '', ts: Date.now() }; people.push(p); }
   migratePerson(p);
-  const isDup = (d) => d && (p.faces || []).some((f) => f.d && faceDist(f.d, d) < 0.35);
-  for (const d of descriptors) { if (!isDup(d)) p.faces.push({ d, t: thumb, confirmed }); }
+  for (const d of descriptors) {
+    // If a near-duplicate already exists and THIS save is a confirmation, PROMOTE the existing face to
+    // confirmed (and refresh its crop) instead of skipping. Confirming a suggested face saves the SAME
+    // descriptors that were auto-saved unconfirmed during the scan; skipping them meant the confirmed
+    // set never grew and — since only confirmed faces vote — confirmations never improved matching.
+    const near = (p.faces || []).find((f) => f.d && faceDist(f.d, d) < 0.35);
+    if (near) { if (confirmed && !near.confirmed) { near.confirmed = true; if (thumb) near.t = thumb; } }
+    else p.faces.push({ d, t: thumb, confirmed });
+  }
   if (!descriptors.length && thumb) p.faces.push({ d: null, t: thumb, confirmed });
-  if (p.faces.length > 80) p.faces = p.faces.slice(-80);
+  p.faces = capFacesKeepingConfirmed(p.faces, 80);   // shed unconfirmed guesses first (#49)
   if (thumb && confirmed && !p.thumb) p.thumb = thumb;
   saveStore('ai.people');
   return { ok: true, id: p.id };
@@ -228,7 +254,9 @@ ipcMain.handle('faces:ignore', (_e, payload) => {
     const p = aiPeople().find((x) => x.id === fromId);
     if (p && p.faces && idx < p.faces.length) { ig.push(p.faces[idx]); p.faces.splice(idx, 1); if (p.thumb && !(p.faces || []).some((f) => f.t === p.thumb)) p.thumb = personCover(p); }
   } else if (Array.isArray(payload && payload.descriptor)) {
-    ig.push({ d: payload.descriptor, t: String(payload.thumb || ''), confirmed: false });
+    // Route the crop out to a file. config.ai.ignored lives in config.json, so a raw base64 dataURL
+    // here re-bloats the very file the sidecar split exists to keep small (write-amplifies every save).
+    ig.push({ d: payload.descriptor, t: saveFaceCrop(String(payload.thumb || '')), confirmed: false });
   }
   if (ig.length > 200) config.ai.ignored = ig.slice(-200);
   saveStore('ai.people'); saveConfig();
@@ -251,7 +279,7 @@ ipcMain.handle('people:reassignFace', (_e, payload) => {
   migratePerson(to);
   if (!(to.faces || []).some((f) => f.d && faceDist(f.d, face.d) < 0.2)) to.faces.push({ d: face.d, t: face.t, confirmed: true });
   if (face.t && !to.thumb) to.thumb = face.t;
-  if (to.faces.length > 80) to.faces = to.faces.slice(-80);
+  to.faces = capFacesKeepingConfirmed(to.faces, 80);   // #49 — keep confirmed enrolment faces
   saveStore('ai.people');
   return { ok: true, toId: to.id, toName: to.name };
 });
@@ -265,7 +293,7 @@ ipcMain.handle('people:merge', (_e, payload) => {
   const into = aiPeople().find((x) => x.id === (payload && payload.intoId));
   const from = aiPeople().find((x) => x.id === (payload && payload.fromId));
   if (!into || !from || into === from) return { ok: false };
-  into.faces = [...(into.faces || []), ...(from.faces || [])].slice(-60);   // the slice can drop faces
+  into.faces = capFacesKeepingConfirmed([...(into.faces || []), ...(from.faces || [])], 60);   // #49 — confirmed-first
   config.ai.people = aiPeople().filter((x) => x.id !== from.id);
   saveStore('ai.people');
   gcFaceCrops();
@@ -310,7 +338,14 @@ function faceDecide(desc, confirmed, ignored, suggestT) {
   for (const f of (ignored || [])) { if (f && f.d) { const d = faceDist(desc, f.d); if (d < ignD) ignD = d; } }
   const scored = [];
   for (const f of (confirmed || [])) { if (f && f.d) scored.push({ id: f.id, name: f.name, dist: faceDist(desc, f.d) }); }
-  if (!scored.length) return { match: null, dist: Infinity };
+  if (!scored.length) {
+    // Nobody enrolled yet — but an IGNORED face must STILL read as ignored, or a dismissed
+    // statue/TV/poster re-clusters as "new face" on every scan until you happen to name someone
+    // (#46). The old early-return skipped the ignore check whenever confirmed was empty. Caught by
+    // the e2e test that ignores a face before any person exists.
+    if (ignD <= suggestT) return { match: null, dist: Infinity, ignored: true };
+    return { match: null, dist: Infinity };
+  }
   scored.sort((a, b) => a.dist - b.dist);
   const bestD = scored[0].dist;
   if (ignD <= bestD && ignD <= suggestT) return { match: null, dist: bestD, ignored: true };
@@ -750,7 +785,10 @@ function mergeDraft(prev, incoming) {
   }
   return merged;
 }
-ipcMain.handle('drafts:save', (_evt, map) => {
+// THE draft write. Owned by one function so the async handler and the synchronous quit-time flush
+// below cannot drift apart — the non-destructive upsert and the never-evict-a-named-draft pruning
+// are the whole reason drafts survive, and a second copy of that logic would eventually diverge.
+function writeDrafts(map) {
   if (!map || typeof map !== 'object') return false;
   const hasData = (v) => v && Object.entries(v).some(([k, val]) => k !== 'ts' && draftNonEmpty(val));
   const additions = Object.entries(map).filter(([, v]) => hasData(v));
@@ -776,7 +814,8 @@ ipcMain.handle('drafts:save', (_evt, map) => {
   config.renameDrafts = Object.fromEntries(entries);
   saveStore('renameDrafts');
   return true;
-});
+}
+ipcMain.handle('drafts:save', (_evt, map) => writeDrafts(map));
 
 // Clear drafts: the given keys (consumed by a copy), or all of them.
 ipcMain.handle('drafts:clear', (_evt, keys) => {
@@ -1006,11 +1045,93 @@ ipcMain.handle('clips:retagPerson', (_evt, payload) => {
   };
   apply(currentFinalMeta());
   apply(currentDrafts());
+  // #44 (the AI-leak half): clipObs holds the per-clip OBSERVATION text — plain prose with no
+  // people array — which is fed back into the naming loop and can be re-embedded. If we don't swap
+  // the name here too, a renamed person keeps leaking their OLD name into future AI context and
+  // re-embeds long after the retag. (Only on a rename; a removal leaves the prose alone.) NOTE:
+  // versions.json snapshots are deliberately NOT rewritten — a restore point is a point-in-time
+  // record, and editing old snapshots would corrupt that guarantee (restoring one legitimately
+  // brings back that moment's state).
+  if (to) {
+    const obsStore = clipObsStore();
+    let obsFixed = 0;
+    for (const k of Object.keys(obsStore)) {
+      const rec = obsStore[k];
+      if (rec && typeof rec.obs === 'string') { const nx = fixText(rec.obs); if (nx !== rec.obs) { rec.obs = nx; obsFixed += 1; } }
+    }
+    if (obsFixed) saveStore('ai.clipObs');
+  }
   // These are sidecar stores — persist them directly. (A plain saveConfig() would STRIP
   // finalMeta/renameDrafts from config.json and never write the sidecars → retag lost.)
   saveStore('finalMeta');
   saveStore('renameDrafts');
   return { ok: true, changed };
+});
+
+// Tag specific clips with a person BY KEY (audit #26/#27).
+//
+// The renderer's `tagClips()` resolves a cluster's clipKeys through a map built from
+// `state.scannedFiles`, so it can only ever tag clips currently in memory. A cluster restored from
+// faces-pending.json legitimately references clips from EARLIER sessions — already renamed, already
+// filed — and those keys just miss the lookup, so confirming a persisted face tagged none of them.
+// The renderer cannot fix that alone: the clips aren't in memory to fix. This reaches the persisted
+// records directly.
+//
+// Deliberately ADD-ONLY: it never removes a person and never creates a record for an unknown key
+// (a cluster can reference a clip whose record was pruned, and resurrecting a stub carrying nothing
+// but a person would be worse than the missing tag).
+ipcMain.handle('clips:tagPerson', (_evt, payload) => {
+  const name = String((payload && payload.name) || '').trim();
+  const keys = Array.isArray(payload && payload.keys) ? payload.keys.map((k) => String(k || '')).filter(Boolean) : [];
+  if (!name || !keys.length) return { ok: false, tagged: 0 };
+  const want = new Set(keys);
+  let tagged = 0;
+  const apply = (store) => {
+    for (const k of Object.keys(store)) {
+      if (!want.has(k)) continue;
+      const rec = store[k]; if (!rec) continue;
+      const cur = Array.isArray(rec.people) ? rec.people : [];
+      if (cur.includes(name)) continue;         // idempotent: re-confirming must not duplicate
+      rec.people = [...new Set([...cur, name])];
+      tagged += 1;
+    }
+  };
+  apply(currentFinalMeta());
+  apply(currentDrafts());
+  // Sidecar stores — persist directly. A plain saveConfig() would STRIP finalMeta/renameDrafts from
+  // config.json and never write the sidecars, losing the tag (same trap as clips:retagPerson).
+  if (tagged) { saveStore('finalMeta'); saveStore('renameDrafts'); }
+  return { ok: true, tagged };
+});
+
+// The reverse of clips:tagPerson — used by "Undo" in the face review.
+//
+// Adding the write side (#26) without the reverse side left Undo half-working: it reset the card but
+// the person stayed tagged on every clip, now PERSISTED as well. A write-through needs its inverse
+// or "undo" quietly means "undo the part you can see".
+//
+// Remove-only, mirroring its sibling: it never adds a person, never creates a record for an unknown
+// key, and reports how many records it actually changed so a repeat is visibly a no-op.
+ipcMain.handle('clips:untagPerson', (_evt, payload) => {
+  const name = String((payload && payload.name) || '').trim();
+  const keys = Array.isArray(payload && payload.keys) ? payload.keys.map((k) => String(k || '')).filter(Boolean) : [];
+  if (!name || !keys.length) return { ok: false, untagged: 0 };
+  const want = new Set(keys);
+  let untagged = 0;
+  const apply = (store) => {
+    for (const k of Object.keys(store)) {
+      if (!want.has(k)) continue;
+      const rec = store[k]; if (!rec || !Array.isArray(rec.people)) continue;
+      if (!rec.people.includes(name)) continue;
+      rec.people = rec.people.filter((n) => n !== name);
+      untagged += 1;
+    }
+  };
+  apply(currentFinalMeta());
+  apply(currentDrafts());
+  // Sidecar stores — persist directly (saveConfig() would strip them; same trap as clips:tagPerson).
+  if (untagged) { saveStore('finalMeta'); saveStore('renameDrafts'); }
+  return { ok: true, untagged };
 });
 
 ipcMain.handle('finalMeta:get', () => currentFinalMeta());

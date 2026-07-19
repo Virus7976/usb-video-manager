@@ -124,7 +124,18 @@ async function openCompress() {
     const idxMap = files.map((f) => cmpState.files.indexOf(f));
     setTask('compress', 'Compressing', 0, files.length, 'starting', '');
     if (cmpOff) cmpOff();
+    // #88: a 50-clip 4K job showed per-file % but no batch ETA — no sense of how long the whole run
+    // will take. Time the completed files and extrapolate a rough "~Nm left" from the average.
+    const cmpStart = performance.now();
+    let cmpDoneN = 0;
+    const etaLabel = () => {
+      if (!cmpDoneN || cmpDoneN >= files.length) return '';
+      const perFile = (performance.now() - cmpStart) / 1000 / cmpDoneN;
+      const left = Math.round(perFile * (files.length - cmpDoneN));
+      return left > 0 ? ` · ~${left >= 60 ? `${Math.round(left / 60)}m` : `${left}s`} left` : '';
+    };
     cmpOff = window.api.onCompressProgress((p) => {
+      if (p.phase === 'done' || p.phase === 'skipped' || p.phase === 'error') cmpDoneN += 1;
       const masterI = idxMap[p.index];
       const stat = ov.querySelector(`[data-stat="${masterI}"]`); const fill = ov.querySelector(`[data-fill="${masterI}"]`);
       if (fill && typeof p.pct === 'number') fill.style.width = `${p.pct}%`;   // don't reset to 0 on indeterminate ticks
@@ -135,7 +146,7 @@ async function openCompress() {
         else if (p.indeterminate) stat.textContent = 'Compressing…';   // no duration → no %, show activity
         else stat.textContent = `${p.pct || 0}%`;
       }
-      setTask('compress', 'Compressing', (p.index || 0) + 1, files.length, p.phase || 'compressing', p.name || '');
+      setTask('compress', 'Compressing', (p.index || 0) + 1, files.length, `${p.phase || 'compressing'}${etaLabel()}`, p.name || '');
     });
     // compress:run can REJECT (ffmpeg missing, EPERM on the out dir) — not just resolve
     // {ok:false}. The cleanup below therefore has to live in a `finally`: without it one
@@ -282,6 +293,21 @@ $('finRunBtn').addEventListener('click', async () => {
   const dest = usePlan ? plan.root : finEffectiveDest();
   if (options.organize && !dest) { showToast('Pick a destination folder first'); return; }
   if (options.nas && !finNasPathVal) { showToast('Pick a NAS folder, or untick the NAS backup'); return; }
+
+  // #43: a folder map EXISTS but NONE of the ticked clips are on it (the user re-selected a
+  // different set after mapping). usePlan is false, so filing would fall through to the finLevels
+  // path — normally empty — and flat-dump every clip into the ROOT of the destination, beside the
+  // real project folders. That's the "planned a tree, Run dumped to root" failure. Stop and send
+  // them back to the map rather than silently misfiling their footage.
+  const planExists = !!(plan && plan.root && plan.byPath && Object.keys(plan.byPath).length);
+  if (options.organize && planExists && !usePlan) {
+    await confirmDialog(
+      'These clips aren’t on your Organize map',
+      'You mapped folders on the Organize step, but none of the ticked clips are placed there. Running now would file them into the ROOT of the destination instead of your project folders — so this run is stopped. Go back to Organize and place these clips (or tick the ones you already mapped), then Run again.',
+      'OK', 'Cancel'
+    );
+    return;
+  }
 
   if (options.organize) {
     const unplanned = usePlan ? matched.filter((c) => !planned(c)).length : 0;
@@ -449,4 +475,43 @@ function escapeAttr(s) { return escapeHtml(s); }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
+})();
+
+// ---------------------------------------------------------------------------
+// Accessibility: every modal in this app is an ad-hoc `.modal-overlay` > `.modal-card`
+// built inline at ~a dozen call sites — none carried dialog semantics, so screen
+// readers announced them as anonymous groups and never trapped/announced them as
+// dialogs. One observer stamps role="dialog"/aria-modal on any modal card as it
+// mounts, covering every call site without touching each one.
+// ---------------------------------------------------------------------------
+(function modalDialogSemantics() {
+  function stamp(card) {
+    if (!card || card.getAttribute('role')) return;
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-modal', 'true');
+    // Prefer an explicit heading as the accessible name; otherwise fall back to
+    // the overlay's own aria-label if a call site set one.
+    const h = card.querySelector('h1,h2,h3,.modal-title');
+    if (h) {
+      if (!h.id) h.id = `mdlttl-${Math.round(performance.now() * 1000) % 1e9}-${card.childElementCount}`;
+      card.setAttribute('aria-labelledby', h.id);
+    }
+  }
+  function scan(node) {
+    if (node.nodeType !== 1) return;
+    if (node.classList && node.classList.contains('modal-overlay')) {
+      const card = node.querySelector('.modal-card');
+      if (card) stamp(card);
+    } else if (node.querySelector) {
+      node.querySelectorAll('.modal-overlay > .modal-card').forEach(stamp);
+    }
+  }
+  function begin() {
+    document.querySelectorAll('.modal-overlay > .modal-card').forEach(stamp);
+    new MutationObserver((muts) => {
+      for (const mu of muts) mu.addedNodes.forEach(scan);
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', begin);
+  else begin();
 })();

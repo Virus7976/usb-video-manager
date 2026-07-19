@@ -251,9 +251,39 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
   const vDest = videoDest || photoDest;
   try { await ensureDir(photoDest); } catch { /* ignore */ }
   try { await ensureDir(vDest); } catch { /* ignore */ }
+
+  // WILL IT FIT? A camera roll is routinely tens of GB, and this used to just start writing —
+  // running to ENOSPC part-way leaves a half-pulled phone, a truncated file and a full system disk.
+  // The organize and intake paths have had this check for a while; the phone pull never got it.
+  //
+  // Photos and videos land in DIFFERENT destinations (Photos Temp vs _Phone Video Temp), which can be
+  // on different volumes — so each destination is checked against the bytes actually headed there.
+  // Summing everything against one disk would be wrong in both directions.
+  //
+  // Same stance as the sibling preflights: 2 GB of headroom (filling a system disk breaks the
+  // machine, not just the app), a missing size counts as 0, and an unreadable volume skips the check
+  // rather than blocking a real pull.
+  const needBy = new Map();
+  for (const it of items) {
+    const d = (it && it.kind === 'video') ? vDest : photoDest;
+    if (d) needBy.set(d, (needBy.get(d) || 0) + (Number(it && it.size) || 0));
+  }
+  for (const [d, bytes] of needBy) {
+    if (!bytes) continue;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const st = await fsp.statfs(await nearestExistingDir(d));
+      const free = Number(st.bavail) * Number(st.bsize);
+      const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
+      if (bytes + 2e9 > free) {
+        return { ok: false, error: `Not enough room: this needs ${GB(bytes)} but only ${GB(free)} is free on ${d}. Pull fewer items, or point the phone folders at a bigger disk.` };
+      }
+    } catch { /* cannot read the volume → never block the pull over it */ }
+  }
+
   const sender = evt.sender;
   const staged = [];
-  const total = items.length; let done = 0;
+  const total = items.length; let done = 0; let incomplete = 0;
   const prog = (name) => { done += 1; try { sender.send('phone:copy-progress', { done, total, name }); } catch { /* ignore */ } };
 
   // Pull a set of items off the phone into ONE local dest, then stage each with its LOCAL
@@ -276,14 +306,31 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
       await mtpCopyToDest(device, list, dest, (name) => prog(name));   // ADB-first; checks phoneAbort
       for (const it of list) {
         const p = path.join(dest, it.name);
-        try { const st = await fsp.stat(p); staged.push({ sourcePath: p, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind }); } catch { /* couldn't verify — skip */ }
+        try {
+          const st = await fsp.stat(p);
+          // Stage on COMPLETENESS, not mere existence. A file present but SHORT of its known source
+          // size is a truncated pull (an MTP CopyHere timeout, a dropped connection) — staging it
+          // would rename it, move it into Uncompressed, and let Tdarr compress a corrupt clip into the
+          // archive. Decline it: the phone still holds the original, so a re-pull recovers it cleanly.
+          // (it.size may be 0/unknown for some devices; then we can't check, so we keep the old behavior.)
+          if (it.size && st.size !== it.size) {
+            // DELETE the truncated file, don't just skip staging it. Left on disk under its final name,
+            // resume (scanPhoneStagedDir just stats) would re-adopt it as a complete clip and Tdarr it
+            // into the archive — the exact corruption this gate exists to stop. The phone still holds
+            // the original, so a re-pull recovers it cleanly.
+            // eslint-disable-next-line no-await-in-loop
+            try { await fsp.unlink(p); } catch { /* best-effort */ }
+            incomplete += 1; continue;
+          }
+          staged.push({ sourcePath: p, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind });
+        } catch { /* couldn't verify — skip */ }
       }
     }
   };
 
   await pullInto(photos, photoDest, 'photo');
   if (!phoneAbort) await pullInto(videos, vDest, 'video');
-  return { ok: true, copied: staged.length, total, staged, cancelled: phoneAbort };
+  return { ok: true, copied: staged.length, total, staged, incomplete, cancelled: phoneAbort };
 });
 
 // MTP-copy a list of items (same rel-folder navigation) to ONE local dest, streaming
@@ -432,9 +479,12 @@ async function adbScanMedia(serial, albums) {
 async function adbPullToDest(serial, items, dest, onName) {
   try { await ensureDir(dest); } catch { /* ignore */ }
   const results = [];
+  // Names already taken by an earlier item in THIS pull — see claimPullDest (audit #5).
+  const claimed = new Set();
   for (const it of items) {
     if (phoneAbort) break;   // Cancel pressed — stop pulling
-    const destFile = path.join(dest, it.name);
+    // eslint-disable-next-line no-await-in-loop
+    const destFile = await claimPullDest(dest, it.name, claimed);
     let status = 'FAIL';
     try {
       let have = null; try { have = fs.statSync(destFile); } catch { /* not there */ }
@@ -768,11 +818,41 @@ ipcMain.handle('wireless:manualPair', async (_evt, { hostport, code, connectAddr
 
 // Transfer dispatcher: use the fast ADB path when enabled + an authorized device is
 // present, otherwise the original MTP copy. ADB failure falls back to MTP per call.
+// Which items still need pulling after an ADB pass (audit #89).
+//
+// `adbPullToDest` reports failure PER FILE (`status:'FAIL'`) but returns `{ ok: true }` for the batch
+// no matter what — so the caller's `if (r && r.ok) return r` made the MTP fallback unreachable, and
+// anything ADB choked on was silently dropped while the pull reported done.
+//
+// "Not mentioned in the results" counts as needing a retry, NOT as done: a crash or an abort
+// mid-batch leaves later items unreported, and treating no-news as success is exactly how a file
+// goes missing quietly.
+function adbRetryList(items, results) {
+  const done = new Set(((results || []).filter((r) => r && (r.status === 'OK' || r.status === 'SKIP'))).map((r) => r.name));
+  return (items || []).filter((it) => it && !done.has(it.name));
+}
+// Combine the ADB pass with the MTP retry — the LATER attempt wins per file, so an item MTP rescued
+// reports OK rather than staying FAIL (which would show up as a phantom loss in the declined count,
+// audit #87).
+function mergePullResults(first, second) {
+  const by = new Map();
+  for (const r of (first || [])) if (r && r.name) by.set(r.name, r);
+  for (const r of (second || [])) if (r && r.name) by.set(r.name, r);
+  return [...by.values()];
+}
 async function mtpCopyToDest(device, items, dest, onName) {
   const serial = await adbReadyDevice().catch(() => null);
   if (serial) {
-    try { const r = await adbPullToDest(serial, items, dest, onName); if (r && r.ok) return r; }
-    catch (e) { console.error('[adb] pull failed, falling back to MTP:', e.message); }
+    try {
+      const r = await adbPullToDest(serial, items, dest, onName);
+      const retry = adbRetryList(items, r && r.results);
+      if (!retry.length) return r;
+      // ADB got some (or none) of them — give the rest their second chance on the slower path that
+      // works, instead of dropping them. Only the stragglers are re-pulled, never the whole batch.
+      console.error(`[adb] ${retry.length} item(s) failed, retrying those over MTP`);
+      const m = await mtpCopyViaMtp(device, retry, dest, onName);
+      return { ok: true, results: mergePullResults(r && r.results, m && m.results) };
+    } catch (e) { console.error('[adb] pull failed, falling back to MTP:', e.message); }
   }
   return mtpCopyViaMtp(device, items, dest, onName);
 }
@@ -833,6 +913,10 @@ foreach ($entry in $items) {
       env: { MTP_DEVICE: device, MTP_DEST: dest, MTP_LIST: listFile },   // merged into process.env by streamSpawn
       idleMs: 8 * 60 * 1000,
       timeoutMs: 3 * 60 * 60 * 1000,   // absolute ceiling — a child that dribbles stderr forever still can't run past 3h
+      // Cancel actually cancels now: the PS batch loops over every file with no way to check a flag,
+      // so pressing Cancel used to keep copying to the very end. Poll phoneAbort and kill the child;
+      // the staging gate declines the half-copied file. (ADB path already honors per-file cancel.)
+      abortCheck: () => phoneAbort,
 
       onLine: (raw) => {
         const line = raw.trim();
@@ -922,6 +1006,21 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   const { jobs } = payload || {};
   if (!Array.isArray(jobs) || !jobs.length) return { ok: true, copied: 0 };
   const sender = evt.sender; let done = 0; const total = jobs.length; const errors = [];
+  // Embed the AI's record (subject / people / keywords / description / date…) into each unique SOURCE
+  // photo ONCE, so every verified copy below inherits it. Videos get rich XMP through finalize:run;
+  // photos used to get copied bytes and nothing else, so all the AI's work was thrown away the moment
+  // a photo left the flow. The source is a working staging copy (Photos Temp / a pulled temp), NEVER
+  // the phone original, so this respects "organize copies, never the archive original"; and an XMP
+  // write to a JPG/HEIC is metadata-only, so "photos stay original quality" still holds.
+  let tagged = 0; let tagFailed = 0; const embeddedSrc = new Set();
+  for (const j of jobs) {
+    if (!j || !j.meta || !j.src || embeddedSrc.has(j.src)) continue;
+    embeddedSrc.add(j.src);
+    try {
+      const tags = buildEmbedTags(j.meta, [], path.basename(j.src));
+      if (Object.keys(tags).length) { await getExifTool().write(j.src, tags, ['-overwrite_original']); tagged += 1; }
+    } catch { tagFailed += 1; }   // a tag failure never blocks the backup — the copy still runs
+  }
   // PER-JOB results, not just a tally. The caller needs to know WHICH photo landed WHERE:
   // without that, a photo has no recorded destination, which is why photos could never enter
   // state.copied and therefore could never be cleared off the card — and why their AI metadata
@@ -940,7 +1039,7 @@ ipcMain.handle('phone:distribute', async (evt, payload) => {
   }
   // ok reflects reality — false when any file failed (was unconditionally true, so a
   // partial backup with dropped photos reported success).
-  return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, results, error: errors[0] || '' };
+  return { ok: errors.length === 0, copied: done, total, failed: errors.length, errors, results, tagged, tagFailed, error: errors[0] || '' };
 });
 
 // ---------------------------------------------------------------------------
@@ -955,6 +1054,12 @@ async function walkForVideos(root) {
     } catch {
       return;
     }
+    // Basenames (no extension) of the PHOTOS in this dir — so a .MOV that shares a still's name can be
+    // spotted as an iPhone Live Photo sidecar rather than a real video.
+    const photoStems = new Set();
+    for (const e of entries) {
+      if (e.isFile()) { const x = path.extname(e.name).toLowerCase(); if (IMAGE_EXTS.has(x)) photoStems.add(e.name.slice(0, e.name.length - x.length).toLowerCase()); }
+    }
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
@@ -965,7 +1070,11 @@ async function walkForVideos(root) {
         const ext = path.extname(entry.name).toLowerCase();
         // Pick up PHOTOS as well as videos (GoPro stills, phone-card JPGs) — tagged
         // so the rename flow handles them right (photos → Photos Temp, not Uncompressed).
-        const kind = VIDEO_EXTS.has(ext) ? 'video' : (IMAGE_EXTS.has(ext) ? 'photo' : '');
+        let kind = VIDEO_EXTS.has(ext) ? 'video' : (IMAGE_EXTS.has(ext) ? 'photo' : '');
+        // iPhone Live Photo: a .MOV paired with a same-name HEIC/JPG still. Treat it as a PHOTO so it
+        // rides to Photos Temp with the still instead of flooding the Tdarr video intake / compress
+        // queue with thousands of 2-3s motion clips beside each picture.
+        if (kind === 'video' && ext === '.mov' && photoStems.has(entry.name.slice(0, entry.name.length - ext.length).toLowerCase())) kind = 'photo';
         if (kind) {
           let stat;
           try {
@@ -1031,6 +1140,43 @@ function destNameFor(f) {
 }
 
 // Resolve a non-colliding destination path by appending " (n)" before the ext.
+// Claim a destination for ONE pulled item, so two albums can't collide in the flat pull folder
+// (audit #5).
+//
+// A pull flattens every selected album into one directory, and `IMG_0001.jpg` exists in Camera AND
+// WhatsApp AND Downloads. Joining the raw name meant the second item either overwrote the first, or
+// — if their sizes happened to match — was read as a completed RESUME and skipped. One irreplaceable
+// photo gone either way, silently.
+//
+// The distinction that makes this safe: only rename when the name was claimed by a DIFFERENT item in
+// THIS run. A file left by a PREVIOUS run must keep its exact path, or every resumed pull
+// re-downloads the whole card under new names. Keyed case-insensitively because IMG_1.JPG and
+// img_1.jpg are one file on Windows.
+// Note it cannot just delegate to uniqueDest(): that only steps past names that EXIST ON DISK, and a
+// name claimed earlier in this run hasn't been written yet (the pull is still in flight). So the
+// claim set and the disk are both consulted, using uniqueDest's own " (n)" convention so a resumed
+// run recognises the files a previous one left.
+async function claimPullDest(dir, name, claimed) {
+  const raw = path.join(dir, name);
+  // NOT claimed by an earlier item this run → hand back the real name untouched. A file sitting
+  // there is a RESUME of this same item, and the caller's size check owns that decision. (Delegating
+  // to uniqueDest here would step past it and re-download the whole card under new names.)
+  if (!claimed || !claimed.has(raw.toLowerCase())) {
+    if (claimed) claimed.add(raw.toLowerCase());
+    return raw;
+  }
+  // Claimed → this is a genuinely DIFFERENT item that happens to share a filename. Step past both
+  // what this run has spoken for and what is already on disk, using uniqueDest's " (n)" convention.
+  const ext = path.extname(name);
+  const base = path.basename(name, ext);
+  for (let n = 1; n < 10000; n += 1) {
+    const cand = path.join(dir, `${base} (${n})${ext}`);
+    if (claimed.has(cand.toLowerCase())) continue;
+    // eslint-disable-next-line no-await-in-loop
+    try { await fsp.access(cand); } catch { claimed.add(cand.toLowerCase()); return cand; }
+  }
+  return raw;   // 10k same-named items is not a real card; don't spin
+}
 async function uniqueDest(dir, filename) {
   const ext = path.extname(filename);
   const base = path.basename(filename, ext);

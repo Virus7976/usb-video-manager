@@ -1000,7 +1000,7 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .face-btn-save:hover { opacity: 0.88; transform: scale(1.06); }
 .face-btn-skip:hover { background: var(--subtle-hover); transform: scale(1.06); }
 /* DigiKam-style face confirm GRID */
-.modal-card.face-grid-card { width: min(880px, 95vw); text-align: left; display: flex; flex-direction: column; max-height: 90vh; }
+.modal-card.face-grid-card { width: min(1040px, 96vw); text-align: left; display: flex; flex-direction: column; max-height: 92vh; }
 .face-grid-scroll { overflow-y: auto; margin: 6px 0 4px; padding-right: 4px; flex: 1; min-height: 160px; }
 .fg-hd-anim { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); display: grid; place-items: center; }
 .fg-section { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); font-weight: 600; margin: 14px 2px 8px; display: flex; align-items: center; gap: 7px; }
@@ -1011,8 +1011,8 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 /* THE GROUP SHOT — the frame from the clip, with a clickable box on each face. The whole point is
    that you name people IN the shot they appear in, so the photo leads and the boxes sit on it; the
    selected face opens the ordinary face card underneath, unchanged. */
-.face-scene { border: 2px solid var(--card-stroke); border-radius: var(--radius-xl); padding: 10px; background: var(--card-2, var(--subtle-hover)); margin-bottom: 12px; animation: fgc-in 0.26s ease; }
-.fsc-photo { position: relative; width: 100%; max-width: 560px; margin: 0 auto; border-radius: var(--radius-lg, 10px); overflow: hidden; background: #000; line-height: 0; }
+.face-scene { position: relative; border: 2px solid var(--card-stroke); border-radius: var(--radius-xl); padding: 10px; background: var(--card-2, var(--subtle-hover)); margin-bottom: 12px; animation: fgc-in 0.26s ease; }
+.fsc-photo { position: relative; width: 100%; max-width: min(760px, 90vw); margin: 0 auto; border-radius: var(--radius-lg, 10px); overflow: hidden; background: #000; line-height: 0; }
 .fsc-photo img { width: 100%; height: auto; display: block; }
 .fsc-box { position: absolute; box-sizing: border-box; border: 2px solid var(--accent); border-radius: 6px; background: transparent; cursor: pointer; padding: 0; transition: box-shadow 0.16s, border-color 0.16s, transform 0.16s; }
 .fsc-box:hover { transform: scale(1.04); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
@@ -1022,8 +1022,11 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .fsc-tag { position: absolute; left: 50%; top: 100%; transform: translate(-50%, 4px); white-space: nowrap; font-size: 11px; line-height: 1.5; font-weight: 600; padding: 0 6px; border-radius: 999px; background: var(--accent); color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
 .fsc-box.is-named .fsc-tag { background: var(--cat-personal, #45c07a); }
 .fsc-bar { text-align: center; margin-top: 10px; }
-.fsc-pick { display: grid; place-items: center; margin-top: 10px; }
-.fsc-pick .face-grid-card-item { width: min(230px, 100%); }
+/* The naming card as a popup ON the photo: dim backdrop, card centred, always inside the photo box
+   (so it can never overflow or misalign) — click a face and it's right there, no scrolling. */
+.fsc-pop-wrap { position: absolute; inset: 0; z-index: 20; display: grid; place-items: center; padding: 12px; background: color-mix(in srgb, #000 55%, transparent); animation: fgc-in 0.16s ease; }
+.fsc-pop-wrap .face-grid-card-item { width: min(260px, 92%); box-shadow: 0 12px 44px rgba(0,0,0,0.6); }
+.fgc-facecrop { display: block; border-radius: 10px; }
 .face-grid-card-item { border: 2px solid var(--card-stroke); border-radius: var(--radius-xl); padding: 10px; display: flex; flex-direction: column; align-items: center; gap: 6px; background: var(--card-2, var(--subtle-hover)); transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s; animation: fgc-in 0.26s ease; }
 @keyframes fgc-in { from { opacity: 0; transform: translateY(6px) scale(0.97); } to { opacity: 1; transform: none; } }
 .face-grid-card-item.suggested { border-style: dashed; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }

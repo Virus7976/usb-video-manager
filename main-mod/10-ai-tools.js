@@ -81,8 +81,18 @@ async function runToolLoop({ model, system, user, tools, ctx = {}, enums = {}, m
   const trace = [];
 
   for (let step = 0; step < maxSteps; step += 1) {
-    // eslint-disable-next-line no-await-in-loop
-    const r = await ollamaChat(model, messages, { tools: schemas, temperature, timeout });
+    let r;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      r = await ollamaChat(model, messages, { tools: schemas, temperature, timeout });
+    } catch (err) {
+      // A transient transport failure (a 400 context blowout, a 500 during a model reload, a dropped
+      // socket) used to throw straight OUT of this loop and abort the whole batch — even though every
+      // other failure in here degrades gracefully, and the doc comment above promises exactly that.
+      // Return the trace built so far so the caller can fall back to asking the user, and so the
+      // reasoning already established isn't thrown away over one blip (audit #22).
+      return { ok: false, reason: 'transport_error', error: (err && err.message) || String(err), trace };
+    }
 
     if (!r.toolCalls.length) {
       return { ok: false, reason: 'no_tool_call', content: r.content, trace };
@@ -881,8 +891,32 @@ ipcMain.handle('ai:nameFromObservation', async (_evt, payload) => {
     enums: subjects.length ? { set_clip_name: { subject: subjects } } : {},
     maxSteps: 5,
   });
-  if (!r.ok) return { ok: false, error: r.reason === 'no_tool_call' ? 'The model answered in prose instead of naming the clip.' : 'The model never settled on a name.', trace: r.trace };
-  return { ok: true, ...r.result, trace: r.trace };
+  // Report the ACTUAL cause. A transport failure is not the model failing to decide — telling Jake
+  // "never settled on a name" when Ollama returned a 500 sends him debugging the wrong thing
+  // (a prompt/model problem) instead of the right one (the server, or the context window).
+  if (!r.ok) {
+    const why = r.reason === 'no_tool_call' ? 'The model answered in prose instead of naming the clip.'
+      : r.reason === 'transport_error' ? `Couldn't reach the AI model: ${r.error || 'the request failed'}`
+        : 'The model never settled on a name.';
+    return { ok: false, error: why, reason: r.reason, trace: r.trace };
+  }
+  // Apply the SAME deterministic cleanup the legacy path guarantees (audit #24). cleanNameField
+  // swaps a generic crowd word for the person face recognition already identified — "two men
+  // repairing mower" → "josiah-repairing-mower". Without it the tool path returned the model's words
+  // raw, so the exact failure all the shoot-context work exists to fix came straight back through
+  // the new path. Two naming paths must not disagree about a deterministic post-process, for the
+  // same reason §2 requires the two FILING paths to agree.
+  //
+  // Applied here (result assembly) rather than inside set_clip_name.run(), because this is where the
+  // recognised people are in scope — and it is where the legacy path applies it too.
+  //
+  // DESCRIPTION ONLY. The subject is schema-constrained to one of his EXISTING subjects and is an
+  // identity, not prose: injecting a person's name into it would invent a subject he does not have
+  // and fragment his library. The legacy path cleans both because there the subject is free-form.
+  const recognised = (p.people || []).filter(Boolean);
+  const out = { ...r.result };
+  if (recognised.length && out.description) out.description = cleanNameField(out.description, recognised);
+  return { ok: true, ...out, trace: r.trace };
 });
 
 // --- SHOOT MEMORY — "or it only ever asks it once and then it knows" ----------------------

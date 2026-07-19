@@ -18,36 +18,123 @@ function ledgerMerge(arr, vals, cap) {
   for (const v of (Array.isArray(vals) ? vals : [vals])) { const s = String(v || '').trim(); if (s) set.add(s); }
   return [...set].slice(-(cap || 200));
 }
+// Merge into rec[field], and remember on the undo-delta exactly which values were NEW.
+// Tracking the ADDITIONS (rather than snapshotting the record) is what lets undo take back
+// this run's contribution without stripping a date/subject an earlier clip also justifies.
+function ledgerMergeTracked(rec, d, field, vals, cap) {
+  const had = new Set(rec[field] || []);
+  rec[field] = ledgerMerge(rec[field], vals, cap);
+  for (const v of rec[field]) if (!had.has(v) && !d[field].includes(v)) d[field].push(v);
+}
+// Reverse the ledger additions made by the organize run being undone (audit #37).
+// Undo used to move the FILES back and leave the ledger untouched, so an undone run left a
+// phantom project behind — a record still carrying the clip counts, dates and subjects of
+// footage that is no longer filed there. `ledger:matchDates` / `search_projects` keep scoring
+// FUTURE imports against those phantoms, so one bad Organize permanently poisoned placement.
+//
+// This is a PRECISE DIFF, never a snapshot-restore: `ledger:summarize` writes summary/keywords
+// onto the same record after filing, and rolling back to a pre-filing snapshot would silently
+// throw that summary away.
+function reverseLastLedger(runTs) {
+  const ll = config.lastLedger;
+  if (!ll || !Array.isArray(ll.delta) || !ll.delta.length) return 0;
+  // Only reverse a delta recorded as part of THIS run. A run that filed nothing into the
+  // ledger must not reach back and undo an earlier run's memory.
+  if (runTs && ll.ts < runTs) return 0;
+  let n = 0;
+  for (const d of ll.delta) {
+    const idx = (config.projectLedger || []).findIndex((p) => p.rel === d.key);
+    if (idx < 0) continue;
+    // The run is the only reason this project exists — remove it outright.
+    if (d.created) { config.projectLedger.splice(idx, 1); n += 1; continue; }
+    const rec = config.projectLedger[idx];
+    const drop = (field) => {
+      const kill = new Set(d[field] || []);
+      if (kill.size) rec[field] = (rec[field] || []).filter((v) => !kill.has(v));
+    };
+    drop('dates'); drop('subjects'); drop('locations'); drop('people');
+    const killNames = new Set(d.clipNames || []);
+    if (killNames.size) rec.clipNames = (rec.clipNames || []).filter((v) => !killNames.has(v));
+    // Clamp at 0: the 8000-name cap can already have evicted some of what this run added,
+    // and a negative clip count would read as corruption everywhere downstream.
+    rec.clips = Math.max(0, (rec.clips || 0) - (d.clips || 0));
+    // Samples are appended then tail-capped, so this run's are the last ones on the list.
+    if (d.samples) rec.samples = (rec.samples || []).slice(0, Math.max(0, (rec.samples || []).length - d.samples));
+    if (d.prevLastSeen) rec.lastSeen = d.prevLastSeen;
+    n += 1;
+  }
+  // Consume the delta so a repeated undo can't reverse the same additions twice.
+  config.lastLedger = null;
+  saveStore('projectLedger'); saveConfig();
+  return n;
+}
 ipcMain.handle('ledger:get', () => {
   const list = Array.isArray(config.projectLedger) ? config.projectLedger.slice() : [];
   list.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
   return list;
 });
 // Record filed clips into their project records (called after a successful file).
-ipcMain.handle('ledger:record', (_e, payload) => {
-  const entries = (payload && Array.isArray(payload.entries)) ? payload.entries : [];
+// THE ledger write. Owned by one function so BOTH filing paths record identically — the map's
+// "Apply" (via the ledger:record IPC) and step-3 "Run" (finalize:run, which calls this directly).
+// Run used to record NOTHING, so filing that way silently lost all same-shoot placement learning:
+// the ledger is what makes a later import from the same shoot offer the same project, and the shoot
+// DATE is the strongest signal this app has (see usb-app-shoots-in-batches).
+function recordLedgerEntries(list) {
+  const entries = Array.isArray(list) ? list : [];
   if (!Array.isArray(config.projectLedger)) config.projectLedger = [];
   const now = Date.now();
   const touched = new Set();
+  // What this call ADDS, so organize:undo can take it back (audit #37 — see reverseLastLedger).
+  const delta = new Map();
+  const deltaFor = (key, rec, created) => {
+    let d = delta.get(key);
+    if (!d) {
+      d = { key, created, prevLastSeen: created ? 0 : (rec.lastSeen || 0), clips: 0, clipNames: [], dates: [], subjects: [], locations: [], people: [], samples: 0 };
+      delta.set(key, d);
+    }
+    return d;
+  };
   for (const en of entries) {
     const key = ledgerKeyFromRel(en && en.rel);
     if (!key) continue;
+    // _Unsorted / misc are holding pens, not projects. Recording them made "_Unsorted" a first-class
+    // ledger project that polluted search_projects and date-matching — so future footage could be
+    // "matched" into _Unsorted. Never record them.
+    if (/(^|\/)(_?unsorted|misc)$/i.test(key)) continue;
     let rec = ledgerFind(key);
+    const createdNow = !rec;
     if (!rec) {
       const segs = key.split('/');
       const category = segs.slice(0, Math.min(2, segs.length)).join('/');   // YEAR/YEAR - Category
-      rec = { id: newMemId(), rel: key, name: segs[segs.length - 1], category, dates: [], subjects: [], locations: [], people: [], samples: [], clips: 0, summary: '', summaryClips: 0, firstSeen: now, lastSeen: now };
+      rec = { id: newMemId(), rel: key, name: segs[segs.length - 1], category, dates: [], subjects: [], locations: [], people: [], samples: [], clips: 0, clipNames: [], summary: '', summaryClips: 0, firstSeen: now, lastSeen: now };
       config.projectLedger.push(rec);
     }
+    const d = deltaFor(key, rec, createdNow);
     rec.lastSeen = now;
-    if (en.date) rec.dates = ledgerMerge(rec.dates, en.date, 400);
-    if (en.subject) rec.subjects = ledgerMerge(rec.subjects, en.subject, 200);
-    if (en.location) rec.locations = ledgerMerge(rec.locations, en.location, 80);
-    if (Array.isArray(en.people) && en.people.length) rec.people = ledgerMerge(rec.people, en.people, 80);
-    rec.clips = (rec.clips || 0) + 1;
+    if (en.date) ledgerMergeTracked(rec, d, 'dates', en.date, 400);
+    if (en.subject) ledgerMergeTracked(rec, d, 'subjects', en.subject, 200);
+    if (en.location) ledgerMergeTracked(rec, d, 'locations', en.location, 80);
+    if (Array.isArray(en.people) && en.people.length) ledgerMergeTracked(rec, d, 'people', en.people, 80);
+    // Count each clip ONCE per project (identity = the filed name). A retry or an undo-then-reapply
+    // refiles the same clips; `rec.clips += 1` per entry used to inflate the count every time. Dedupe
+    // against the names already counted for this project.
+    const cname = String(en.name || '').toLowerCase();
+    if (cname) {
+      if (!Array.isArray(rec.clipNames)) rec.clipNames = [];
+      if (!rec.clipNames.includes(cname)) {
+        rec.clipNames.push(cname);
+        if (rec.clipNames.length > 8000) rec.clipNames = rec.clipNames.slice(-8000);
+        rec.clips = (rec.clips || 0) + 1;
+        d.clipNames.push(cname); d.clips += 1;
+      }
+    } else {
+      rec.clips = (rec.clips || 0) + 1;   // no name to dedupe on → keep the old behavior
+      d.clips += 1;
+    }
     // Keep a rolling sample of the richest detail for the AI summary (cap 60).
     if (en.subject || en.description || en.observation) {
       rec.samples = (rec.samples || []).concat([{ subject: en.subject || '', description: en.description || '', observation: (en.observation || '').slice(0, 240), people: Array.isArray(en.people) ? en.people : [], date: en.date || '' }]).slice(-60);
+      d.samples += 1;
     }
     touched.add(key);
   }
@@ -57,9 +144,16 @@ ipcMain.handle('ledger:record', (_e, payload) => {
     config.projectLedger.sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
     config.projectLedger = config.projectLedger.slice(0, 4000);
   }
-  if (touched.size) saveStore('projectLedger');
+  if (touched.size) {
+    // Stash the reversal delta beside the run itself. Keeping this MAIN-side means BOTH filing
+    // paths (projects:move and finalize:run) get a reversible ledger for free — the renderer
+    // already calls ledger:record after each of them, so neither has to thread anything back.
+    config.lastLedger = { ts: Date.now(), delta: [...delta.values()] };
+    saveStore('projectLedger'); saveConfig();
+  }
   return { ok: true, projects: [...touched] };
-});
+}
+ipcMain.handle('ledger:record', (_e, payload) => recordLedgerEntries(payload && payload.entries));
 // Find ledger projects whose dates overlap the given dates (a later import from the
 // same shoot). Returns light records the renderer uses to offer "add to this project".
 ipcMain.handle('ledger:matchDates', (_e, payload) => {

@@ -18,6 +18,8 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { loadMain } from './harness.mjs';
 import { tempDir } from './fixtures.mjs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 let app;
 before(() => { app = loadMain(); });
@@ -116,4 +118,26 @@ test('#95 poster:get refuses an outside path instead of running ffmpeg on it', a
   const outsider = mk('pg-poster-');
   const r = await app.invoke('poster:get', path.join(outsider, 'private.mp4'));
   assert.equal(r, '', 'no poster produced for an unapproved path');
+});
+
+test('#95 meta:get is deliberately NOT guarded — a refusal there produces wrong DATES, not an error', () => {
+  // A correction, pinned so it cannot be silently undone. Guarding meta:get looked right (it reads
+  // the disk on a caller-supplied path) and broke capture dates: captureDateFor probes it for the
+  // container's creation_time, and a refusal is indistinguishable from "unreadable", so it fell
+  // through to mtime — the COPY time. A shoot from last month became today, and the shoot date is
+  // the single strongest signal the placement brain has (usb-app-shoots-in-batches).
+  //
+  // What it exposes is weak by comparison: duration/dimensions/date, never file CONTENT. The real
+  // exfiltration paths — media:url and open:folder — stay guarded and are asserted above.
+  //
+  // THE RULE THIS ENCODES: only guard a handler whose refusal is visible to the user or unambiguous
+  // to the caller. A refusal that looks like a normal empty result does not fail closed, it fails
+  // WRONG — and wrong filing data is worse than a metadata oracle.
+  const bundle = readFileSync(join(process.cwd(), 'main.js'), 'utf8');
+  const reg = /ipcMain\.handle\('meta:get'[\s\S]{0,200}?\);/.exec(bundle);
+  assert.ok(reg, 'the handler is registered');
+  assert.equal(/isPathAllowed/.test(reg[0]), false,
+    'meta:get must stay unguarded — guarding it silently mis-dates shoots (see #58)');
+  // And the guards that DO matter are still in place.
+  assert.match(bundle, /ipcMain\.handle\('media:url'[\s\S]{0,200}?isPathAllowed/, 'media:url still guarded');
 });

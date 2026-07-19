@@ -4378,10 +4378,23 @@ ipcMain.handle('media:url', (_evt, filePath) => {
   return fileUrl(filePath);
 });
 
-ipcMain.handle('meta:get', (_evt, srcPath) => {
-  if (!isPathAllowed(srcPath)) { refusePath('meta:get', srcPath); return null; }
-  return probeMeta(srcPath);
-});
+// DELIBERATELY NOT GUARDED — and this is a correction, not an oversight. #95 originally guarded this
+// too (it wasn't in the audit's list; it was added on the "fix the sibling" principle). That broke
+// capture dates: `captureDateFor` (src/mod/09-phone-finalize.js) probes here for the container's
+// creation_time, and a refusal is indistinguishable from "unreadable", so it fell through to the
+// file's mtime — i.e. the COPY time. A shoot from last month silently became today.
+//
+// That is the worst possible trade here. Per usb-app-shoots-in-batches the shoot DATE predicts the
+// subject ~88% of the time and drives day-grouping, ledger date-matching and get_shoot_context, so a
+// wrong date quietly poisons both placement and naming. Meanwhile the thing being protected is weak:
+// this returns duration/dimensions/dateISO, never file CONTENT. The real XSS→exfiltration paths are
+// `media:url` (hands the renderer a fetchable file:// URL) and `open:folder` (shells out), and those
+// stay guarded. Trading a metadata oracle for silently-wrong filing data is a bad bet.
+//
+// The general lesson, worth applying to the next guard: a refusal that a caller cannot distinguish
+// from a normal empty result does not fail closed — it fails WRONG. Only guard a handler whose
+// refusal is either visible to the user or unambiguous to the caller.
+ipcMain.handle('meta:get', (_evt, srcPath) => probeMeta(srcPath));
 
 ipcMain.handle('poster:get', (_evt, srcPath) => {
   if (!isPathAllowed(srcPath)) { refusePath('poster:get', srcPath); return ''; }

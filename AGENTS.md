@@ -358,6 +358,27 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19v — INSTALLER IS PRE-BUILT AND VERIFIED. Deploy is a 10-second install.
+
+`dist/USB-SD-Auto-Action-Setup-0.4.28.exe` in the Windows checkout was rebuilt at the current HEAD
+and the packaged asar was verified to contain this session's work: `isOnRemovableVolume`,
+`clipKeyV2`, `photoDest`, `clipObsFor`, `rankedNames`, `applyFindReplace`, `persistScannedFlag`,
+`cardIsGone`.
+
+**So the deploy no longer needs a rebuild — only that the app be closed.** The moment it is:
+
+    Start-Process '<that .exe>' -ArgumentList '/S' -Wait
+    # then verify with grep -ac (NOT grep -c) against
+    # %LOCALAPPDATA%\Programs\USB SD Auto-Action\resources\app.asar
+    # then relaunch
+
+If source has moved on since, re-sync `main.js` / `src/renderer.js` / `src/` / `package.json` /
+`CHANGELOG.md` to `C:\Users\jakeg\Downloads\skool-downloader-chrome\usb-auto-action` and re-run
+`npx electron-builder --win --publish never` DIRECTLY first (that checkout predates `main-mod/`, so
+`npm run build:win` dies on its missing `prebuild:win` hook).
+
+---
+
 ### 2026-07-19u — SIBLING SWEEP CLOSED (`a4026fc`). All gaps handled. What to do next.
 
 `projects:move` can no longer move footage off a card — the last gap. It now asks

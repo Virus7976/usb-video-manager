@@ -208,28 +208,31 @@ trust > new surface). Pull from `usb-app-audit-backlog-2026-07.md` first.
 If nothing is queued, **generate a ranked list of THIS project's current weak points** (not a generic
 checklist) and queue it in the backlog file.
 
-**Refreshed 2026-07-18 after a long autonomous run** (the previous list is largely addressed — items 3–5
-below were "renderer fixes are blind", "the two filing paths disagree" and "the delete gate is untrusted",
-and all three moved). Current real weak points, ranked:
+**Refreshed 2026-07-19.** The 2026-07-18 list is superseded: its items 3–5 ("renderer fixes are blind",
+"the two filing paths disagree", "the delete gate is untrusted") have all moved, and the sibling-path
+sweep it recommended is now closed (7 confirmed / 5 fixed). Current real weak points, ranked:
 
-1. **The AI generates instead of decides** — unchanged and still the north star. It is also the one thing
+1. **The AI generates instead of decides** — unchanged, still the north star, and still the one thing
    that CANNOT be validated from WSL: it changes measured model behaviour, so it needs a run against
    Jake's real Ollama models first. Everything else on this list is verifiable here.
-2. **The DEPLOY backlog is now the biggest risk.** Dozens of fixes across many batches are built, tested
-   and *still unshipped*. The longer that grows the more a single deploy can surprise him, and none of it
-   is helping until it lands. Deploying (when he is not mid-scan) is worth more than the next fix.
-3. **The audit list has drifted from the code.** Five of its entries turned out already-done or
-   misdescribed. **Confirm a bug reproduces before fixing it** — a test that goes green first try is
-   telling you something.
-4. **Sibling paths that never got a guard.** Repeatedly the real bug was "this primitive is applied on one
-   path and not its twin" (organize had a free-space preflight, intake didn't; main had `storeReadFailed`,
-   the renderer loads didn't; `uniqueDest` was missing on one pull path; `writeJsonAtomic` fsync'd its dir,
-   the footage copy didn't). **Grep for the pattern, don't wait for the audit to name the next one.**
-5. **Write-throughs without their inverse.** Adding persistence to an action obliges you to reverse it too
-   — the tagging fix (#26) silently made "Undo" leave a permanent tag until #-untag landed.
-6. **#77 (review faces on already-filed footage)** is still BLOCKED on a design call (which tree holds past
-   footage — L: archive or C: projects); `finalMeta` stores no current path. Don't build it blind.
-7. **Remaining perf items are mostly NOT worth it** — measure before optimising. `people:match`'s scary
+2. **The DEPLOY backlog is the biggest concrete risk.** ~57 commits across many batches are built,
+   tested and *still unshipped*, several of them fixing ways footage or typed work could be lost. The
+   longer it grows the more a single deploy can surprise him, and none of it helps until it lands.
+   **Deploying (when he is not mid-scan) is worth more than the next fix.**
+3. **#92 — the auto-update feed is UNSIGNED.** The highest-severity thing still unfixed. Needs a
+   packaged Windows build, so it is not doable from WSL.
+4. **Store invariants applied to one store but not its siblings.** This axis is now proven, not
+   speculative: it found `renameDrafts` capped in TWO places with OPPOSITE rules, silently deleting
+   hand-typed names on every launch (fixed `2b73e2d`). When you find a cap, prune, age filter or
+   normalisation on a store, **grep for a second one on the same store before trusting either.**
+5. **Write-throughs without their inverse.** Adding persistence to an action obliges you to reverse it
+   too — the tagging fix (#26) silently made "Undo" leave a permanent tag until #-untag landed.
+6. **The audit list has drifted from the code.** ~1 in 3 entries in both historical lists turned out
+   already-done or misdescribed. **Confirm a bug reproduces before fixing it** — a test that goes green
+   on the first run is the answer, not a setup problem.
+7. **#77 (review faces on already-filed footage)** is still BLOCKED on a design call (which tree holds
+   past footage — L: archive or C: projects); `finalMeta` stores no current path. Don't build it blind.
+8. **Remaining perf items are mostly NOT worth it** — measure before optimising. `people:match`'s scary
    O(n·m) is 79 ms across a whole scan; the face-frame IPC is 1100px frames (~5 MB at default), and its
    suggested "concurrent detect" fix contradicts the single-GPU rule. Several are logged won't-fix WITH
    numbers; don't re-open on big-O alone.
@@ -246,13 +249,13 @@ Prefer items you can **verify** this session over items you can't.
   one. Test media is **generated with ffmpeg at test time** (`test/fixtures.mjs`); no binary fixtures are
   committed, so some tests skip without ffmpeg on PATH.
 - **Two test tiers, both must stay green:**
-  - `npm test` — fast vm harness (**96 files** in `test/*.test.mjs`, shared `test/harness.mjs`). Loads the
+  - `npm test` — fast vm harness (**98 files** in `test/*.test.mjs`, shared `test/harness.mjs`). Loads the
     real `main.js` in a `vm` with a stubbed electron; invoke real IPC handlers with `app.invoke(...)`, read
     internals with `app.get(...)`, materialize vm values with `app.plain(...)` (**required** before
     `deepStrictEqual` — vm values have different prototypes and fail the prototype check otherwise).
     **Verified 2026-07-19: 913 tests, 832 pass, 81 skipped, 0 fail.** That is the baseline — if you
     see failures, they are yours.
-  - `npm run test:e2e` — real Playwright+Electron (**19 files**, 74 tests / 73 pass / 1 skipped, opt-in via
+  - `npm run test:e2e` — real Playwright+Electron (**20 files**, 81 tests / 80 pass / 1 skipped, opt-in via
     `RUN_E2E=1`, serial via `--test-concurrency=1`). Drives the actual app + faces. Renderer/face changes
     belong here, not "verify on deploy." You **cannot stub `window.api`** (contextBridge props are
     non-writable) — seed store files via `launchApp({ seed: … })` instead. See `test/e2e/README.md` and
@@ -341,6 +344,12 @@ then on. **Measure against real face data or leave it.** Same class as the AI to
 
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
+- **A NEGATIVE source-shape assertion cannot detect a break that doesn't restore the old text.** A
+  test asserting "the old sort expression is absent from the source" stayed **green** when the rule it
+  guarded was disabled with `if (false)` — the old text never came back, so the assertion held while
+  the behaviour was gone. If the code under test runs at **load** time (the boot slim in `01-core.js`
+  is top-level bundle code), seed the store on disk and boot it via `loadMain({ userData })`, then
+  assert on the resulting state. Behavioural beats structural whenever it is reachable.
 - **`Function.prototype.toString()` INCLUDES COMMENTS.** A test asserting the word "smooth" was gone
   failed against correct code because the comment explaining the fix said "smooth". Match the CALL.
 - **A leaked test Electron breaks every later e2e run, and the error lies.** A killed run leaves a
@@ -383,6 +392,16 @@ then on. **Measure against real face data or leave it.** Same class as the AI to
   with a newline**; load order is filename order (renaming a file reorders the program); and the whole point
   is that top-level `const`/`let` share **one scope** across modules — which is also what both test
   harnesses exploit. Don't convert these to ES modules or `require()`.
+  **The scope is shared but not order-free:** a `function` declaration hoists across the whole bundle,
+  a `const` does **not**. Top-level code in `01-core.js` referencing a `const` declared in
+  `08-…` throws a temporal-dead-zone `ReferenceError` **at boot**. Declare shared constants in the
+  earliest module that uses them (this is why `DRAFTS_CAP` lives in `01-core.js`).
+- **An in-memory "slim" of a loaded store is a disk write deferred, not avoided.** The boot slim's own
+  comment said "No write here" and was materially misleading: `renameDrafts` is not in `LAZY_STORES`,
+  so `loadStores()` had already read `drafts.json`, and `freshStore()` won't re-read a file whose
+  mtime/size match our own last write — so the truncated map is exactly what the next `drafts:save`
+  persists. **A comment claiming nothing reaches disk does not say who persists the value next; trace
+  it.** See `usb-app-store-caps`.
 - **`scripts/check-primitives.mjs` enforces "one primitive owns each cross-cutting concern"**: no bare
   `spawn` (use `runCapture`/`streamSpawn`/`killAfter`), no bare `copyFile` (use `copyFileVerified`/
   `moveFileCrossDevice`), no bare `mkdir` (use `ensureDir`). Rationale is in `DEDUP.md`.
@@ -438,9 +457,6 @@ then on. **Measure against real face data or leave it.** Same class as the AI to
   shadows `app.asar`**, so a later correct build appears to do nothing. As of 2026-07-19 no such
   folder exists and the asar is authoritative; keep it that way. Check `AGENTS.md` §7a for the
   current deploy state.
-- **Known doc-bug:** the comment at `main-mod/02-media.js:22-25` still claims the updater reads a "generic
-  publish feed … fixed 'latest' **Gitea** release." That is wrong — `package.json` `build.publish` is the
-  **github** provider. Behaviour follows `package.json`, so it's a misleading comment, not a functional bug.
 - **The app runs headless/windowless in production** (tray) — `console.*` goes to `userData/app.log` now.
 - Real exiftool for verification lives at the vendored
   `.../usb-auto-action/node_modules/exiftool-vendored.exe/bin/exiftool.exe` (via `powershell.exe`).
@@ -449,21 +465,29 @@ then on. **Measure against real face data or leave it.** Same class as the AI to
 
 _Last reviewed: **2026-07-19** (end of a long autonomous session)._
 
-_This pass added §3 (data-safety / no-staging / release-is-production) and renumbered §4–§9;
+_Earlier passes added §3 (data-safety / no-staging / release-is-production) and renumbered §4–§9;
 corrected §9's deploy notes (**"deploy is a folder copy" was stale** — there is a real
 `npm run release` → GitHub → `electron-updater` pipeline); recorded that **CI does not run tests**;
-documented the two `.claude/hooks/`; and added mappings so a generic `/loop` prompt's website /
-database / staging / `memory.md` / TODO-file assumptions resolve to what exists here._
+documented the two `.claude/hooks/`; added mappings so a generic `/loop` prompt's website / database /
+staging / `memory.md` / TODO-file assumptions resolve to what exists here; and added §8b (how to find
+work) and §8c (testing traps)._
 
-_A later pass added **§8b (how to find work)** and **§8c (testing traps)**, and refreshed the test
-baselines to **913 vm tests / 832 pass / 81 skipped / 0 fail** and **81 e2e / 80 pass / 1 skipped**._
+_This pass re-verified every figure in the file against the repo rather than carrying it forward:
+test tiers are **98 vm files → 913 tests / 832 pass / 81 skipped / 0 fail** and **20 e2e files →
+81 tests / 80 pass / 1 skipped**; **57 commits** are undeployed. It refreshed the §5 ranked weak
+points (the 2026-07-18 list was superseded — the sibling-path sweep it recommended is closed), added
+the store-invariant axis that has since proven itself, added two new §8c traps (negative source-shape
+assertions; behavioural-over-structural for load-time code) and the §9 bundling TDZ rule, and
+**fixed the known doc-bug it used to merely document** — the updater comment in `main-mod/02-media.js`
+claimed a generic Gitea feed where `build.publish` is the github provider, so that entry is retired._
 
-_**State at that point:** `#8` (the `clipKey` collision) is complete across all four stores and is
-**rewrite-free by design — do not add a cleanup pass**; the sibling-path sweep is closed; the
-re-audited backlog and the also-rans are both worked through. What remains needs Jake's Ollama
-models, his Windows machine, a phone, or a labelled face fixture. **~46 commits were green and
-undeployed, with a verified installer pre-built** — check `AGENTS.md` §7a for the current deploy
-state before assuming anything is live._
+_**Current state:** `#8` (the `clipKey` collision) is complete across **five** stores (drafts,
+observations, face clipKeys, copiedLog, aiQueue) and is **rewrite-free by design — do not add a
+cleanup pass**. The sibling-path sweep (7 confirmed / 5 fixed), the three-axis sweep (3/3) and the
+store-invariant sweep are all closed; the re-audited backlog and the also-rans are worked through.
+What remains needs Jake's Ollama models, his Windows machine, a phone, or a labelled face fixture.
+**~57 commits are green and undeployed** — check `AGENTS.md` §7a for the current deploy state before
+assuming anything is live._
 
 _If you changed bundling, the store engine, the AI tool protocol, the test harness, or the release
 process, re-read this file and update the affected sections before you finish._

@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ab — PROMPT.md re-verified figure by figure; the known doc-bug is now FIXED, not documented
+
+Audited PROMPT.md against the repo instead of carrying its numbers forward. Every count it asserted
+had drifted: vm test files 96→**98**, e2e files 19→**20** and 74/73/1→**81/80/1**, undeployed commits
+~46→**57**, and `#8` was described as complete across "all four stores" when it is **five**.
+
+Refreshed §5's ranked weak points — the 2026-07-18 list was superseded (its items 3–5 have all moved
+and the sibling-path sweep it recommended is closed). Added the **store-invariant axis** as item 4,
+since it is now proven rather than speculative: it produced the `renameDrafts` double-cap (`2b73e2d`).
+Promoted **#92 (unsigned auto-update)** into the list — it is the highest-severity unfixed item and
+was only mentioned in passing before.
+
+Added to §8c: **a negative source-shape assertion cannot detect a break that doesn't restore the old
+text** (the trap that made one of the drafts tests green while the guard was disabled), and prefer
+behavioural assertions for load-time code. Added to §9: the bundle's **temporal dead zone** rule
+(`function` hoists across the whole bundle, `const` does not — top-level code in an early module
+cannot see a `const` from a later one), and *an in-memory "slim" of a loaded store is a deferred disk
+write*.
+
+**Also fixed the doc-bug PROMPT.md had merely been documenting** for several sessions: the comment at
+`main-mod/02-media.js:22` claimed the updater reads "the generic publish feed … fixed 'latest' Gitea
+release", but `package.json` `build.publish` is the **github** provider (`Virus7976/usb-video-manager`).
+Verified by reading the config, not by inference. Comment corrected to state what actually ships and
+why (Gitea 413s over its 100MB asset cap, so code is on Gitea and the ~130MB installer + update feed
+are on GitHub); the "known doc-bug" entry is retired from PROMPT.md.
+
+Both tiers green: vm **913/832/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — still
+undeployed.
+
 ### 2026-07-19aa — renameDrafts had TWO caps that contradicted each other. Typed names were lost.
 
 Found by sweeping a new axis: *an invariant enforced on one store but not its siblings*. It produced

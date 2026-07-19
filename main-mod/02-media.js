@@ -20,8 +20,12 @@ function notify(title, body, onClick) {
 }
 // ---------------------------------------------------------------------------
 // Auto-update (electron-updater) — packaged Windows builds self-update from the
-// generic publish feed in package.json (build.publish), which points at the
-// fixed "latest" Gitea release that `npm run release` keeps current. No-op in
+// publish feed in package.json (build.publish): the **github** provider, pointed
+// at Virus7976/usb-video-manager, which `npm run release` keeps current. (This
+// comment used to say "generic feed … fixed 'latest' Gitea release" — that was
+// never true of the shipped config. Code lives on Gitea; the ~130MB installer and
+// the update feed live on GitHub because Gitea 413s over its 100MB asset cap.)
+// No-op in
 // dev / non-Windows so `npm start`, CI and tooling never touch the network or
 // the updater. The download runs in the background; the staged update installs
 // when the user quits via the tray (autoInstallOnAppQuit), or immediately if

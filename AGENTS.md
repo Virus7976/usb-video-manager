@@ -358,6 +358,31 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19q — Gitea #2: photos no longer land in the video intake (`53c10dc`)
+
+**My own scoping note for #2 was wrong** — worth remembering, because it is the same failure the
+backlog kept showing. I wrote that slice (a) was "a recursive photo walk, which doesn't exist".
+It does: `walkForVideos` (`main-mod/05-windows-phone.js:1069`) already returns stills tagged
+`kind: 'photo'`, already re-tags iPhone Live Photo `.MOV` files as photos, the renderer already maps
+`isPhoto`, and the grid already renders a photo chip. **Nothing filtered photos out.**
+
+**The real gap was the copy DESTINATION.** `copy:start` resolved one `dest` for the batch, so stills
+were written into `01 - Uncompressed` — a watch-folder Tdarr compresses. Fixed: `destFor(f)` routes
+`kind === 'photo'` to `photosTempFolder`, falling back to the intake when unconfigured. **Fail toward
+the old behaviour, never toward "copied nowhere"** — a still in the wrong folder is a nuisance, one
+the user cannot find is footage loss.
+
+**STILL OPEN FOR #2 — date-reading for stills.** The grid dates a clip from the filename or mtime;
+a still wants EXIF `DateTimeOriginal`. `captureDateFor` (`src/mod/09-phone-finalize.js`) already
+skips photos deliberately, because **ffprobe returns EMPTY tags for a JPEG (verified)** — reading it
+needs the vendored Windows exiftool, which does not run under WSL. **Not startable from here.**
+
+**Method note:** the test asserted the wrong filename at first — `copy:start` LOWER-CASES the
+extension via `destNameFor`, so `GX010042.MP4` lands as `GX010042.mp4`. Assert on
+`path.dirname(r.copied[i].destPath)`, not a guessed filename.
+
+---
+
 ### 2026-07-19p — Gitea issue triage: #11 is mostly DONE; #2 scoped. (`05b6915`)
 
 **#11 (organize backend) overstates its remaining work.** Audited each acceptance criterion:

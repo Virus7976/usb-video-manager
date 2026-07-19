@@ -358,6 +358,29 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19h — #69 DONE (`dec4706`); what's safe to take next
+
+Embed failure no longer strands a clip: falls back to an `<file>.xmp` sidecar and files either way,
+with `metaLanded` gating whether the metadata may be marked consumed.
+
+**The lesson worth keeping:** the old comment said "leave untouched for a clean retry". That reasons
+about a TRANSIENT failure — but every real instance here (HEIC, odd codec, read-only) is PERMANENT,
+so the retry path was really a "never" path. **When you find a retry-later branch, ask whether the
+failure it assumes is actually transient.**
+
+**#25 and #35 are ranked 3rd and 4th but are NOT safe from WSL** — both change AI tool DEFINITIONS
+(`requires` gates on `get_naming_style`/`set_clip_name`; the shoot-memory shape). Those are measured
+input (`usb-app-tool-strings-are-input`); a cosmetic change to one cost 20 points of subject accuracy.
+They need a run against Jake's real Ollama models. **Do not take them blind.**
+
+**Safe to take from here:** #75 (`people:match` rebuilds the enrolled set per descriptor, 1 IPC per
+face — benchmarkable in plain node), #17 (`adb pull` judged by `size > 0`; the MTP sibling already
+has the right gate at `05-windows-phone.js:312-320` — copy that shape, unit-test by stubbing
+`runAdb`), #91-part (recognition thresholds live in two divergent blocks plus a raw `< 0.35` at
+`08-finalize-feedback.js:229`).
+
+---
+
 ### 2026-07-19g — NEXT: #8 clipKey is a MIGRATION on the delete path. Read this before starting.
 
 `#100`'s remaining half is done (`eb3ab5c`: machine stores compact, `config.json` still pretty).

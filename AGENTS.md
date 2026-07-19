@@ -358,6 +358,30 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19c — #58 was MY regression, not pre-existing (corrected, `edbc9e1`)
+
+**Read this before adding another IPC guard.** I reported the `#58` e2e failure as pre-existing
+twice. It was caused by my own `#95` path guard. The `git stash` check I used to "confirm" it only
+removed the *following* iteration's work, so it could never have caught a regression from the
+iteration before — checking out `82f72ba` shows `#58` passing.
+
+`meta:get` was not in the audit's list; I added it on the "fix the sibling" principle. Wrong, and
+instructively so: `captureDateFor` (`src/mod/09-phone-finalize.js`) probes it for the container's
+`creation_time`, and **a refusal is indistinguishable from "unreadable"**, so it fell through to
+mtime — the COPY time. A shoot from last month silently became today, and the shoot date is the
+~88% signal the whole placement brain leans on. Reverted; guard removed and pinned by a test.
+
+**THE RULE:** only guard a handler whose refusal is **visible to the user** or **unambiguous to the
+caller**. A refusal that looks like a normal empty result does not fail closed — it fails WRONG.
+`media:url` / `open:folder` / `path:exists` / `disk:freeSpace` stay guarded (refusals there are
+visible or boolean); `poster:get` stays guarded (a missing thumbnail is visible); `meta:get` does not.
+
+**AND THE METHOD LESSON:** to decide whether a failure is yours, check out the commit BEFORE your
+change and run it there. `git stash` only removes uncommitted work and will lie to you about
+anything you already committed.
+
+---
+
 ### 2026-07-19b — face-scan durability: ALL 4 defects DONE (`95cc8a0`, `a457716`)
 
 Owner: *"if I do a face scan right now but don't confirm faces it doesn't remember the scan."*

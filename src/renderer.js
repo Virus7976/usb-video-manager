@@ -8872,6 +8872,33 @@ async function showDestinationMap(rawClips, opts = {}) {
       // run (config.lastOrganize, main-mod/02-media.js:427) and undoLastOrganize() has always
       // worked — it was just buried in a menu, so at the one moment you'd want it (having watched
       // 200 clips move somewhere you didn't intend) you had no idea it existed.
+      // SAY WHAT WENT WRONG. Main records both of these deliberately and the renderer used to read
+      // neither, so a run that half-worked looked perfect.
+      //
+      // An embed failure keeps `ok: true` on purpose — a metadata problem must never block filing —
+      // so those clips counted as full successes while the confirm dialog had just promised "with
+      // their metadata embedded". The clip is filed and its metadata is still safe in finalMeta
+      // (unlike finalize:run, projects:move never marks it done, so the prune won't touch it), but
+      // the file itself doesn't carry it and the user had no way to know.
+      //
+      // Per-clip move errors were reduced to a bare count: ", 3 failed" with no way to learn which
+      // three, or why (locked file? EPERM? destination gone?) — while the twin path renders exactly
+      // that list. Both go through logIssue as well as a toast, because a toast expires and this is
+      // the kind of thing you go looking for afterwards.
+      const rows = (r && r.results) || [];
+      const noEmbed = rows.filter((x) => x && x.ok && x.embedded === false);
+      const errs = rows.filter((x) => x && !x.ok && x.error);
+      if (noEmbed.length) {
+        const why = String((noEmbed[0].embedError) || 'the metadata could not be written');
+        const msg = `${noEmbed.length} clip${noEmbed.length !== 1 ? 's were' : ' was'} filed WITHOUT embedded metadata — ${why}`;
+        showToast(msg, 10000);
+        logIssue('Organize', `${msg} · ${noEmbed.slice(0, 30).map((x) => x.from).join(', ')}`);
+      }
+      if (errs.length) {
+        const msg = `${errs.length} clip${errs.length !== 1 ? 's' : ''} could not be filed — ${String(errs[0].error).slice(0, 160)}`;
+        showToast(msg, 10000);
+        logIssue('Organize', `${msg} · ${errs.slice(0, 30).map((x) => `${x.from}: ${x.error}`).join(' · ')}`);
+      }
       if (okN) showToastAction(`Filed ${okN}${failN ? `, ${failN} failed` : ''} ✓`, 'Undo', () => undoLastOrganize(), failN ? 10000 : 8000);
       else showToast(`Nothing was filed${failN ? ` — ${failN} failed` : ''}`, 6000);
       if (typeof opts.onApplied === 'function') opts.onApplied(r);

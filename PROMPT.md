@@ -345,7 +345,11 @@ then on. **Measure against real face data or leave it.** Same class as the AI to
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
 - **A STRUCTURAL ASSERTION MUST NAME THE THING THAT WOULD GO MISSING — and you must break each part
-  separately to prove it.** This cost real time five times in one session. `/undoAssign/` stayed green
+  separately to prove it. STRIP COMMENTS FIRST.** The single most expensive mistake of the session,
+  hit six times. The explanatory comments in this codebase quote the very identifiers your assertion
+  is looking for, so `apply.replace(/\/\/.*$/gm, '')` before matching — otherwise you are asserting
+  that the comment still exists. Then break EACH part and watch it fail; a whole 6-test file once
+  stayed green while both detections it guarded were deleted. `/undoAssign/` stayed green
   when the call was made unreachable with `if (false)`, because the identifier was still in the text.
   `/peopleAuto/` stayed green when one of two lines was deleted, because the other line still
   contained the word. `count >= 2` stayed green for the same break, because the surviving line

@@ -322,6 +322,51 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19am — the map's Apply hid embed failures and per-clip errors (new-queue items 1 + 2)
+
+Same call site, so done together. Both are things main goes out of its way to report and the renderer
+read neither — the third instance of this exact shape on `projects:move`.
+
+**Embed failures.** `main-mod/02-media.js` records them with an explicit comment: *"we DO record it
+so the caller can tell the user 'filed, but metadata didn't write' instead of it silently
+vanishing."* An embed failure keeps `ok: true` on purpose (a metadata problem must never block
+filing), so those clips counted as full successes — while the confirm dialog had just promised
+"with their metadata embedded" and the result said "Filed 40 ✓".
+
+**Per-clip move errors** were reduced to a bare count: ", 3 failed" with no way to learn which three
+or why. The twin renders exactly that list, so this was sibling divergence, not a decision.
+
+Both now toast AND `logIssue` (a toast expires; this is what you go looking for afterwards), each
+conditional so a clean run stays quiet, with the success line and Undo offer untouched.
+
+**⚠ I CORRECTED THE SWEEP'S CLAIM RATHER THAN INHERITING IT.** The agent escalated this to data loss:
+the un-embedded metadata would be "evicted by the prune as consumed". **That is wrong for this path.**
+`markFinalMetaDone` is called ONLY by `finalize:run` — never by `projects:move` — and the prune only
+evicts entries flagged `done`. So the metadata survives in finalMeta indefinitely. This is a TRUST
+bug (you're told the footage carries metadata it doesn't), not a loss bug. Verified by grep before
+writing a line of fix. **The sweeps are good at finding sites and unreliable about consequences —
+re-derive the harm yourself.**
+
+`test/organize-map-errors-shown.test.mjs`, 6 tests. **First version was worthless**: I broke BOTH
+detections and all six stayed green, because the assertions matched identifiers that still appear in
+the surrounding comments and code. Rewritten to strip comments and name the exact expressions
+(`filter((x) => x && x.ok && x.embedded === false)`), then re-broken three ways to confirm each is
+caught. **That is the fifth session-instance of the same trap — PROMPT.md §8c now leads with it.**
+
+Both tiers green: vm **975/894/81/0**, e2e **81/80/1/0**. App still running — undeployed, ~69 commits.
+
+**NEW FOLLOW-UP, deliberately not smuggled into this commit:** `projects:move` has **no `.xmp`
+sidecar fallback**, while its twin `finalize:run` falls back to a sidecar when the embed fails
+("an XMP sidecar is a real, standard carrier — digiKam and Lightroom both read it"). Adding it means
+writing files beside the footage, so it deserves its own change and its own tests.
+
+**QUEUE:** 3 `facesPending` lost-update (two entry points wholesale-replace the store across an
+await; loses trained faces) · 4 "🧠 AI learned N things" toasts outside its try/catch while the
+in-memory push is inside it · 5 face enrolment failure still renders a green ✓ card · 6
+`_autoConsolidating` guards only itself while five other writers touch `config.ai.memories` ·
+7 LOW: "Remember this direction" fails silently; ledger-write rejection has no logIssue ·
+8 NEW: the sidecar fallback above.
+
 ### 2026-07-19al — the app could accept work it could not save, all evening, and never say so
 
 New queue exhausted → two NEW axes swept in parallel (swallowed failures the user needs to know

@@ -358,6 +358,28 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19k — #91 DONE (`a847dce`). THE WSL-SAFE QUEUE IS EMPTY — read before starting anything.
+
+Thresholds: `0.35` is now `FACE_DEDUP_T`, both blocks cross-reference each other, and
+`face-thresholds-parity.test.mjs` fails if main and renderer drift, if the ordering inverts, or if
+the bare literal returns. **No values changed.** The duplication is forced (separate bundles, no
+shared module); the test is the mechanism a shared constant would otherwise provide.
+
+**There is no remaining backlog item that can be honestly completed from WSL.** What is left:
+
+| Needs | Items |
+| --- | --- |
+| **The owner's machine** | **the deploy itself** (blocked all session), #92 unsigned auto-update (serious — an installer is downloaded and run with no publisher check), #98, #5-MTP, #20, #85 |
+| **His real Ollama models** | #25 (face names bypassable in the tool loop), #35 (one shoot subject per day) — measured input; taking them blind cost 20 points of subject accuracy once |
+| **A labelled face fixture** | #13 (cluster threshold 0.5 fuses siblings) |
+| **A dedicated session** | #8 clipKey — migration on the delete path, plan in "2026-07-19g" |
+
+**So the highest-value next actions are, in order:** (1) deploy the moment the app is closed;
+(2) #8 with a full session and a store backup; (3) #25/#35 with the owner present to measure.
+**Do not invent low-value work to keep a loop busy** — say the queue is empty and stop.
+
+---
+
 ### 2026-07-19j — #75 DONE (`551af21`); the WSL-safe queue is nearly empty
 
 Face matching: the enrolled set is cached (`confirmedFaceSet()`) and a whole clip's faces are decided

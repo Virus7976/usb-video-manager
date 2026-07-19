@@ -322,6 +322,42 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bm — ⭐ the Organize screen filed clips into the folder they were already in
+
+Second structural blocker, found by checking his REAL config rather than reasoning about the code.
+`organizeDest` is **empty** — but `projectsRoot` has been
+`C:\Users\jakeg\Videos\02 - Projects\2026` all along, and **this screen never read it.**
+
+`finEffectiveDest()` returns `finScan.dir` in 'inplace' mode, and the screen opened in 'inplace'. So
+the default destination was **the Compressed folder the clips were already sitting in** — and with his
+`folderLevels` ([category, project]) usually empty, that produced no subfolders either, so
+`organizeMove` reported "in-place" and a Run that looked like it worked filed **nothing**. main-mod's
+own comment describes this exact outcome: *"the file was already sitting in the destination, so
+organizeMove said '0 moved' while looking like it had worked."*
+
+**Two blockers, same result.** `bj` fixed "unnamed clips can't be filed"; this fixes "and the ones
+that could had nowhere to go". Either alone would still have left the ledger at 0.
+
+A previous session had already diagnosed the empty-`projectsRoot` version of this — *"there was
+literally nowhere to file anything, which is the real reason organizing sucks"* — fixed the config,
+and the screen carried on ignoring it. **A fixed config is not a fixed feature; check the consumer.**
+
+Fix: the screen now opens pointed at `organizeDest || cfg.projectsRoot`, falling back to in-place only
+when neither exists. **A DEFAULT, not a meaning** — "organize in place" still means in place. The
+radio and the path field are updated to match, because a screen that says "in place" while filing to
+C: is exactly the quiet mismatch this effort is removing. Filing is still a COPY, the free-space
+preflight still runs, and the Run confirmation still names the destination first.
+
+`test/e2e/organize-defaults-to-projects.e2e.mjs`, 5 tests, both parts proven by breaking them. Three
+guard the other direction: his own saved destination still wins, no projects root still means
+in-place, and he can switch back.
+
+**Fixture lesson:** I seeded `finScan` BEFORE `openFinalize()`, which rebuilds it — so every case read
+an empty destination and all five failed for the wrong reason. **Seed state the open path builds
+AFTER it runs.**
+
+Both tiers green: vm **1083/974/109/0**, e2e **109/108/1/0**.
+
 ### 2026-07-19bl — TIER 1 #8: the Run confirmation now says where the UNNAMED clips go
 
 Third piece of the same thread. The confirmation described one destination —

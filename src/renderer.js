@@ -13236,8 +13236,23 @@ async function openFinalize() {
   $('finalize').classList.remove('hidden');
 
   // Seed the per-run controls from saved defaults (still editable on screen).
-  finDestMode = 'inplace';
-  finCustomDest = organizeDest || '';
+  //
+  // POINT AT HIS PROJECTS TREE. `finEffectiveDest()` returns `finScan.dir` in 'inplace' mode — the
+  // folder the clips are ALREADY IN — and with his folderLevels ([category, project]) usually empty
+  // that yields no subfolders, so organizeMove reports "in-place" and a Run that looked like it
+  // worked filed nothing. Meanwhile `projectsRoot` has been sitting in his config the whole time and
+  // this screen never read it. A previous session diagnosed the empty-projectsRoot version of this —
+  // "there was literally nowhere to file anything, which is the real reason organizing sucks" — fixed
+  // the config, and the screen still ignored it.
+  //
+  // So default to the best destination we actually know: his own saved choice first, then his
+  // Projects root, and only fall back to in-place when neither exists. This changes a DEFAULT, not a
+  // meaning — "organize in place" still means in place, it just stops being the pre-selection when a
+  // better answer is known. Filing is still a COPY, the free-space preflight still runs, and the Run
+  // confirmation still names the destination before anything moves.
+  const knownDest = organizeDest || cfg.projectsRoot || '';
+  finDestMode = knownDest ? 'custom' : 'inplace';
+  finCustomDest = knownDest;
   // Keep only levels that still exist as fields/naming columns.
   const validIds = new Set(finAllLevels().map((a) => a.id));
   finLevels = (Array.isArray(folderLevels) && folderLevels.length ? folderLevels : ['category', 'project'])
@@ -13249,8 +13264,11 @@ async function openFinalize() {
   $('finOrganize').checked = true;
   $('finNas').checked = !!nasBackup.enabled;
   finNasPathVal = nasBackup.path || '';
-  const inplaceRadio = document.querySelector('input[name="finDestMode"][value="inplace"]');
-  if (inplaceRadio) inplaceRadio.checked = true;
+  // The radio has to agree with where files will actually go — a screen that says "in place" while
+  // filing to C: is the kind of quiet mismatch this whole effort is removing.
+  const modeRadio = document.querySelector(`input[name="finDestMode"][value="${finDestMode}"]`);
+  if (modeRadio) modeRadio.checked = true;
+  if ($('finDestPath')) $('finDestPath').value = finCustomDest || '';
   $('finMatchedOnly').checked = !!uiPrefs.finMatchedOnly;
   if ($('finPhotos')) $('finPhotos').checked = !!uiPrefs.finalizePhotos;
   if ($('finQuick')) $('finQuick').checked = uiPrefs.quickAnalyze !== false;

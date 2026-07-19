@@ -1464,7 +1464,16 @@ async function showDestinationMap(rawClips, opts = {}) {
       // that list. Both go through logIssue as well as a toast, because a toast expires and this is
       // the kind of thing you go looking for afterwards.
       const rows = (r && r.results) || [];
-      const noEmbed = rows.filter((x) => x && x.ok && x.embedded === false);
+      // Distinguish "metadata went to a sidecar" from "metadata didn't land at all" — since the
+      // sidecar fallback landed, telling the user their clips carry no metadata when a real,
+      // standard carrier sits beside them would be its own kind of false alarm.
+      const sidecarred = rows.filter((x) => x && x.ok && x.embedded === false && x.sidecar);
+      const noEmbed = rows.filter((x) => x && x.ok && x.embedded === false && !x.sidecar);
+      if (sidecarred.length) {
+        const msg = `${sidecarred.length} clip${sidecarred.length !== 1 ? 's' : ''} couldn’t take embedded metadata — wrote a .xmp sidecar beside ${sidecarred.length !== 1 ? 'them' : 'it'} instead`;
+        showToast(msg, 8000);
+        logIssue('Organize', `${msg} · ${sidecarred.slice(0, 30).map((x) => x.from).join(', ')}`);
+      }
       const errs = rows.filter((x) => x && !x.ok && x.error);
       if (noEmbed.length) {
         const why = String((noEmbed[0].embedError) || 'the metadata could not be written');

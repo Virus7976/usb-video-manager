@@ -635,6 +635,31 @@ ipcMain.handle('projects:move', async (_e, payload) => {
       const out = { from: mv.from, ok: true, action: r.action, path: r.path };
       if (embedded != null) out.embedded = embedded;
       if (embedError) out.embedError = embedError;
+
+      // SIDECAR FALLBACK — the twin's reasoning, but not the twin's placement.
+      //
+      // Embedding fails for repeatable reasons (a HEIC, an odd codec, a read-only file), so "it will
+      // work next time" is usually false and the filed clip carried NO metadata at all. finalize:run
+      // already falls back here: "an XMP sidecar is a real, standard carrier — digiKam and Lightroom
+      // both read <file>.xmp".
+      //
+      // ⚠ Written AFTER the move, beside the DESTINATION. The twin writes `${curPath}.xmp` BEFORE it
+      // moves the file, and organizeMove does not carry an adjacent .xmp along — so the twin's
+      // sidecar is left behind in the intake folder while the footage goes to the Projects tree, i.e.
+      // filed somewhere nothing will read it. Doing it here in the twin's order would have copied
+      // that bug (logged separately for the twin's own fix).
+      //
+      // Best-effort by construction: the footage is already filed by this point, so a sidecar problem
+      // must never fail the run — it just means the clip is reported as un-embedded, which it is.
+      if (embedded === false && et && r && r.path && mv.meta && typeof mv.meta === 'object') {
+        try {
+          const tags = buildEmbedTags(mv.meta, String(mv.rel || '').split('/').filter(Boolean), mv.name || path.basename(mv.from));
+          if (Object.keys(tags).length) {
+            await et.write(`${r.path}.xmp`, tags, ['-overwrite_original']);
+            out.sidecar = true;
+          }
+        } catch (e2) { out.sidecarError = (e2 && e2.message) ? String(e2.message).slice(0, 200) : 'sidecar failed'; }
+      }
       results.push(out);
     } catch (err) {
       // Keep the documented result shape {from, ok, action, path} uniform even on

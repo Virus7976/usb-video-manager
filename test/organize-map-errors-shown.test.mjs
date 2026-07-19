@@ -37,8 +37,13 @@ const apply = src.slice(start, src.indexOf('loadTree();', start)).replace(/\/\/.
 
 test('embed failures are detected from the results main returned', () => {
   assert.ok(start > 0, 'found the Apply result handling');
-  assert.match(apply, /filter\(\(x\) => x && x\.ok && x\.embedded === false\)/,
+  // Assert the PROPERTY, not the exact filter text: the sidecar fallback later refined this into two
+  // filters (`&& x.sidecar` / `&& !x.sidecar`), and an exact-shape assertion failed on a legitimate
+  // change. This is the "existing tests assert code SHAPE not the property" trap, from the inside.
+  assert.match(apply, /filter\(\(x\) => x && x\.ok && x\.embedded === false[^)]*\)/,
     'clips filed with ok:true but embedded:false are picked out');
+  assert.match(apply, /x\.sidecar/,
+    'and a sidecar fallback is distinguished from no metadata at all');
 });
 
 test('per-clip move errors are detected', () => {

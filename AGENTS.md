@@ -322,6 +322,51 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ar — projects:move gained the .xmp sidecar fallback, placed CORRECTLY (last queue item)
+
+Embedding fails for repeatable reasons — a HEIC, an odd codec, a read-only file — so "it'll work next
+time" is usually false and the filed clip carried no metadata at all. The twin `finalize:run` already
+falls back: *"an XMP sidecar is a real, standard carrier — digiKam and Lightroom both read
+`<file>.xmp`."*
+
+**⚠ THIS IS WHY IT WASN'T A COPY-PASTE. The twin's sidecar is written in the WRONG PLACE, and copying
+its shape would have copied the bug.** `finalize:run` writes `${curPath}.xmp` in step 1, then step 2
+moves the file — and `organizeMove` does NOT carry an adjacent `.xmp` with it (verified by reading it,
+not assumed). So the twin's sidecar is left behind in the intake folder while the footage goes to the
+Projects tree: metadata filed somewhere nothing will ever read it.
+
+`projects:move` therefore writes the sidecar **after the move, beside the destination**, and a test
+asserts exactly that — it fails if the write is moved to `mv.from`. Best-effort: the footage is
+already filed by then, so a sidecar failure only means the clip is reported un-embedded, which it is.
+The renderer now distinguishes "wrote a sidecar instead" from "no metadata landed at all", since
+claiming the latter when a real carrier sits beside the file is its own false alarm.
+
+`test/projects-move-sidecar.test.mjs`, 6 tests; both parts proven with asserted breaks, including one
+that specifically catches the twin's placement. Three guard the other direction: no sidecar on the
+happy path, both-routes-failed still files the clip and claims no sidecar, and a sidecar failure never
+fails the run.
+
+**A pre-existing test of mine broke, correctly.** `organize-map-errors-shown` asserted the EXACT filter
+text, which the sidecar split legitimately changed — the "existing tests assert code SHAPE not the
+property" trap, experienced from the inside. Rewritten to assert the property.
+
+Both tiers green: vm **1005/924/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — undeployed,
+**~74 commits**.
+
+**NEW FINDING, logged not fixed:** `finalize:run`'s sidecar is orphaned at the source when the clip is
+organized (described above). Real, pre-existing, and in a different handler — it needs its own change
+and tests. **First item for the next iteration** if the app is still open.
+
+---
+
+## STATE: the sweep queue is EMPTY and the deploy is the highest-value action.
+
+Nine axes swept and closed. Everything from the `ae` and `al` sweeps is done. ~74 commits are green
+and undelivered, including fixes for several distinct ways typed names, trained faces and AI memories
+were silently lost. **Blocked ONLY by the app running (PID 7104 all session).** Recipe in PROMPT.md §9.
+
+If a further sweep comes back empty, **say so plainly** — a short honest report is the correct output.
+
 ### 2026-07-19aq — the last two swallowed failures. THE QUEUE IS EMPTY AGAIN.
 
 **"Remember this direction"** — the user TICKS A BOX asking the app to keep the steering they typed,

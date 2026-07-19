@@ -360,10 +360,20 @@ unverified change to those paths. Everything else: decide, log, proceed.
   `.gitea/workflows/release-check.yml` only validates a tag after the fact (and no act_runner is registered
   yet); `ci.yml` is syntax + JSON validation only. Neither runs the test suite. **Green CI means very
   little here — run `npm run check` yourself.**
-- **A manual folder deploy is still possible** for fast iteration on Jake's machine (copy files into
-  `…\Programs\USB SD Auto-Action\resources\app\`, close via PowerShell, relaunch) — but it is now the
-  exception, and it will be **silently overwritten by the next auto-update**. Prefer a real release.
-  **Do NOT deploy or restart while Jake is mid-scan.** Check `AGENTS.md` for current deploy state.
+- **You CAN build and install locally from WSL** — this is the safe middle ground between "held from
+  deploy" and a real release. Bundle in WSL, copy `main.js` / `src/renderer.js` / `src/` /
+  `package.json` to the Windows checkout at
+  `C:\Users\jakeg\Downloads\skool-downloader-chrome\usb-auto-action`, then run
+  `npx electron-builder --win --publish never` **directly** (that checkout predates the `main-mod/`
+  split, so `npm run build:win` dies on its missing `prebuild:win` hook). Install with `/S`.
+  **Check the app isn't running first** — never replace it mid-scan. This publishes nothing.
+- **Verifying a build: use `grep -ac`, not `grep -c`.** grep treats `app.asar` as binary and reports
+  `0` matches for a marker that is present — which makes a correct build look stale. Cost real
+  confusion once; don't repeat it.
+- **A manual folder deploy into `…\resources\app\` is possible but discouraged** — it **silently
+  shadows `app.asar`**, so a later correct build appears to do nothing. As of 2026-07-19 no such
+  folder exists and the asar is authoritative; keep it that way. Check `AGENTS.md` §7a for the
+  current deploy state.
 - **Known doc-bug:** the comment at `main-mod/02-media.js:22-25` still claims the updater reads a "generic
   publish feed … fixed 'latest' **Gitea** release." That is wrong — `package.json` `build.publish` is the
   **github** provider. Behaviour follows `package.json`, so it's a misleading comment, not a functional bug.

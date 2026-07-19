@@ -320,7 +320,64 @@ The app window grabs cleanly with PowerShell (no extra tools) — see `CONTRIBUT
 Drop PNGs in `docs/screenshots/` and reference them. Avoid screens that expose real client
 folder names in a public repo.
 
-## 7a. ⚠ IN PROGRESS — the AI redesign (tool-calling)
+## 7a. ⚠ IN PROGRESS
+
+### 2026-07-19 — the repo is COMMITTED and the backlog is DEPLOYED (both were not true before)
+
+Two long-standing risks closed this session. Read this before assuming the old state.
+
+1. **Everything is committed.** The working tree had **37 modified files (every `main-mod/` and
+   `src/mod/` module) plus ~50 untracked test files** — 12+ batches of built-and-tested work, and
+   the whole `test/e2e/` harness, sitting one `git checkout .` from destruction. It is now two
+   commits on `integration/preview-ui-everything`:
+   - `0415e09` — PROMPT.md (see below).
+   - `8b414a6` — the checkpoint. Committed green: `npm run check` = **787 tests, 747 pass, 40
+     skipped, 0 fail**, `check-primitives` clean.
+   Nothing was rewritten or squashed; it is the tree as it stood.
+
+2. **The batches are DEPLOYED.** The backlog said *"ALL 11 BATCHES STILL UNDEPLOYED (held while
+   Jake scanned)"* — that is now stale. Built from WSL per §8's two-gotcha note (bundle in WSL →
+   copy `main.js`/`src/renderer.js`/`src/`/`package.json` to the Windows checkout at
+   `C:\Users\jakeg\Downloads\skool-downloader-chrome\usb-auto-action` → `npx electron-builder --win
+   --publish never` directly, skipping the missing `prebuild:win`). Installed silently with `/S`
+   while the app was **not running**.
+   - Artifact: `dist/USB-SD-Auto-Action-Setup-0.4.28.exe` (135 MB).
+   - Verified: `%LOCALAPPDATA%\Programs\USB SD Auto-Action\resources\app.asar` contains
+     `capFacesKeepingConfirmed`, `adbRetryList`, `prunePosterCache`.
+   - **The `resources/app/` folder-deploy override is GONE**, so the asar is authoritative again.
+     A future folder-copy deploy would silently shadow the asar — don't reintroduce one casually.
+   - **NOT released.** `npm run release` was not run; nothing was published to GitHub; no install
+     anywhere self-updates from this. This was a local build+install only.
+   - **Gotcha for the next person:** `grep -c <marker> app.asar` returns **0** because grep treats
+     the asar as binary. Use `grep -ac`. Do not conclude the build is stale from a bare `grep -c`.
+
+3. **`PROMPT.md` is now tracked.** It had existed on disk since 2026-07-18 but was **never
+   committed**, so every other worktree (`-motion`, `-ui`, `-rules`, `-placement`, `-integration`)
+   and any fresh clone saw nothing — and a loop whose first instruction is "read PROMPT.md" read
+   nothing and fell back to guessing. Also corrected in it: the **"deploy is a folder copy, not a
+   build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
+   plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
+
+**NEXT STEP — #95 (path validation on fs/shell IPC).** Analyzed this session, **not yet
+implemented**; nothing is half-built, the tree is clean. The harm is confirmed still real:
+`open:folder` (`main-mod/09-ipc-boot.js:1111`) passes its argument straight to `shell.openPath`
+with no validation, and `path:exists` (`:1053`), `disk:freeSpace` (`:1041`), `media:url`
+(`06-copy-transfer.js:546`) and `poster:get` (`:550`) are equally open. With `webSecurity:false`
+and untrusted filenames/AI text in the DOM, one XSS is arbitrary local read/open.
+The design to build: a shared `assertAllowedPath(p)` in `main-mod/01-core.js` that resolves the
+real path and requires it under an allowed root — the configured folders (`intakeFolder`,
+`projectsRoot`, `finalizeSource`, `photosTempFolder`, `phoneBackupFolder`, `phoneComputerFolder`,
+`phoneNasFolder`, `organizeDest`, `nasBackup.path`), `userData`, `temp`, currently-attached
+removable volumes (`04-routes-ledger.js` already enumerates them), **plus a session set of paths
+the user picked through a native `showOpenDialog`** — user consent is what makes an arbitrary
+folder legitimate, and without that set the folder pickers break. Fail closed with the
+`{ ok:false, refused:true, error }` shape `delete:source` uses. Test `test/ipc-path-guard.test.mjs`:
+assert a path outside every root is refused, a configured root is allowed, `..` traversal out of a
+root is refused, and a dialog-approved path is allowed. **Write the failing test first.**
+
+---
+
+## 7b. ⚠ IN PROGRESS — the AI redesign (tool-calling)
 
 **If you are picking this up mid-flight, read this first.** Owner's verdict: *"very gimmicky, it
 doesn't learn well, it has no idea how to group projects or how to ask questions. The AI shouldn't

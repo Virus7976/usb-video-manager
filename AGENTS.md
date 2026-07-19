@@ -322,6 +322,53 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19as — finalize:run abandoned its sidecar at the source. Eventual DATA LOSS, now fixed.
+
+Logged last iteration, verified this one, and it is worse than logged. The sidecar was written at
+`${curPath}.xmp` in step 1; step 2 then moved or copied the footage into the Projects tree.
+`organizeMove` does not carry an adjacent `.xmp`, the `sidecar` variable was scoped to the catch block
+and never referenced again, and nothing else relocated it.
+
+**Why this one really is data loss, where the same-shaped gap in `projects:move` was not:**
+`metaLanded = true` puts the clip into `filed`, so `markFinalMetaDone` flags its finalMeta record
+consumed — and `done` is the SOLE gate on that store's prune. The record becomes age-evictable at 180
+days and is shed first under the hard cap; once evicted, `finalize:run` filters the clip out entirely
+(`it.meta` required) and it can never be organized again. So the AI's subject, description and people
+were gone, with the only surviving copy orphaned in the intake folder under a name nothing associates
+with it. `projects:move` never calls `markFinalMetaDone`, which is exactly why its version was only a
+trust bug — the distinction is worth keeping straight.
+
+Fix: `sidecar` is hoisted out of the catch, and after a successful move/copy it is brought along —
+`copyFileVerified` when the footage was copied (the source keeps its own), `moveFileCrossDevice` when
+it was moved. Best-effort: the footage is filed by then, so a relocation failure only adds a line to
+`summary.errors`, which the Organize screen already renders.
+
+`test/finalize-sidecar-follows.test.mjs`, 5 tests; both branches proven with asserted breaks. Two
+guard the other direction: a successful embed writes no sidecar anywhere, and a sidecar that cannot be
+relocated never fails the run.
+
+**My fixture was wrong first, and it failed loudly rather than silently — which is the good outcome.**
+I invented `{list, dest, organize}`; the handler destructures `{items, options, dir}` plus
+`organizeDest`/`folderLevels`. Nothing ran at all, so even the happy-path test failed at "filed".
+**Read the handler's destructuring before writing the payload** — an invented shape produces a test
+that exercises nothing.
+
+vm **1010/929/81/0**. e2e not run — `main-mod/` only. App still running (PID 7104) — undeployed,
+**~75 commits**.
+
+---
+
+## STATE: sweep queue EMPTY, and this was the last known finding.
+
+Nine axes swept and closed; both sweep queues worked through; the sidecar pair on both filing paths is
+now correct and consistent. **THE DEPLOY IS THE HIGHEST-VALUE ACTION and has been blocked all session
+by the app running.** Recipe in PROMPT.md §9.
+
+If the app is still open next iteration, a NEW axis is needed — nothing known remains. Untried angles:
+a store file deleted mid-session; the AI model missing or renamed mid-run; the photo path as a
+first-class twin of video (a standing parity obligation in PROMPT.md §2). **If a sweep comes back
+empty, say so plainly — a short honest report is the correct output, not manufactured churn.**
+
 ### 2026-07-19ar — projects:move gained the .xmp sidecar fallback, placed CORRECTLY (last queue item)
 
 Embedding fails for repeatable reasons — a HEIC, an odd codec, a read-only file — so "it'll work next

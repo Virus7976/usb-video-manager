@@ -629,6 +629,9 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     // Did this clip's metadata reach the disk — in the file, or in a sidecar beside it? Drives
     // whether we may mark it consumed at the bottom (see `filed`). Only meaningful when embedding.
     let metaLanded = !et;
+    // Declared out here, not inside the catch below, because step 2 has to MOVE it: the sidecar is
+    // written beside the source, and organizeMove does not carry an adjacent .xmp along.
+    let sidecar = '';
 
     // 1. Embed a RICH XMP packet (Title, Description, flat keywords→dc:subject,
     // hierarchical tags for digiKam/Lightroom, date, location, people, shot type…).
@@ -660,7 +663,6 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       } catch (err) {
         // Sidecar fallback. An XMP sidecar is a real, standard carrier — digiKam and Lightroom both
         // read `<file>.xmp` — so the metadata is not lost just because the container refused it.
-        let sidecar = '';
         try {
           sidecar = `${curPath}.xmp`;
           await et.write(sidecar, tags, ['-overwrite_original']);
@@ -688,6 +690,22 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         if (r.action === 'moved' || r.action === 'copied') {
           summary.moved += 1;
           undoable.push({ from: before, to: r.path, copied: r.action === 'copied' });
+          // BRING THE SIDECAR WITH IT. It was written beside the SOURCE in step 1 and then abandoned
+          // there: organizeMove doesn't carry an adjacent .xmp, and nothing else looked at it. So the
+          // footage arrived in the Projects tree with no metadata while its one standard carrier sat
+          // in the intake folder — and because `metaLanded` was already true, the clip counted as
+          // FILED, which let the finalMeta prune evict the only other copy of that work.
+          // Best-effort: the footage is filed by now, so this must never fail the run.
+          if (sidecar) {
+            try {
+              const landedSidecar = `${r.path}.xmp`;
+              if (r.action === 'copied') await copyFileVerified(sidecar, landedSidecar);
+              else await moveFileCrossDevice(sidecar, landedSidecar);
+              sidecar = landedSidecar;
+            } catch (e3) {
+              summary.errors.push(`Sidecar for ${it.name} stayed at the source: ${e3.message}`);
+            }
+          }
           // Feed the PROJECT LEDGER (audit #29). Only the map's "Apply" recorded here, so filing via
           // step-3 Run learned nothing: the ledger is what makes a later import from the same shoot
           // offer the same project, and the shoot DATE is the strongest signal this app has

@@ -556,9 +556,15 @@ ipcMain.handle('copy:start', async (evt, payload) => {
   emit(aborted ? 'cancelled' : 'done');
   copyTask = null;
 
+  // A NAS that could not be reached must NOT read as a clean import. `nasRoot` is blanked when the
+  // upfront ensureDir fails, which skipped the mirror for the whole card — and the note was built as
+  // `nasRoot ? … : ''`, so the notice said a plain "Copied N clips to intake." The user asked for a
+  // second copy, didn't get one, was told everything worked, and then ran Delete — which verifies
+  // card↔intake only and knows nothing about the NAS. The gate did its job; it was asked the wrong
+  // question. Fail OPEN (the intake copy is still worth having) but never silently.
   const nasNote = nasRoot
     ? ` · backed up ${nasSummary.ok} to NAS (verified${nasSummary.skipped ? `, ${nasSummary.skipped} already there` : ''})${nasSummary.failed ? ` · ${nasSummary.failed} failed` : ''}`
-    : '';
+    : (nasSummary.setupError ? ` · ⚠ NOT backed up to the NAS — ${nasSummary.setupError}. This card has ONE copy.` : '');
   if (aborted) {
     notify('Copy cancelled', `${copied.length} of ${files.length} file${files.length !== 1 ? 's' : ''} copied before cancelling.${nasNote}`);
   } else {

@@ -322,6 +322,54 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ay — a dead NAS silently disabled the second copy and the import reported success
+
+The second dangerous finding from the `ax` sweep, now fixed. **This is a footage-safety bug, not a
+cosmetic one.**
+
+`copy:start` resolves the NAS ONCE at the top and blanks `nasRoot` if `ensureDir` throws, which skips
+the mirror for the WHOLE card. `nasNote` was built as `nasRoot ? … : ''`, so the completion notice
+read a plain *"Copied N clips to intake."* And `setupError` was read **nowhere in the tree** — the
+renderer's only NAS check is `if (res.nas && res.nas.failed)`, which is 0 because nothing was
+attempted.
+
+The sequence that matters: the user ticks *"Keep a second copy on a NAS or external drive"*. The share
+drops (undocked, VPN down, drive unplugged, folder renamed). The next import makes ZERO NAS copies and
+reports full success. The user runs Delete — which verifies card↔intake **only**; `verifyCopyPair`
+knows nothing about the NAS — and clears the card. They are left with ONE copy where the app implied
+two. **The delete gate did its job correctly; it was asked the wrong question.**
+
+Fix, both sides, FAIL OPEN BUT LOUD (the intake copy is still worth having, so a missing NAS must
+never refuse the import — it must also never pass for success): the completion notice now says
+*"⚠ NOT backed up to the NAS — <reason>. This card has ONE copy."*, and the renderer toasts +
+`logIssue`s the setup error alongside the existing per-file check.
+
+The sibling `finalize:run` was already right — no upfront `ensureDir`, so each file's failure lands in
+`summary.errors` and the Organize screen renders it.
+
+`test/nas-setup-failure-visible.test.mjs`, 6 tests, both sides proven with asserted breaks. Three
+guard the other direction: the import still succeeds, a healthy NAS says nothing alarming, and NAS-off
+mentions no NAS at all.
+
+**The loose-assertion trap once more, and it is always the same shape:** I asserted the renderer
+"reads `res.nas.setupError`" — but the message template interpolates that same expression, so
+replacing the guard with `if (false)` left it green. Bound it to `if (res.nas && res.nas.setupError)`.
+**Bind to the GUARD, never to a mention.**
+
+Both tiers green: vm **1045/952/93/0**, e2e **93/92/1/0**. App still running (PID 7104) — undeployed,
+**~81 commits**.
+
+---
+
+## STATE: eleven axes swept. Both `ax` findings closed. Nothing known remains.
+
+**THE DEPLOY IS THE ONLY HIGH-VALUE ACTION LEFT** — ~81 commits, green, blocked all session by the app
+running (PID 7104). Recipe in PROMPT.md §9.
+
+Genuinely nothing is queued. If the app is still open next iteration, either try an angle no sweep has
+touched or **report plainly that the queue is empty** — after eleven axes, an empty result is the
+honest and likeliest output, and manufacturing churn would be worse than saying so.
+
 ### 2026-07-19ax — a card pulled mid-face-scan marked every remaining clip "scanned, no faces" FOREVER
 
 Eleventh axis (state that changes UNDER the running app) — the last untried angle, and it was not

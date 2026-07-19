@@ -1083,6 +1083,14 @@ async function runCopy() {
     return;
   }
   if (res.nas && res.nas.failed) logIssue('NAS backup', `${res.nas.failed} file(s) failed to back up to NAS`);
+  // The NAS never came up at all: nothing was attempted, so `failed` is 0 and the check above cannot
+  // see it. This is the one that matters before a card delete — the user asked for a second copy and
+  // does not have one.
+  if (res.nas && res.nas.setupError) {
+    const msg = `NAS backup did not run — ${res.nas.setupError}. These clips have ONE copy, in the intake folder.`;
+    showToast(msg, 12000);
+    logIssue('NAS backup', msg);
+  }
   state.copied = res.copied;
   // Remember what we copied, DURABLY. Clearing the card is deliberately a separate, later act —
   // compress, organize days on, and only then wipe. But this list used to live only in memory, so

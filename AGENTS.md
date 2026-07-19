@@ -322,6 +322,43 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19aj — "Ignore this face" was advertised as reversible and destroyed the enrolment (queue item 5)
+
+`faces:ignore` splices a face OFF a person and pushes the bare `{d, t, confirmed}` into the bin — **no
+owner id**. `faces:unignore` only removed it from the bin. Nothing put the face back, and because the
+record never said which person it came from, nothing COULD.
+
+The UI promises otherwise in three places: "Restore all ignored", "↩ Not ignored — restore" and
+"Restore (not ignored)". So "ignore" reads as *hide this*, the un-ignore sits right there, and the
+person quietly loses a CONFIRMED enrolment face — the only kind that votes in `faceDecide` —
+permanently. Recognition of that person gets weaker with no visible cause.
+
+Fix: the binned record carries `from` (person id) and `fromName`; `faces:unignore` restores the face
+to that person, keeping its `confirmed` flag (restoring it unconfirmed would return the picture and
+not the recognition), skipping a near-duplicate via `FACE_DEDUP_T` and re-capping with
+`capFacesKeepingConfirmed`. Additive optional fields — entries binned before this can't be restored,
+and the handler now RETURNS `restoredTo` so the UI says which happened instead of implying success.
+All three restore affordances now toast the real outcome.
+
+`test/face-ignore-restore.test.mjs`, 7 tests; both halves proven by breaking them. Three guard the
+other direction: a deleted person is not resurrected, a legacy ownerless entry is reported honestly
+rather than pretended, and a replayed restore doesn't duplicate the face.
+
+**Test-harness trap, worth remembering:** `config.ai.ignored` is a shared array on one app instance
+and ACCUMULATES across tests, so `faces:unignore(0)` in a later test popped the entry an earlier one
+left behind and failed on the wrong face. Same family as the documented "vm store handlers MERGE, use
+distinct fixture keys" note, but it applies to plain config ARRAYS too — a `beforeEach` that truncates
+the bin fixes it. **This was my test's bug, not the code's.**
+
+Both tiers green: vm **958/877/81/0**, e2e **81/80/1/0**. App still running (PID 7104) — undeployed,
+~66 commits.
+
+**QUEUE:** 6 ledger/undo race (MEDIUM confidence — `recordToLedger` fired un-awaited at
+`src/mod/07-organize-map.js`, then the Undo toast is offered immediately; a fast click reverses before
+`lastLedger` is stamped and the late write creates a phantom project) · 7 LOW: memory-inbox
+`slice(-300)` evicting the oldest hand-taught rules; `ledgerFind` case-sensitivity (**do not act
+without evidence**). After those the queue from `2026-07-19ae` is EXHAUSTED — pick a new axis.
+
 ### 2026-07-19ai — organize:undo left finalMeta.done set, so undone clips became evictable (queue item 4)
 
 `finalize:run` ends with `markFinalMetaDone(filed)`, and that flag means exactly one thing: this

@@ -324,7 +324,13 @@ ipcMain.handle('faces:ignore', (_e, payload) => {
   const fromId = payload && payload.id; const idx = Number(payload && payload.index);
   if (fromId !== undefined && idx >= 0) {
     const p = aiPeople().find((x) => x.id === fromId);
-    if (p && p.faces && idx < p.faces.length) { ig.push(p.faces[idx]); p.faces.splice(idx, 1); if (p.thumb && !(p.faces || []).some((f) => f.t === p.thumb)) p.thumb = personCover(p); }
+    // REMEMBER THE OWNER. The bin used to store the bare `{d, t, confirmed}`, so un-ignoring could
+    // only drop the record — the face could never go back, even though the UI offers "Restore all
+    // ignored", "Not ignored — restore" and "Restore (not ignored)". Ignoring reads as "hide this",
+    // so the person quietly lost a CONFIRMED enrolment face (the only kind that votes) for good.
+    // `from`/`fromName` are additive optional fields; entries binned before this simply can't be
+    // restored, which faces:unignore reports rather than pretends.
+    if (p && p.faces && idx < p.faces.length) { ig.push({ ...p.faces[idx], from: p.id, fromName: p.name }); p.faces.splice(idx, 1); if (p.thumb && !(p.faces || []).some((f) => f.t === p.thumb)) p.thumb = personCover(p); }
   } else if (Array.isArray(payload && payload.descriptor)) {
     // Route the crop out to a file. config.ai.ignored lives in config.json, so a raw base64 dataURL
     // here re-bloats the very file the sidecar split exists to keep small (write-amplifies every save).
@@ -366,7 +372,33 @@ ipcMain.handle('people:reassignFace', (_e, payload) => {
   return { ok: true, toId: to.id, toName: to.name };
 });
 ipcMain.handle('faces:listIgnored', () => aiIgnoredFaces().map((f, i) => ({ i, t: f.t || '' })));
-ipcMain.handle('faces:unignore', (_e, idx) => { const ig = aiIgnoredFaces(); const i = Number(idx); if (i >= 0 && i < ig.length) { ig.splice(i, 1); saveConfig(); } return { ok: true }; });
+// Un-ignore = put the face BACK on the person it was taken from, not merely empty the bin. Returns
+// `restoredTo` so the caller can say what actually happened: an entry binned before `from` existed,
+// or one whose person has since been deleted, genuinely cannot be restored and says so.
+ipcMain.handle('faces:unignore', (_e, idx) => {
+  const ig = aiIgnoredFaces();
+  const i = Number(idx);
+  if (!(i >= 0 && i < ig.length)) return { ok: true, restoredTo: '' };
+  const [face] = ig.splice(i, 1);
+  let restoredTo = '';
+  const owner = face && face.from ? aiPeople().find((x) => x.id === face.from) : null;
+  if (owner) {
+    if (!Array.isArray(owner.faces)) owner.faces = [];
+    // Don't re-add a face the person already has (a restore replayed, or the same face re-enrolled
+    // while it sat in the bin). Same near-duplicate test people:save uses.
+    const dup = face.d && owner.faces.some((f) => f.d && faceDist(f.d, face.d) < FACE_DEDUP_T);
+    if (!dup) {
+      const { from, fromName, ...rest } = face;   // the bookkeeping fields don't belong on a person
+      owner.faces.push(rest);
+      owner.faces = capFacesKeepingConfirmed(owner.faces, 80);   // #49
+    }
+    if (!owner.thumb && face.t) owner.thumb = face.t;
+    restoredTo = owner.name || '';
+    saveStore('ai.people');
+  }
+  saveConfig();
+  return { ok: true, restoredTo };
+});
 // Rename a person — REFUSING a name that already belongs to someone else.
 //
 // Both CREATE paths dedup case-insensitively (people:save above, people:reassignFace below); rename

@@ -10549,7 +10549,7 @@ async function showPeopleManager() {
         e.preventDefault(); e.stopPropagation();
         const id = b.dataset.id;
         selId = id; renderSide(); renderMain();
-        if (id === PD_IGNORED) { showContextMenu(e.clientX, e.clientY, [{ label: 'Restore all ignored', action: async () => { let list = []; try { list = await window.api.listIgnoredFaces(); } catch { /* */ } for (let k = list.length - 1; k >= 0; k -= 1) { /* eslint-disable-next-line no-await-in-loop */ await window.api.unignoreFace(k); } await reloadPeople(false); } }]); return; }
+        if (id === PD_IGNORED) { showContextMenu(e.clientX, e.clientY, [{ label: 'Restore all ignored', action: async () => { let list = []; try { list = await window.api.listIgnoredFaces(); } catch { /* */ } let back = 0; for (let k = list.length - 1; k >= 0; k -= 1) { /* eslint-disable-next-line no-await-in-loop */ const rr = await window.api.unignoreFace(k); if (rr && rr.restoredTo) back += 1; } showToast(back ? `Restored ${back} face${back !== 1 ? 's' : ''} to their people ✓` : 'Cleared Ignored — none could be restored to a person', 4000); await reloadPeople(false); } }]); return; }
         const p = people.find((x) => x.id === id);
         showContextMenu(e.clientX, e.clientY, [
           { label: 'Rename', action: () => { const inp = q('.pd-name'); if (inp) { inp.focus(); inp.select(); } } },
@@ -10587,12 +10587,19 @@ async function showPeopleManager() {
       fc && fc.addEventListener('click', async (e) => {
         const card = e.target.closest('.pd-face'); if (!card) return;
         const act = (e.target.closest('[data-act]') || {}).dataset; if (!act) return;
-        if (act.act === 'restore') { await window.api.unignoreFace(Number(card.dataset.idx)); await reloadPeople(true); }
+        if (act.act === 'restore') {
+          // Say where it went. A face binned before the owner was recorded — or one whose person has
+          // since been deleted — genuinely cannot go back, and the button promising "restore" should
+          // not imply otherwise.
+          const rr = await window.api.unignoreFace(Number(card.dataset.idx));
+          showToast((rr && rr.restoredTo) ? `Restored to "${rr.restoredTo}" ✓` : 'Removed from Ignored — no person to restore it to', 4000);
+          await reloadPeople(true);
+        }
       });
       fc && fc.addEventListener('contextmenu', (e) => {
         const card = e.target.closest('.pd-face'); if (!card) return;
         e.preventDefault(); e.stopPropagation();
-        showContextMenu(e.clientX, e.clientY, [{ label: 'Restore (not ignored)', action: async () => { await window.api.unignoreFace(Number(card.dataset.idx)); await reloadPeople(true); } }]);
+        showContextMenu(e.clientX, e.clientY, [{ label: 'Restore (not ignored)', action: async () => { const rr = await window.api.unignoreFace(Number(card.dataset.idx)); showToast((rr && rr.restoredTo) ? `Restored to "${rr.restoredTo}" ✓` : 'Removed from Ignored — no person to restore it to', 4000); await reloadPeople(true); } }]);
       });
       return;
     }

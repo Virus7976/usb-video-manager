@@ -322,6 +322,33 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bb — the in-app changelog was a WEEK stale. Today's work is in it now, and in the build.
+
+Jake asked for the changelog in the app *"so I can see what you're doing"*. `main-mod/02-media.js`
+reads `CHANGELOG.md` straight out of the packaged app for that view — and the file had not been
+touched since **2026-07-12**. So the feature he asked for would have shown him **nothing** about
+today's ~82 commits, including every data-loss fix. The feature worked; it was being fed stale input.
+
+Wrote today's entries in the file's existing voice (his language — "your footage", "the names you
+type", what was wrong and what it meant for him — not a commit dump), grouped by what he'd care
+about: the names/faces losses first, then the places the app told him something untrue, then photos,
+then the smaller ones.
+
+**The installer had to be rebuilt.** `CHANGELOG.md` is in `package.json` `build.files`, so it ships
+inside the asar — the build from 16:25 predated this edit and would have deployed the stale file.
+Rebuilt at 16:33 and re-verified.
+
+**Marker check, and a correction worth recording:** one marker returned `0` and it was MY error, not a
+missing entry — `grep -a` is case-sensitive and I searched lowercase for a capitalised sentence. Confirmed
+with the right case (and `-i`) that it is present. **A zero from grep is a claim about your pattern
+before it is a claim about the file** — the same discipline as `grep -ac` vs `grep -c` on a binary.
+
+Verified inside the packaged asar: "Typed names were being deleted every time" (1) · "Every enrolled
+face crop could be deleted" (1) · "second-class" (1) · "NOT backed up to the NAS" (1).
+
+App still running (PID 7104) — **~83 commits undeployed, installer READY at HEAD (16:33) and
+asar-verified, changelog included.**
+
 ### 2026-07-19ba — INSTALLER PRE-BUILT AT HEAD. The deploy is now a ~10-second install.
 
 Queue still empty and the app still running, so instead of reporting empty twice I removed the thing

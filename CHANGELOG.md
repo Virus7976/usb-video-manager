@@ -7,6 +7,81 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — the names you type and the faces you train (found 2026-07-19)
+
+These are the ones worth reading. Each was silently losing work you'd already done.
+
+- **Typed names were being deleted every time the app started.** Your drafts were capped in two
+  different places with opposite rules: one kept the names you'd typed, the other threw them away
+  by age alone and kept ten times fewer. So every launch undid what the previous session had
+  deliberately kept, and a recent face scan could evict a name you'd hand-typed weeks earlier. With
+  ~4600 clips on a card that was thousands of names. There is now ONE rule, and a typed name always
+  outranks an automatic flag.
+- **Drafts were never cleared after a copy, so a card kept re-offering names you'd already dealt
+  with** — and the leftovers counted against the cap forever, pushing out names still waiting to be
+  used. (The clear was looking for them under the wrong key, so it silently matched nothing.)
+- **Every enrolled face crop could be deleted in one go.** The cleanup that removes unused face
+  pictures didn't load your people first, so it saw zero faces in use and deleted all of them. Your
+  people list survived, pointing at pictures that no longer existed — broken images everywhere, with
+  no way back. It now refuses to run at all unless it can see the full picture.
+- **Undo on the face review didn't undo the training.** Naming a face teaches the recognizer
+  permanently, and Undo only removed the tag — so a mis-named face stayed learned as that person,
+  was re-suggested on every later scan, and "Confirm all" would then spread it. Undo now reverses
+  the training too, precisely, without touching faces you enrolled earlier.
+- **"Ignore this face" said it could be undone and couldn't.** It removed the face from the person
+  and kept no record of where it came from, so nothing could put it back — the person quietly lost a
+  confirmed face forever. Restoring now actually restores.
+- **Deleting a person left their name on every clip you'd already filed**, which then got written
+  into the files themselves at the next organize and fed back into the AI's naming. Deleting now
+  offers to clear the name from stored clips, the way renaming already did.
+- **The AI could throw away almost everything you'd taught it.** A background tidy-up of your
+  preference rules had no lower limit, so it could replace twenty rules with one and save that. It
+  now refuses any collapse that drastic, keeps what you taught it *while* it was thinking, and saves
+  a copy of what it replaced.
+- **Undoing an organize left the clips marked as filed**, so their AI descriptions became eligible to
+  be cleaned up — and once cleaned up, those clips could never be organized again.
+
+### Fixed — the app telling you the truth
+
+- **The app could accept work all evening that it was unable to save.** If a data file couldn't be
+  read at startup it correctly refused to overwrite it — then kept showing a ✓ on everything you
+  typed, and lost the lot on restart. It now tells you, once, that nothing can be saved.
+- **"Filed 0 into your Projects tree ✓"** — the map's Apply reported a refusal as a completed run,
+  with a tick, and closed. It now shows the actual reason (card as destination, disk too full).
+- **Clips filed without their metadata said nothing.** If embedding failed, the clip was filed and
+  counted as a full success. You're now told, and the metadata is written to a sidecar file beside
+  the footage instead of being lost.
+- **"🧠 AI learned N things from your edits" appeared even when the save had failed** — so you'd stop
+  correcting it while it had learned nothing.
+- **A face that failed to enrol still showed a green ✓ "tagged" card.**
+- **A face scan whose card was pulled marked every remaining clip "scanned, no faces" — permanently.**
+  Those clips were then excluded from every future scan. It now says the card may have been
+  disconnected, and leaves them scannable.
+
+### Fixed — your photos (they were second-class)
+
+- **Photos on your card were being written to before any copy existed.** The AI's record was embedded
+  straight into the original still, on the card, while it was the only copy — something never done to
+  a video. Photos are now staged off the card first.
+- **Card photos were never backed up to your NAS**, even with NAS backup switched on, because they
+  used a different setting buried in the phone preferences. Every video went; not one photo did.
+- **A NAS that had gone offline silently disabled the second copy and reported a clean import.** You
+  could then clear the card believing two copies existed. It now says plainly that the card has one
+  copy.
+- **Photos had no "will this fit?" check anywhere**, while videos had two — and a photo fans out to as
+  many as five places.
+- **Re-inserting a card re-offered and re-copied every still**, because photos were never recorded as
+  imported.
+
+### Fixed — smaller, but real
+
+- **The organize map's "not enough room" check could never actually fire** — it was reading a size the
+  caller never sent, so it silently passed everything.
+- **Starting a second face scan while one was running could erase the first one's review.**
+- **The project memory was written after the Undo button appeared**, so a quick Undo left a phantom
+  project that kept influencing where future footage was filed.
+
+
 ### Fixed — your footage (the important ones)
 - **Cancelling a copy could leave a broken clip in your intake folder, under its real name.**
   Stopping a copy part-way left the half-copied file sitting in `01 - Uncompressed` looking like a

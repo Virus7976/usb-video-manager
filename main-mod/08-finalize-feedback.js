@@ -277,6 +277,16 @@ ipcMain.handle('people:reassignFace', (_e, payload) => {
   let to = people.find((x) => x.name.toLowerCase() === toName.toLowerCase());
   if (!to) { to = { id: `pp${Date.now()}${Math.random().toString(36).slice(2, 6)}`, name: toName, faces: [], thumb: '', ts: Date.now() }; people.push(to); }
   migratePerson(to);
+  // ⚠ UNEXPLAINED DIVERGENCE, deliberately left alone. This asks the same question as people:save
+  // above ("is this face already on this person?") but at 0.2, while that one uses FACE_DEDUP_T
+  // (0.35). `a847dce` named the constant and missed this call site.
+  //
+  // NOT changed to the constant, because it is not a rename — it is a behaviour change to face
+  // matching. 0.35 rejects MORE candidates as duplicates, so reassigning would add fewer faces to a
+  // person's enrolment set, which shifts how that person matches from then on. Tighter (0.2) errs
+  // toward keeping a genuine variation; looser errs toward not bloating the set. Which is right
+  // cannot be settled from here — it needs a run against real face data, like every other
+  // accuracy-affecting constant in this file. Measure before touching it.
   if (!(to.faces || []).some((f) => f.d && faceDist(f.d, face.d) < 0.2)) to.faces.push({ d: face.d, t: face.t, confirmed: true });
   if (face.t && !to.thumb) to.thumb = face.t;
   to.faces = capFacesKeepingConfirmed(to.faces, 80);   // #49 — keep confirmed enrolment faces

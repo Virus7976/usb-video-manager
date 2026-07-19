@@ -358,6 +358,33 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
+### 2026-07-19t — sibling gap 2 DONE (`afc2909`). ONE LEFT.
+
+**Pulling the card mid-analyze now stops the run once.** `cardIsGone()` had ONE call site, in the
+LEGACY loop, while `const batched = aiCfg.multiPass || aiToolModelReady` makes the batched path the
+default — so the guard was unreachable in normal use, and every remaining clip paid a full 200s/300s
+`aiCallGuard` timeout. Guard added to all batch loops, after `flushDraftSave()` so a yanked card
+cannot discard the clip just named. Test: `test/e2e/ai-card-gone.e2e.mjs` (4), proved by deleting a
+guard and watching it fail.
+
+**THE SWEEP UNDERCOUNTED: there were THREE unguarded loops, not two.** The third is the
+"name every unnamed clip" pass in `aiAutoEnhance` (`src/mod/04-tasks-ai.js` ~1019), whose comment
+says it is "guarded for the same reason as the other two batch loops" — meaning the TIMEOUT guard,
+a different concern. **A comment claiming a loop is guarded does not say guarded against WHAT.**
+
+**LAST SIBLING GAP — `projects:move` will MOVE files off a removable card.** `finalize:run` refuses
+(`main-mod/09-ipc-boot.js:570`, `isOnRemovableVolume`); that function appears nowhere in
+`02-media.js`. Reachability is narrow — it needs Compressed pointed at a card AND "Keep the
+originals" unticked — but that is exactly the case the twin bothers to guard, and it would strip
+footage without passing the delete gate. **The code asymmetry is WSL-verifiable; the live behaviour
+is not** (`isOnRemovableVolume` is drive-letter based and `DETECTION_ENABLED`-gated, so it returns
+false on Linux). Write the test around the CALL being made, not around a real card.
+
+**After that, sweep again** — the technique is 7-for-7 on confirmed gaps and has produced every real
+bug of the last several iterations.
+
+---
+
 ### 2026-07-19s — sibling gaps 1 and 4 handled (`98665a1`). TWO LEFT.
 
 **Gap 1 DONE:** `projects:move` now has the free-space preflight `finalize:run` / `copy:start` /

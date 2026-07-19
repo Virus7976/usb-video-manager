@@ -74,3 +74,14 @@ test('a selection-only click does not write the faces store', { skip: !RUN }, as
   assert.equal(optOuts.length, 2, 'exactly the two selection-only renders skip the write');
 });
 
+
+test('renaming a person onto a taken name offers a MERGE, not a duplicate', { skip: !RUN }, async () => {
+  // Main refuses the rename and reports `name-exists`; the renderer must turn that into an
+  // actionable choice rather than a silent no-op. Merging combines the two enrolment sets, which is
+  // what actually fixes the split — but it deletes the source record, so it is confirmed, never
+  // automatic. Declining must put the input back so the field matches reality.
+  const src = await read(app.win, 'String(showPeopleManager)');
+  assert.match(src, /reason === 'name-exists'/, 'the refusal is handled, not ignored');
+  assert.match(src, /mergePerson\(\{ fromId: selId, intoId: r\.existingId \}\)/, 'and offers the merge that fixes it');
+  assert.match(src, /nameInp\.value = old/, 'declining restores the field');
+});

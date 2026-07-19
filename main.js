@@ -6444,7 +6444,32 @@ ipcMain.handle('people:reassignFace', (_e, payload) => {
 });
 ipcMain.handle('faces:listIgnored', () => aiIgnoredFaces().map((f, i) => ({ i, t: f.t || '' })));
 ipcMain.handle('faces:unignore', (_e, idx) => { const ig = aiIgnoredFaces(); const i = Number(idx); if (i >= 0 && i < ig.length) { ig.splice(i, 1); saveConfig(); } return { ok: true }; });
-ipcMain.handle('people:rename', (_e, payload) => { const p = aiPeople().find((x) => x.id === (payload && payload.id)); if (p) { p.name = String(payload.name || p.name).trim() || p.name; saveStore('ai.people'); } return { ok: true }; });
+// Rename a person — REFUSING a name that already belongs to someone else.
+//
+// Both CREATE paths dedup case-insensitively (people:save above, people:reassignFace below); rename
+// did not, so the exact case the People dashboard invites — fixing a typo, "Sara" → "Sarah", when a
+// "Sarah" already exists — produced TWO records with the same name. The dashboard then shows two
+// indistinguishable cards, the enrolment faces stay SPLIT across both so recognition of that person
+// gets WORSE rather than better, and later people:save upserts land on whichever record `find` hits
+// first, so confirmations silently reach only one of them.
+//
+// REFUSE rather than auto-merge: people:merge combines faces and deletes the source, which is not
+// something to do behind the user's back on what looks like a typo fix. Reporting `existingId` lets
+// the renderer offer the merge explicitly, which is the same shape as every other destructive
+// action here — the user confirms it.
+ipcMain.handle('people:rename', (_e, payload) => {
+  const p = aiPeople().find((x) => x.id === (payload && payload.id));
+  if (!p) return { ok: false, reason: 'not-found' };
+  const next = String((payload && payload.name) || '').trim();
+  if (!next) return { ok: true };                       // nothing to do — keep the current name
+  // Its OWN record never counts as a collision, so "jake" → "Jake" (a casing correction of the same
+  // person) is allowed.
+  const clash = aiPeople().find((x) => x.id !== p.id && x.name.toLowerCase() === next.toLowerCase());
+  if (clash) return { ok: false, reason: 'name-exists', existingId: clash.id, name: clash.name };
+  p.name = next;
+  saveStore('ai.people');
+  return { ok: true };
+});
 ipcMain.handle('people:delete', (_e, id) => { config.ai.people = aiPeople().filter((p) => p.id !== id); saveStore('ai.people'); gcFaceCrops(); return { ok: true }; });
 // Merge `fromId` into `intoId` (combines faces, deletes the source) — for fixing
 // the same person split across two names.

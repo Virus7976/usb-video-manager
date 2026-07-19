@@ -10593,7 +10593,37 @@ async function showPeopleManager() {
       ${sec('Confirmed', conf, 'conf')}
       ${!faces.length ? '<p class="muted small">No face crops stored yet.</p>' : ''}`;
     const nameInp = main.querySelector('.pd-name');
-    const commitName = async () => { const nm = nameInp.value.trim(); if (nm && nm !== d.name) { const old = d.name; await window.api.renamePerson({ id: selId, name: nm }); updateClipPeopleName(old, nm); showToast(`Renamed to "${nm}"`); await reloadPeople(true); offerRetagAffectedClips(old, nm); } };
+    const commitName = async () => {
+      const nm = nameInp.value.trim();
+      if (!nm || nm === d.name) return;
+      const old = d.name;
+      const r = await window.api.renamePerson({ id: selId, name: nm });
+      // Main REFUSES a name that already belongs to someone else, rather than creating a second
+      // record with the same name (which would split this person's enrolment faces and make
+      // recognition worse). Renaming onto an existing name almost always means "these are the same
+      // person" — the typo case — so offer the merge that actually fixes it. Merging combines faces
+      // and DELETES the source, so it is confirmed, never automatic.
+      if (r && r.ok === false && r.reason === 'name-exists') {
+        const merge = await confirmDialog('That name is already taken',
+          `There is already a person called "${r.name}". Merge "${old}" into them? Their face examples are combined, which usually makes recognition better — "${old}" is removed.`,
+          `Merge into ${r.name}`, 'Keep separate');
+        if (!merge) { nameInp.value = old; return; }     // put the field back so it matches reality
+        try {
+          await window.api.mergePerson({ fromId: selId, intoId: r.existingId });
+          updateClipPeopleName(old, r.name);
+          showToast(`Merged "${old}" into "${r.name}" ✓`, 4000);
+          await reloadPeople(false);                     // the source record is gone — reselect
+          offerRetagAffectedClips(old, r.name);
+        } catch (e) {
+          nameInp.value = old;
+          showToast(`Couldn't merge — ${(e && e.message) || e}`, 6000);
+          logIssue('People', `Merge failed: ${(e && e.message) || e}`);
+        }
+        return;
+      }
+      if (!(r && r.ok)) { nameInp.value = old; return; }
+      updateClipPeopleName(old, nm); showToast(`Renamed to "${nm}"`); await reloadPeople(true); offerRetagAffectedClips(old, nm);
+    };
     nameInp.addEventListener('blur', commitName);
     nameInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nameInp.blur(); } });
     main.querySelector('.pd-del').addEventListener('click', async () => { removeClipPersonName(d.name); await window.api.deletePerson(selId); await reloadPeople(false); });

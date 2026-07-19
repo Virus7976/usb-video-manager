@@ -358,52 +358,40 @@ Two long-standing risks closed this session. Read this before assuming the old s
    build" claim was stale** (there is a real `release.mjs` → GitHub → electron-updater pipeline),
    plus a new §3 recording that there is **no database, no migrations, and no staging environment**.
 
-### 2026-07-19b — NEXT STEP: the face scan is not durable (owner-reported, NOT yet fixed)
+### 2026-07-19b — face-scan durability: 3 of 4 defects DONE (commit `95cc8a0`)
 
 Owner: *"if I do a face scan right now but don't confirm faces it doesn't remember the scan."*
-Diagnosed in full this session; **deliberately not started** — it is four separate defects across
-three pipelines and touches the pending-faces store, so a partial fix is worse than none. On a
-4594-clip card a lost scan is hours. Fix in this order:
+Fixed: the un-seeded `collectClipFaces` callers (which made an Analyze run **silently delete every
+unconfirmed face from an earlier scan** — worse than the reported symptom), persistence before the
+grid opens on both callers, `saveFaceScenesNow()` when a scan ends, and `scanFacesAuto` no longer
+claiming clips are review-scanned. Tests: `test/e2e/faces-scan-durable.e2e.mjs` (5).
 
-1. **`collectClipFaces` callers REPLACE the pending store — this is silent data loss and is worse
-   than the reported symptom.** `src/mod/07-organize-map.js:869` and `src/mod/09-phone-finalize.js:1769`
-   each start `const faceClusters = []` **un-seeded**, unlike `scanFacesForClips` which seeds from
-   `loadPendingFaces()`. When the grid renders, `schedulePendingSave(clusters)` →
-   `faces:savePending` **replaces the whole store** (`main-mod/08-finalize-feedback.js:141`). So an
-   Analyze run silently deletes every unconfirmed face from an earlier scan. Fix: seed both from
-   `await loadPendingFaces()` and `savePendingNow(faceClusters)` right after the collect loop,
-   before the grid is (or isn't) opened.
-2. **`scanFacesAuto` marks clips scanned while persisting zero clusters**
-   (`src/mod/08-people.js:277-317`): sets `_facesScanned = true` but never clusters and never saves.
-   It runs automatically after a copy via `autoBackgroundEnrich`. Afterwards "Scan faces" finds
-   `toScan` empty and `loadPendingFaces()` empty → *"No saved face review found."* Fix: either
-   cluster+persist like `scanFacesForClips`, or use a separate `_facesAutoScanned` flag so it stops
-   suppressing the real scan.
-3. **The scanned flag never persists from the Organize/Finalize screen.**
-   `currentSelectedClips()` (`src/mod/08-people.js:1119`) builds throwaway clips whose `_ref` points
-   into `finScan.files`, and `flushDraftSave` → `buildDraftMap()` walks **only**
-   `state.scannedFiles` (`src/mod/01-core.js:1157`). On Finalize the files are already renamed so the
-   `clipKey` (`name__size`) no longer matches and the flag is written to nothing. Note
-   `f.meta.facesScanned` is READ at `:1120` but **nothing anywhere writes it** — that read is dead.
-   Fix: mark scanned BY KEY through a main-side handler, and write `meta.facesScanned` on the
-   Finalize path so the read stops being dead.
-4. **Group shots are only persisted from inside the grid.** `saveFaceScenesNow()` is called in
-   exactly one place — `render()` (`src/mod/08-people.js:779`). The `finally` in `scanFacesForClips`
-   saves pending but not scenes, so scenes from a scan whose grid never opened are dropped.
-   Fix: one line — `saveFaceScenesNow()` beside `savePendingNow(clusters)` in that `finally`.
+**STILL OPEN — the 4th defect. The scanned flag does not persist from the Organize/Finalize
+screen.** `currentSelectedClips()` (`src/mod/08-people.js:1182`) builds throwaway clips whose `_ref`
+points into `finScan.files`, and `flushDraftSave` → `buildDraftMap()` walks **only**
+`state.scannedFiles` (`src/mod/01-core.js:1157`, and it bails entirely when that array is empty at
+`:1197`). On Finalize the files are already renamed, so `clipKey` (`name__size`) no longer matches
+and the flag is written to nothing durable — next session every clip re-scans. Note
+`f.meta.facesScanned` is READ at `08-people.js:1182` but **nothing anywhere writes it**; that read
+is dead. Fix: add a main-side mark-by-key handler (or upsert through `writeDrafts` keyed by
+`clipKey`) so `08-people.js:538` works regardless of which screen owns the clip list, and write
+`meta.facesScanned` on the Finalize path so the dead read becomes live. **Write the failing test
+first** — a two-launch e2e in the style of `faces-persistence.e2e.mjs`.
 
-**Watch out:** `test/face-scenes.test.mjs:144-159` string-matches the exact popup `cardHTML(...)`
-output, so any move from innerHTML-rebuild to incremental DOM updates breaks it and it must be
-updated in the same change.
+**FOUND, PRE-EXISTING, NOT MINE — `#58` e2e fails:** *"a dateless VIDEO takes its date from the
+container, not the copy time"* (`test/e2e/phone-capture-date.e2e.mjs`). Confirmed pre-existing by
+stashing this session's changes and watching it still fail. Not diagnosed. It means a dateless phone
+video may be getting dated to copy-time — worth checking before it silently mis-dates a shoot.
 
 **ALSO REQUESTED, not started:** drag a region on the group photo to name a face the detector
 missed ("I should be able to drag over a section on the screen and name it even if it's not
-recognized as a face"). Needs a manual-region path into the same cluster/enrolment flow — the face
-has no descriptor, so decide whether a hand-drawn region enrolls (it cannot produce a descriptor
-without a detect pass over that crop) or only tags the clip. Do not guess; it changes what
-`people.json` means.
+recognized as a face"). Open design question: a hand-drawn region has **no descriptor**, so decide
+whether it enrols (it cannot produce a descriptor without a detect pass over that crop) or only tags
+the clip. It changes what `people.json` means — do not guess.
 
----
+**ENVIRONMENT NOTE:** `shell.openPath` HANGS under headless WSL (no desktop file handler — the IPC
+reply never arrives and the call dies at 30s with "reply was never sent"). Any e2e that opens a
+folder for real must be skipped here, not debugged.
 
 ### 2026-07-19a — #95 DONE
 

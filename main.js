@@ -447,6 +447,93 @@ const config = loadConfig();
 // (post single-instance-lock, in boot) writes them to their new homes.
 loadStores();
 
+// ---------------------------------------------------------------------------
+// Path guard for the fs/shell IPC surface (audit #95)
+// ---------------------------------------------------------------------------
+// The renderer runs with `webSecurity: false` (deliberate — Chromium's file loader seeks HEVC over
+// file://) and renders two things the app does not control: filenames off a card, and AI-generated
+// text. So a handler that opens or reads whatever path it is handed turns one XSS into arbitrary
+// local read and arbitrary shell-open. `delete:source` already decides in main and fails closed;
+// these handlers did not.
+//
+// The allowlist is CONSENT-based, and that is the whole design. A pure config-roots list would be
+// secure and useless — the app is full of folder pickers and Jake points them at arbitrary disks.
+// So a root is allowed when the USER chose it: a native showOpenDialog result, or a removable
+// volume the app itself enumerated (cards are picked on the home screen, never through a dialog).
+// The renderer asking on its own behalf is not consent.
+//
+// Session-scoped on purpose: it is rebuilt from config + what the user does each run, so a stale
+// approval can't outlive the session that granted it.
+const approvedRoots = new Set();
+// Record a root the user has consented to. Call this from EVERY native dialog result and wherever
+// the app enumerates drives — a picker whose result never lands here will appear broken (its folder
+// is refused), which is the failure mode to watch for if you add a new picker.
+function rememberApprovedRoot(p) {
+  try {
+    const s = String(p || '').trim();
+    if (!s) return;
+    approvedRoots.add(path.resolve(s));
+  } catch { /* unresolvable — simply never approved */ }
+}
+// Every root legitimate right now: the configured folders (re-read each call, so changing a setting
+// takes effect immediately without re-approval), the app's own writable dirs, and consented roots.
+function allowedRoots() {
+  const roots = [];
+  const push = (v) => { const s = String(v || '').trim(); if (s) { try { roots.push(path.resolve(s)); } catch { /* skip */ } } };
+  push(config.intakeFolder); push(config.projectsRoot); push(config.finalizeSource);
+  push(config.photosTempFolder); push(config.phoneBackupFolder); push(config.phoneComputerFolder);
+  push(config.phoneNasFolder); push(config.phoneBackupSource); push(config.organizeDest);
+  push(config.nasBackup && config.nasBackup.path);
+  push(STORE_DIR);
+  try { push(app.getPath('userData')); } catch { /* stubbed in tests */ }
+  // ONLY the app's own scratch subdir — NOT `app.getPath('temp')` itself. Allowing the whole temp
+  // root sounds harmless and is not: on Windows it is the user's %TEMP% (full of other apps' data)
+  // and on Linux it is all of /tmp, which made the guard a no-op for anything staged there. The
+  // vm suite could not catch this — its `app.getPath` stub returns the test's own isolated dir, so
+  // the over-broad root never appeared. The real-app e2e caught it. Keep this narrow.
+  try { push(path.join(app.getPath('temp'), 'usb-auto-action-thumbs')); } catch { /* stubbed in tests */ }
+  for (const r of approvedRoots) push(r);
+  return roots;
+}
+// THE decision. Resolves first, so `..` traversal is judged by where it actually lands rather than
+// how it is spelled, and requires a SEPARATOR boundary — a plain `startsWith` would let the sibling
+// `/tmp/intake-evil` pass as "inside" `/tmp/intake`. Fails closed: anything unresolvable, empty, or
+// non-string is refused.
+function isPathAllowed(p) {
+  if (typeof p !== 'string' || !p.trim()) return false;
+  let target;
+  try { target = path.resolve(p); } catch { return false; }
+  for (const root of allowedRoots()) {
+    if (target === root) return true;
+    const withSep = root.endsWith(path.sep) ? root : root + path.sep;
+    if (target.startsWith(withSep)) return true;
+  }
+  return false;
+}
+// Consent is captured at the PRIMITIVE, not at the eight call sites. Wrapping `showOpenDialog`
+// once means every existing picker — and every picker anyone adds later — approves what the user
+// chose, automatically. Doing it per-site would work today and quietly break the next new picker
+// (its folder would be refused, looking like an unrelated bug). Same reasoning as DEDUP.md: one
+// primitive owns the concern.
+if (dialog && typeof dialog.showOpenDialog === 'function' && !dialog.__pathGuardWrapped) {
+  const rawShowOpenDialog = dialog.showOpenDialog.bind(dialog);
+  dialog.showOpenDialog = async (...args) => {
+    const res = await rawShowOpenDialog(...args);
+    try {
+      if (res && !res.canceled) for (const p of (res.filePaths || [])) rememberApprovedRoot(p);
+    } catch { /* approval is best-effort; never break the picker over it */ }
+    return res;
+  };
+  dialog.__pathGuardWrapped = true;
+}
+
+// Shared refusal shape, matching delete:source: say no, say why, and make the refusal legible in
+// the activity log rather than looking like an empty folder or a missing file.
+function refusePath(channel, p) {
+  console.warn(`[guard] ${channel} refused a path outside every allowed root: ${String(p || '')}`);
+  return { ok: false, refused: true, error: 'refused: that path is outside the folders this app is set up to use. Pick it in Settings or with a folder picker first.' };
+}
+
 // Whether a saved user config existed BEFORE this launch — the signal the
 // renderer uses to auto-show the first-run setup wizard (issue #1) exactly once,
 // on a genuine first run. Captured now, before any saveConfig() writes the file,
@@ -2348,7 +2435,12 @@ function listRemovableDrives() {
           console.error('drive query parse error:', err.message);
         }
       }
-      resolve(parsed.map(mapDrive).filter(Boolean));
+      const drives = parsed.map(mapDrive).filter(Boolean);
+      // #95 consent: a card is chosen on the HOME SCREEN, not through a dialog, so the picker wrap
+      // never sees it. A volume the app itself enumerated and offered is a legitimate root — without
+      // this, previews and posters for every clip on the card would be refused.
+      for (const d of drives) { try { rememberApprovedRoot(d.mountpoint || d.raw); } catch { /* ignore */ } }
+      resolve(drives);
     });
   });
 }
@@ -4258,11 +4350,25 @@ ipcMain.handle('copy:start', async (evt, payload) => {
   return { ok: !aborted, cancelled: aborted, copied, nas: { ...nasSummary, enabled: !!nasRoot } };
 });
 
-ipcMain.handle('media:url', (_evt, filePath) => fileUrl(filePath));
+// #95 — these three take a path from the renderer and read the disk with it: a file:// URL the
+// renderer can then fetch, an ffprobe, and an ffmpeg frame grab. Unguarded, script in the
+// webSecurity:false renderer could read any file the user can. Each returns its own "nothing"
+// value rather than a refusal object, because every caller already renders a missing preview
+// gracefully — a thrown error here would blank a working grid instead.
+ipcMain.handle('media:url', (_evt, filePath) => {
+  if (!isPathAllowed(filePath)) { refusePath('media:url', filePath); return ''; }
+  return fileUrl(filePath);
+});
 
-ipcMain.handle('meta:get', (_evt, srcPath) => probeMeta(srcPath));
+ipcMain.handle('meta:get', (_evt, srcPath) => {
+  if (!isPathAllowed(srcPath)) { refusePath('meta:get', srcPath); return null; }
+  return probeMeta(srcPath);
+});
 
-ipcMain.handle('poster:get', (_evt, srcPath) => getPoster(srcPath));
+ipcMain.handle('poster:get', (_evt, srcPath) => {
+  if (!isPathAllowed(srcPath)) { refusePath('poster:get', srcPath); return ''; }
+  return getPoster(srcPath);
+});
 
 // ---------------------------------------------------------------------------
 // Local AI suggestions via Ollama (optional, fully offline). Talks to the local
@@ -8056,6 +8162,8 @@ async function nearestExistingDir(folderPath) {
 ipcMain.handle('disk:freeSpace', async (_evt, folderPath) => {
   try {
     if (!folderPath) return { ok: false, error: 'no path' };
+    // #95: free space + the resolved probe path leak disk layout. Same allowlist as the rest.
+    if (!isPathAllowed(folderPath)) return refusePath('disk:freeSpace', folderPath);
     const probe = await nearestExistingDir(folderPath);
     const st = await fsp.statfs(probe);
     return { ok: true, free: Number(st.bavail) * Number(st.bsize), total: Number(st.blocks) * Number(st.bsize), path: probe };
@@ -8066,7 +8174,10 @@ ipcMain.handle('disk:freeSpace', async (_evt, folderPath) => {
 // last session's source (a card that may have been unplugged, or a folder) is reachable
 // before re-entering that flow.
 ipcMain.handle('path:exists', async (_evt, p) => {
-  try { if (!p) return false; await fsp.access(String(p)); return true; } catch { return false; }
+  // #95: unguarded this is a disk-mapping oracle — ask it about enough paths and you learn what's
+  // on the machine. It returns a bare boolean (resume-on-launch wants a yes/no), so a refusal is
+  // reported as `false`: not-reachable-by-this-app, which is exactly what the caller should do.
+  try { if (!p || !isPathAllowed(p)) return false; await fsp.access(String(p)); return true; } catch { return false; }
 });
 
 // Lightweight index of imported source files (key = name+size) so a re-inserted
@@ -8124,8 +8235,12 @@ ipcMain.handle('delete:source', async (_evt, items) => {
 });
 
 ipcMain.handle('open:folder', async (_evt, folder) => {
+  // #95: this hands a path to the SHELL. Unguarded it was "open anything on this disk" for anyone
+  // who could get script into the webSecurity:false renderer.
+  const target = folder || config.intakeFolder;
+  if (!isPathAllowed(target)) return refusePath('open:folder', target);
   try {
-    await shell.openPath(folder || config.intakeFolder);
+    await shell.openPath(target);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };

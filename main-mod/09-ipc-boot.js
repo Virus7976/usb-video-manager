@@ -1041,6 +1041,8 @@ async function nearestExistingDir(folderPath) {
 ipcMain.handle('disk:freeSpace', async (_evt, folderPath) => {
   try {
     if (!folderPath) return { ok: false, error: 'no path' };
+    // #95: free space + the resolved probe path leak disk layout. Same allowlist as the rest.
+    if (!isPathAllowed(folderPath)) return refusePath('disk:freeSpace', folderPath);
     const probe = await nearestExistingDir(folderPath);
     const st = await fsp.statfs(probe);
     return { ok: true, free: Number(st.bavail) * Number(st.bsize), total: Number(st.blocks) * Number(st.bsize), path: probe };
@@ -1051,7 +1053,10 @@ ipcMain.handle('disk:freeSpace', async (_evt, folderPath) => {
 // last session's source (a card that may have been unplugged, or a folder) is reachable
 // before re-entering that flow.
 ipcMain.handle('path:exists', async (_evt, p) => {
-  try { if (!p) return false; await fsp.access(String(p)); return true; } catch { return false; }
+  // #95: unguarded this is a disk-mapping oracle — ask it about enough paths and you learn what's
+  // on the machine. It returns a bare boolean (resume-on-launch wants a yes/no), so a refusal is
+  // reported as `false`: not-reachable-by-this-app, which is exactly what the caller should do.
+  try { if (!p || !isPathAllowed(p)) return false; await fsp.access(String(p)); return true; } catch { return false; }
 });
 
 // Lightweight index of imported source files (key = name+size) so a re-inserted
@@ -1109,8 +1114,12 @@ ipcMain.handle('delete:source', async (_evt, items) => {
 });
 
 ipcMain.handle('open:folder', async (_evt, folder) => {
+  // #95: this hands a path to the SHELL. Unguarded it was "open anything on this disk" for anyone
+  // who could get script into the webSecurity:false renderer.
+  const target = folder || config.intakeFolder;
+  if (!isPathAllowed(target)) return refusePath('open:folder', target);
   try {
-    await shell.openPath(folder || config.intakeFolder);
+    await shell.openPath(target);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };

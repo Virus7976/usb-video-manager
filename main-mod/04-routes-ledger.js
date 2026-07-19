@@ -177,7 +177,12 @@ function listRemovableDrives() {
           console.error('drive query parse error:', err.message);
         }
       }
-      resolve(parsed.map(mapDrive).filter(Boolean));
+      const drives = parsed.map(mapDrive).filter(Boolean);
+      // #95 consent: a card is chosen on the HOME SCREEN, not through a dialog, so the picker wrap
+      // never sees it. A volume the app itself enumerated and offered is a legitimate root — without
+      // this, previews and posters for every clip on the card would be refused.
+      for (const d of drives) { try { rememberApprovedRoot(d.mountpoint || d.raw); } catch { /* ignore */ } }
+      resolve(drives);
     });
   });
 }

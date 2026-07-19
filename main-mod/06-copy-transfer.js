@@ -543,11 +543,25 @@ ipcMain.handle('copy:start', async (evt, payload) => {
   return { ok: !aborted, cancelled: aborted, copied, nas: { ...nasSummary, enabled: !!nasRoot } };
 });
 
-ipcMain.handle('media:url', (_evt, filePath) => fileUrl(filePath));
+// #95 — these three take a path from the renderer and read the disk with it: a file:// URL the
+// renderer can then fetch, an ffprobe, and an ffmpeg frame grab. Unguarded, script in the
+// webSecurity:false renderer could read any file the user can. Each returns its own "nothing"
+// value rather than a refusal object, because every caller already renders a missing preview
+// gracefully — a thrown error here would blank a working grid instead.
+ipcMain.handle('media:url', (_evt, filePath) => {
+  if (!isPathAllowed(filePath)) { refusePath('media:url', filePath); return ''; }
+  return fileUrl(filePath);
+});
 
-ipcMain.handle('meta:get', (_evt, srcPath) => probeMeta(srcPath));
+ipcMain.handle('meta:get', (_evt, srcPath) => {
+  if (!isPathAllowed(srcPath)) { refusePath('meta:get', srcPath); return null; }
+  return probeMeta(srcPath);
+});
 
-ipcMain.handle('poster:get', (_evt, srcPath) => getPoster(srcPath));
+ipcMain.handle('poster:get', (_evt, srcPath) => {
+  if (!isPathAllowed(srcPath)) { refusePath('poster:get', srcPath); return ''; }
+  return getPoster(srcPath);
+});
 
 // ---------------------------------------------------------------------------
 // Local AI suggestions via Ollama (optional, fully offline). Talks to the local

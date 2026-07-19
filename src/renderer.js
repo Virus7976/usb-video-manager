@@ -9642,7 +9642,9 @@ async function collectClipFaces(clip, clusters, keys) {
   // sourcePath: `E:\DCIM\GX010023.MP4`. Replug the card and it comes back as `F:` — the face
   // review still showed the faces, but confirming them tagged ZERO clips, silently. Every other
   // store in the app (drafts, observations) is keyed by clipKey for exactly this reason.
-  const attach = (Array.isArray(keys) && keys.length) ? keys : [clipKey(clip)];
+  // #8: the collision-free key when we have to derive one. Callers that PASS keys own their own
+  // form (the phone path passes its own), and clipKeyMatches on the main side accepts either.
+  const attach = (Array.isArray(keys) && keys.length) ? keys : [clipKeyV2(clip)];
   let fr = null;
   pushActivity(`Scanning ${clip.name} for faces…`, 'face');
   try { fr = await detectFacesForClip({ sourcePath: clip.sourcePath }, (fi, ft) => { if (fi === 1 || fi === ft) pushActivity(`Sampling frames (${fi}/${ft})`, 'frame'); }); } catch { return 0; }
@@ -10006,7 +10008,7 @@ async function scanFacesForClips(clipList, opts = {}) {
         // in the Review grid, and are saved to the person's profile as UNCONFIRMED.
         let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < FACE_CLUSTER_DIST);
         if (!c) { c = { thumb: f.thumb, descriptor: f.descriptor, descriptors: [], clipKeys: new Set(), suggest: null }; clusters.push(c); pushActivity(matched ? `Looks like ${m.match.name} — needs your confirmation` : 'New face — will ask you to name it', 'face', f.thumb); }
-        c.descriptors.push(f.descriptor); c.clipKeys.add(clipKey(clip));   // stable across replug — see collectClipFaces
+        c.descriptors.push(f.descriptor); c.clipKeys.add(clipKeyV2(clip));   // stable across replug, collision-free since #8
         if (matched) {
           if (!c.suggest || dist < c.suggest.dist) c.suggest = { id: m.match.id, name: m.match.name, dist };
           notePerson(m.match.name, f.thumb);
@@ -10084,7 +10086,15 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   // path: clusters written before the key fix are still sitting in faces-pending.json keyed by
   // path, and a pending review is exactly the work we must never drop on the floor.
   const byKey = {};
-  for (const c of clipList) { byKey[clipKey(c)] = c; if (c.sourcePath) byKey[c.sourcePath] = c; }
+  // Index every form a cluster's key might be in: the new collision-free key (#8), the legacy
+  // fingerprint for clusters saved before it, and the absolute path for ones older still. A cluster
+  // whose key does not resolve here tags NOTHING and shows "0 clips" — silently — so the cost of an
+  // extra entry is nothing against the cost of a miss.
+  for (const c of clipList) {
+    byKey[clipKeyV2(c)] = c;
+    byKey[clipKey(c)] = c;
+    if (c.sourcePath) byKey[c.sourcePath] = c;
+  }
   clusters.forEach((c, i) => { c._i = i; });
   const ov = document.createElement('div'); ov.className = 'modal-overlay';
   ov.innerHTML = `<div class="modal-card face-grid-card">

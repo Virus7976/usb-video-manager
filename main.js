@@ -7184,15 +7184,45 @@ ipcMain.handle('clips:retagPerson', (_evt, payload) => {
 // Deliberately ADD-ONLY: it never removes a person and never creates a record for an unknown key
 // (a cluster can reference a clip whose record was pruned, and resurrecting a stub carrying nothing
 // but a person would be worse than the missing tag).
+// Do two clip keys refer to the same clip, across the #8 migration boundary?
+//
+// A face cluster's `clipKeys` are sent here to tag people onto drafts/finalMeta. Drafts are now
+// keyed `name__size__mtime`, but a cluster saved before that carries the legacy `name__size` — and
+// an EXACT string match meant such a cluster tagged NOTHING while still reporting ok, because
+// `tagged` is not surfaced anywhere the user looks.
+//
+// The legacy key is a prefix of the new one, so stem-matching would "work" — and would re-introduce
+// the exact collision the migration removes, letting a name confirmed on one card land on an
+// identically-named clip from another. So: when BOTH keys carry an mtime, require exact equality;
+// fall back to the stem only when one of them genuinely lacks it, where no better information
+// exists and stem-matching is already today's behaviour.
+function clipKeyStem(k) {
+  const s = String(k || '');
+  const i = s.indexOf('__');
+  if (i < 0) return '';
+  const j = s.indexOf('__', i + 2);
+  return j < 0 ? s : s.slice(0, j);
+}
+function clipKeyHasMtime(k) { return clipKeyStem(k) !== '' && String(k || '') !== clipKeyStem(k); }
+function clipKeyMatches(a, b) {
+  const x = String(a || ''); const y = String(b || '');
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // Both fully qualified and not equal → genuinely different clips. Never fall through to the stem.
+  if (clipKeyHasMtime(x) && clipKeyHasMtime(y)) return false;
+  const sx = clipKeyStem(x); const sy = clipKeyStem(y);
+  return !!sx && sx === sy;
+}
+
 ipcMain.handle('clips:tagPerson', (_evt, payload) => {
   const name = String((payload && payload.name) || '').trim();
   const keys = Array.isArray(payload && payload.keys) ? payload.keys.map((k) => String(k || '')).filter(Boolean) : [];
   if (!name || !keys.length) return { ok: false, tagged: 0 };
-  const want = new Set(keys);
   let tagged = 0;
   const apply = (store) => {
     for (const k of Object.keys(store)) {
-      if (!want.has(k)) continue;
+      // #8: match across key forms, not by exact string — see clipKeyMatches.
+      if (!keys.some((w) => clipKeyMatches(w, k))) continue;
       const rec = store[k]; if (!rec) continue;
       const cur = Array.isArray(rec.people) ? rec.people : [];
       if (cur.includes(name)) continue;         // idempotent: re-confirming must not duplicate
@@ -7220,11 +7250,12 @@ ipcMain.handle('clips:untagPerson', (_evt, payload) => {
   const name = String((payload && payload.name) || '').trim();
   const keys = Array.isArray(payload && payload.keys) ? payload.keys.map((k) => String(k || '')).filter(Boolean) : [];
   if (!name || !keys.length) return { ok: false, untagged: 0 };
-  const want = new Set(keys);
   let untagged = 0;
   const apply = (store) => {
     for (const k of Object.keys(store)) {
-      if (!want.has(k)) continue;
+      // #8: the SAME cross-form match as its sibling. Undo has to reach whatever tagPerson reached —
+      // an exact-match untag against a migrated draft would leave the tag behind permanently.
+      if (!keys.some((w) => clipKeyMatches(w, k))) continue;
       const rec = store[k]; if (!rec || !Array.isArray(rec.people)) continue;
       if (!rec.people.includes(name)) continue;
       rec.people = rec.people.filter((n) => n !== name);

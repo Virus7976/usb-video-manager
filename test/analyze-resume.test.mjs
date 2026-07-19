@@ -121,17 +121,25 @@ test('face clusters are keyed by the stable fingerprint, never the absolute path
     /clipKeys\.add\(clip\.key \|\| clip\.sourcePath\)/.test(src), false,
     'a path key breaks the moment the card comes back as a different drive letter',
   );
-  assert.match(src, /clipKeys\.add\(clipKey\(clip\)\)/, 'clusters are keyed by clipKey');
-  assert.match(src, /const attach = \(Array\.isArray\(keys\) && keys\.length\) \? keys : \[clipKey\(clip\)\]/);
+  // #8 moved these to clipKeyV2 (name__size__mtime). The PROPERTY under test is unchanged — a
+  // cluster is keyed by a stable FINGERPRINT, not by a path — so assert that, not the exact spelling.
+  assert.match(src, /clipKeys\.add\(clipKeyV2\(clip\)\)/, 'clusters are keyed by the fingerprint');
+  assert.match(src, /const attach = \(Array\.isArray\(keys\) && keys\.length\) \? keys : \[clipKeyV2\(clip\)\]/);
 });
 
 test('the face-review lookup still resolves clusters saved under the OLD path key', () => {
   // faces-pending.json on disk right now holds path-keyed clusters. A pending review is
   // unconfirmed user work — the key fix must not silently strand it.
+  // #8 made this a multi-line block indexing all three forms, so look at the whole byKey build
+  // rather than one line. The requirement is unchanged: a cluster key of ANY vintage must resolve,
+  // because one that doesn't tags nothing and reports "0 clips" without saying why.
   const src = readMod('08-people.js');
-  const line = src.split('\n').find((l) => l.includes('byKey[clipKey(c)]'));
-  assert.ok(line, 'the lookup indexes by the stable key');
-  assert.match(line, /byKey\[c\.sourcePath\]/, 'AND still by the legacy path key');
+  const start = src.indexOf('const byKey = {};');
+  assert.ok(start > 0, 'the lookup exists');
+  const block = src.slice(start, src.indexOf('clusters.forEach', start));
+  assert.match(block, /byKey\[clipKeyV2\(c\)\]/, 'indexes the collision-free key');
+  assert.match(block, /byKey\[clipKey\(c\)\]/, 'AND the legacy fingerprint');
+  assert.match(block, /byKey\[c\.sourcePath\]/, 'AND still the legacy path key');
 });
 
 test('confirming a face persists immediately — it is not left in memory', () => {

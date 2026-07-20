@@ -95,6 +95,33 @@ individually. So the bulk path is there; only the *automatic* part is open.
 
 ---
 
+## Q7 — the MTP phone copier can still overwrite one photo with another. Fix it blind, or wait?
+
+**The question:** the ADB pull path had a bug where two photos sharing a filename in different phone
+folders (`DCIM/Camera/IMG_0001.jpg` and `Pictures/IMG_0001.jpg`) ended with one of them **deleted**.
+That is fixed and tested. The MTP path — the fallback used when ADB is off or the phone refuses it —
+has the same hole, in the embedded PowerShell: it does `Join-Path $dest $entry.name` with no
+collision handling, so the second photo either overwrites the first or is reported `SKIP` when the
+sizes happen to match. Either way one irreplaceable photo is gone and the run reports success.
+
+**Why it needs you:** I can't test PowerShell from WSL without a real phone attached. Every other fix
+this session was proved by breaking it and watching a test fail; this one I would be writing blind,
+and the code path moves the only copy of your photos. Guessing at it is the exact trade that has
+produced regressions here before.
+
+**Options:**
+1. **Wait until you can plug a phone in** and I'll fix it with you watching the first run. (Safest.)
+2. **Fix it blind anyway** — the change is small (claim each target name, same logic ADB already
+   uses) and I'd add a dry-run mode you could eyeball before a real transfer.
+3. **Make MTP refuse the collision instead of guessing** — if two selected items share a filename,
+   stop and tell you, rather than copying. Loses nothing, but you'd have to pull them in two passes.
+
+**In the meantime:** if fast transfer (ADB) is on, you are not exposed — that path is fixed. Note
+that turning ADB *off* is currently impossible from the UI (see the backlog), so if it's on, it stays
+on.
+
+---
+
 ## Answered
 
 _(nothing yet)_

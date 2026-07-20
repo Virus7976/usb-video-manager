@@ -449,6 +449,104 @@ break didn't fail" is not evidence that a guard is redundant.
 
 ---
 
+## 8d. ⚠ THE STANDING BACKLOG — six-agent parallel audit, 2026-07-20
+
+Six read-only subagents audited copy/delete, AI/faces, renderer state, dead paths, stores, and UI
+honesty in parallel. **Fixing one loop's worth per loop; pull the next from here rather than starting
+a fresh hunt.** Items struck through are done and have a test. Everything below was traced to a line,
+not guessed — but re-verify before fixing, because three earlier "traced" findings turned out to be
+overstated once I read the surrounding code.
+
+### Done this loop (2026-07-20, commit 93141b6)
+- ~~Organize map: manual placements destroyed on rebuild, and Run filed to the auto plan~~
+- ~~Phone pull: a successfully pulled photo deleted when two share a filename (+ merge/retry twins)~~
+- ~~`draftIsNamed` blind to face tags → 200 of his drafts prunable~~
+- ~~`people:merge` capped at 60 vs 80 everywhere else~~
+- ~~`collectClipFaces` missing the `m.ignored` guard its twin has~~
+- ~~Cancelled analyze discarded its clusters while clips stayed marked scanned~~
+- ~~Phone entry: list built after questions restored; `updateBatchBar` never called~~
+- ~~"AI auto-enhance complete ✓" and "Filed N …✓" claimed success over total failure~~
+
+### Next up — data safety (highest value)
+1. **`_serializePending` prunes resolved clusters on a silently-empty scene list.** If
+   `face-scenes.json` is corrupt, main returns the empty default rather than throwing, so
+   `_scenesLoadFailed` stays false and the next pending save strips every done/skipped cluster.
+   `savePendingNow` checks only `_pendingLoadFailed`. → gate on the scenes load too.
+2. **`gcFaceCrops` guards three stores but not `config.ai.ignored`** (which lives in config.json, not
+   a sidecar). A failed config read → ignored list reads `[]` → the GC unlinks every ignored face's
+   crop. The three sibling guards are present; the fourth is absent.
+3. **Group shots keyed with legacy `clipKey` (`name__size`) while the clusters beside them use
+   `clipKeyV2`.** Two GoPro clips sharing name+size — ordinary given his chaptering — overwrite each
+   other's scene record, and `gcFaceCrops` then unlinks the displaced frame.
+4. **`clipObs` cap sorts on `ts` with `|| 0`**, so legacy records without a `ts` are evicted first
+   regardless of age, and it is the only cap with no unconsumed-work exemption. Not firing yet
+   (1084 of 4000) but it is the shape that produced the 180-day finalMeta bug.
+
+### Next up — the AI pipeline never completes ([[usb-app-toolness-100]])
+5. **The Organize shoot question can never fire.** `askAboutShoots` reads `c.date`, but
+   finalize/Organize clips carry the date at `f.meta.date` — only card-flow clips have a top-level
+   one. So `dates` is empty and it returns immediately. This is why `shootMemory` reads 0 despite the
+   feature being wired, and it starves `get_shoot_context` of the +20pt `he_told_you_this_shoot_is`
+   signal. **Fix 6 at the same time or the fix is invisible.**
+6. **`askAboutShoots`'s "apply to the whole day" writes `c.subject`**, which on the Organize path is
+   only the conveyor caption; the authoritative field is `f.meta.subject` via `saveFinalMeta`. He
+   answers, sees a toast claiming N clips named, and nothing persists.
+7. **`clips:tagPerson`/`untagPerson` can never match a finalMeta record.** finalMeta is keyed by
+   lower-cased filename; the keys passed in are always `clipKeyV2`. Every comparison is false, so
+   confirming a face tags nothing durable for already-filed clips — which is precisely the case the
+   feature's own comment says it exists for.
+8. **Face-chip ranking tier 2 is dead**: it reads `p.faces.length`, but `people:get` returns
+   `{count, confirmed, unconfirmed}` and no `faces` array. Chips fall through to alphabetical.
+9. **A transient face-engine failure marks the clip permanently scanned** — `detectFacesForClip`
+   returns `{ready:false}` with no `readError`/`detectError`, and the guard checks only those two.
+   Should be `if (fr.ready && !fr.readError && !fr.detectError)`.
+10. **Descriptors per pending cluster are uncapped.** Measured: 4715 vectors across 458 clusters, one
+    cluster holding 318 (~880 KB alone), 14 MB total of which only 37 KB is thumbnails. Enrolment
+    caps at 80 on arrival, so everything past 80 is written and re-written for nothing.
+
+### Next up — the renderer rebuilds destroy state
+11. **Scroll position is lost on every rebuild** in `finRenderList`, `renderTreeView` and `renderPlan`
+    — while the twins at `01-core.js:1634` and `07-organize-map.js:1660` explicitly preserve it.
+    `finRenderList` is called *inside* the analyze loop, so a 400-clip run snaps the list to the top
+    after every clip. Multi-select by clicking is unusable past the first screen.
+12. **The "remember this rule" checkbox is discarded by the re-render that reads it** — `.dplan-rem`
+    lives inside the group card, and expanding any group calls `renderPlan()`, resetting them all. He
+    ticks three, expands one to check its clips, and files with no rule saved and no signal.
+13. **`finResetDates` awaits one ffprobe per selected clip serially**, with progress hardcoded to 1/1
+    and no `aiAborted` check. Select-all on 400 clips is minutes of apparent hang with no cancel.
+14. **Phone entry fans out ~400 concurrent ffprobes** in one `Promise.all` with no bound, on a blank
+    screen with no spinner.
+15. **`versions.json` stores a full copy of all 4594 drafts per save point** — ~1.4 MB each, 8.6 MB
+    for 8 points. Store a delta, or the names only.
+
+### Next up — capability that exists but cannot be reached
+16. **`rename:apply` is fully implemented and wired to nothing** — so a typo in a filed clip's name
+    is permanent inside the app, and fixing it in Explorer desyncs finalMeta/ledger keyed on the name.
+17. **`adbDisable` is unreachable**: `useAdb` is set true in three places and false only by a handler
+    nothing calls. If ADB flakes, he is stuck on the broken path with no way back to MTP short of
+    hand-editing config.json. (Also gates Q7 in QUESTIONS.md.)
+18. **`clearPhoneBackupFolder` unreachable** — the pick half is wired, the clear half is not.
+19. **`removeFieldHistory` unreachable**, so every typo he has ever typed is offered back forever in
+    the combo dropdowns — and `styleExamples` mines those same values for the AI.
+20. **`simulatePhone` menu checkbox has inverted polarity on a fresh config** (`!== false` in the
+    renderer vs `=== true` in main), so it renders ticked while off and clicking it is a no-op.
+21. **`finSlugFolder` (`slug(v) || 'unsorted'`) is never called**; the real path build drops empty
+    levels instead, so a clip missing a category lands one directory shallower, mixed into another
+    level's contents rather than a visible `unsorted/`.
+
+### Deferred deliberately
+- **The MTP PowerShell copier has the same collision hole the ADB path just had.** Not fixed: it
+  cannot be tested from WSL without a real device and it moves the only copy of his photos. Recorded
+  as **Q7** in QUESTIONS.md with three options.
+
+### The structural lesson from this audit
+Findings 1, 3 and 6 in the UI-honesty sweep were all cases where a **correct** version of the same
+message already exists elsewhere (`07-organize-map.js:1490`, `04-tasks-ai.js:909`). The honesty fixes
+were applied per-site instead of to a shared helper, so every new call site starts out dishonest by
+default. Same for the face guards and the caps: **the twin is where the bug is.** When fixing
+anything here, grep for the sibling before writing the test — five of this loop's eight fixes were
+"one path fixed, its twin missed".
+
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
 - **A STRUCTURAL ASSERTION MUST NAME THE THING THAT WOULD GO MISSING — and you must break each part

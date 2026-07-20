@@ -1348,8 +1348,25 @@ async function resolveFolderPath(root, parts) {
     let actual = want;
     try {
       const entries = await fsp.readdir(cur, { withFileTypes: true });
-      const hit = entries.find((e) => e.isDirectory() && e.name.toLowerCase() === want.toLowerCase());
+      const dirs = entries.filter((e) => e.isDirectory());
+      const hit = dirs.find((e) => e.name.toLowerCase() === want.toLowerCase());
       if (hit) actual = hit.name;                  // his spelling wins over ours, always
+      else {
+        // SEPARATORS TOO, not just case. Measured across his real 513 filenames: `lawn-mowing` (68
+        // clips) and `lawnmowing` (15) are the same subject spelled two ways, and they were building
+        // two sibling trees for one thing — 83 clips split, the second-biggest subject he has.
+        //
+        // This is the SAME rule one step wider: never invent a name, only prefer a folder he already
+        // has. So a clip whose subject is `lawnmowing` lands in the existing `lawn-mowing/` rather
+        // than starting a near-duplicate beside it. If neither exists, whatever the clip says wins
+        // and nothing is normalised — his vocabulary is his.
+        //
+        // Strictly after the exact/case check, so an exact folder can never be stolen by a fuzzy one.
+        const loose = (x) => x.toLowerCase().replace(/[\s._-]+/g, '');
+        const lw = loose(want);
+        const near = lw ? dirs.find((e) => loose(e.name) === lw) : null;
+        if (near) actual = near.name;
+      }
     } catch { /* the folder does not exist yet — we are about to create it */ }
     cur = path.join(cur, actual);
   }
@@ -8690,7 +8707,15 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
           // re-check-its-work loop this app exists to remove. `parts` is the folder the ladder or
           // the map actually chose, which is not always the `rel` the caller sent (it sends none for
           // an unnamed clip).
-          summary.filedRels.push({ name: it.name, rel: parts.join('/') });
+          // THE FOLDER ON DISK, not the one we asked for. `resolveFolderPath` deliberately overrides
+          // our spelling with his — case, and now separators too (`lawnmowing` joins his existing
+          // `lawn-mowing/`) — so `parts` is the REQUEST and `targetDir` is the ANSWER. Reporting the
+          // request put the wrong folder in the toast, in the row badge and in the ledger for exactly
+          // the clips that got reused into an existing tree. Found by breaking the reuse ordering and
+          // watching a test that read this field stay green while the disk said otherwise.
+          const landedRel = path.relative(dest, r.path ? path.dirname(r.path) : targetDir)
+            .split(path.sep).filter(Boolean).join('/');
+          summary.filedRels.push({ name: it.name, rel: landedRel || parts.join('/') });
           undoable.push({ from: before, to: r.path, copied: r.action === 'copied' });
           // BRING THE SIDECAR WITH IT. It was written beside the SOURCE in step 1 and then abandoned
           // there: organizeMove doesn't carry an adjacent .xmp, and nothing else looked at it. So the

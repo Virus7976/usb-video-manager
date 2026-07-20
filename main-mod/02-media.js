@@ -244,8 +244,25 @@ async function resolveFolderPath(root, parts) {
     let actual = want;
     try {
       const entries = await fsp.readdir(cur, { withFileTypes: true });
-      const hit = entries.find((e) => e.isDirectory() && e.name.toLowerCase() === want.toLowerCase());
+      const dirs = entries.filter((e) => e.isDirectory());
+      const hit = dirs.find((e) => e.name.toLowerCase() === want.toLowerCase());
       if (hit) actual = hit.name;                  // his spelling wins over ours, always
+      else {
+        // SEPARATORS TOO, not just case. Measured across his real 513 filenames: `lawn-mowing` (68
+        // clips) and `lawnmowing` (15) are the same subject spelled two ways, and they were building
+        // two sibling trees for one thing — 83 clips split, the second-biggest subject he has.
+        //
+        // This is the SAME rule one step wider: never invent a name, only prefer a folder he already
+        // has. So a clip whose subject is `lawnmowing` lands in the existing `lawn-mowing/` rather
+        // than starting a near-duplicate beside it. If neither exists, whatever the clip says wins
+        // and nothing is normalised — his vocabulary is his.
+        //
+        // Strictly after the exact/case check, so an exact folder can never be stolen by a fuzzy one.
+        const loose = (x) => x.toLowerCase().replace(/[\s._-]+/g, '');
+        const lw = loose(want);
+        const near = lw ? dirs.find((e) => loose(e.name) === lw) : null;
+        if (near) actual = near.name;
+      }
     } catch { /* the folder does not exist yet — we are about to create it */ }
     cur = path.join(cur, actual);
   }

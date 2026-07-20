@@ -322,6 +322,42 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19cg — one subject, two folders: 83 clips reunited. Plus a reporting bug I had shipped.
+
+Parsed **all 513 of his real filenames** to see the parser's output at scale: 37 unparsed (raw camera
+names), 1 with no subject, and just **9 distinct subjects** — of which two are the same thing spelled
+two ways. `lawn-mowing` (68 clips) and `lawnmowing` (15): **83 clips, his second-biggest subject,
+building two sibling trees** that sort apart in Explorer and that the ledger learns as unrelated
+projects.
+
+`resolveFolderPath` already had the right instinct, one step narrower — *"his spelling wins over
+ours, always"*, matching existing folders case-insensitively so `2026 - client work` lands in his
+`2026 - Client Work`. Widened from case to separators.
+
+**Why this needed no decision from him, unlike renaming his subjects:** it never invents or
+normalises a name. With no matching folder on disk, the clip's own spelling wins untouched. The only
+behaviour is *prefer a folder you already have over creating a near-duplicate beside it*.
+
+**⚠ Breaking the code found a bug I had SHIPPED two iterations ago.** `filedRels` — the "where it
+landed" report added for the one-clip path — was built from `parts.join('/')`, the folder we
+REQUESTED, while `resolveFolderPath` returns the folder he actually has. Those differ precisely when
+reuse fires, so the toast, the row badge and the ledger all named the wrong folder for exactly the
+clips this change affects. Now derived from the resolved path.
+
+**Three of my own tests were weaker than they looked, each found by breaking:**
+- *"exact folder is never stolen"* passed by luck of `readdir` ordering — it created the decoy
+  second. Now creates it first AND asserts it is listed first, so the ordering is a precondition
+  rather than a coincidence.
+- *"nothing is normalised"* used `lawnmowing`, whose loose form is identical to itself, so it could
+  never catch a normalise-the-key bug. Uses the hyphenated spelling now.
+- *nothing at all* caught the `filedRels` regression, because every test asked for the folder it
+  ended up in. Added the one case where request and answer differ.
+
+`test/folder-reuse-ignores-separators.test.mjs` (8), six breaks proven including both damaging
+directions (different subjects must not merge; a FILE must never be mistaken for a folder).
+
+vm **1214/1071/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-19cf — a camera counter was becoming a folder in his Projects tree.
 
 Acting on one of yesterday's measured leftovers. Dry-filing his real backlog put a clip into a folder

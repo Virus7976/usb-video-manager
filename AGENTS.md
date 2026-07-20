@@ -322,6 +322,30 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20z — probed the Tdarr gap. It holds; locked it in.
+
+Round-tripped the single most important persistence path in his workflow: the AI's work crossing the
+**compress gap**. `finalMeta` is the only carrier between "copy to intake" and "organize the compressed
+output", and that gap is deliberately days or weeks. His store measured **1 entry** because the old
+prune ate the rest (j).
+
+Wrote a record, relaunched on the same profile, rescanned: **matched from the SAVED record, with the
+observation and the people intact.** No bug.
+
+Also confirmed the Organize-screen analyse path persists per clip (`finAnalyzeSelected` saves
+`finalMeta` for each clip as it finishes) — so analysis started from Organize is not lost on relaunch,
+which matters now that the shoot question fires there too (p).
+
+Added as the 7th case in `lazy-stores-survive-a-relaunch`, because the property is the same family and
+they belong together. The break that proves it: stop preferring the saved record on rescan → the
+gap-crossing test fails while every other persistence test stays green.
+
+**Nothing to deploy — no product code changed.** Three iterations in a row where the probe found the
+code already correct is itself a result: the data layer that was losing his work a week ago now
+survives everything I can throw at it.
+
+vm **1372/1229/143/0**.
+
 ### 2026-07-20y — Tier 1 item 17: resume lands on the CLIP he left, not the top of the list.
 
 The session already reopened the right screen; it never remembered where in it he was. A relaunch

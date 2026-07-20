@@ -115,6 +115,43 @@ test('the sidecar file is what carries it, not config.json', async () => {
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
 
+test('⚠⚠ the AI\'s work survives the Tdarr GAP — the longest-lived path in his workflow', async () => {
+  // `finalMeta` is not lazy, but it is the carrier that matters most: it is the ONLY thing holding
+  // what the AI worked out between "copy to intake" and "organize the compressed output", and that
+  // gap is deliberately days or weeks (let Tdarr compress, come back later). His store measured **1
+  // entry** because the old prune ate the rest (2026-07-20j).
+  //
+  // So the property is not just "the file persists" — it is that a rescan on a LATER LAUNCH still
+  // recognises the clip and hands back the rich fields that decide where it files and who is in it.
+  const base = mkdtempSync(join(tmpdir(), 'uvd-relaunch-gap-'));
+  const dir = join(base, 'Compressed');
+  try {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '2026-03-14_vlog_kitchen_v1.mp4'), 'FOOTAGE');
+
+    const a = loadMain({ userData: base });
+    await a.invoke('finalMeta:save', {
+      '2026-03-14_vlog_kitchen_v1.mp4': {
+        subject: 'vlog', description: 'kitchen chat', people: ['Liam'],
+        observation: 'liam at the counter', done: false,
+      },
+    });
+    a.dispose();
+
+    const b = loadMain({ userData: base });
+    const scan = b.plain(await b.invoke('finalize:scan', { dir }));
+    b.dispose();
+
+    const f = (scan.files || [])[0];
+    assert.ok(f, 'the clip is listed after the relaunch');
+    assert.equal(f.matched, true, 'and still recognised as having metadata');
+    assert.equal(f.matchType, 'saved', `from the SAVED record, not the filename fallback — got ${f.matchType}`);
+    assert.equal(f.meta.observation, 'liam at the counter', '⚠ the observation crossed the gap');
+    assert.deepEqual(f.meta.people, ['Liam'], '⚠ and so did the people');
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});
+
 test('a relaunch with NO prior writes starts clean rather than failing', async () => {
   // The first-run direction: absent is normal, and must not be confused with unreadable
   // (2026-07-20f). A fresh profile must simply read empty.

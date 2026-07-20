@@ -322,6 +322,39 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19br — TIER 1 #14: the pile now visibly shrinks. Filed work looks finished.
+
+Filing COPIES — keeping the L: archive is the whole point — so after a run his 310 clips are still in
+the Compressed folder and this scan lists them again. **Completed work was indistinguishable from work
+still to do**, the pile never appeared to shrink, and "Select all → Run" would re-file everything he
+had already done.
+
+The project ledger already knew: it records `clipNames` per project, and since `bq` it finally
+receives entries from his no-plan runs. **The store that was empty for months is now the one that
+makes progress visible** — no new bookkeeping was needed.
+
+- `finalize:scan` reports `filed` / `filedIn` per row and a `filedCount` for the run.
+- The row carries a **"filed → vlog"** badge, so the obvious follow-up question ("filed where?") is
+  answered on the row rather than requiring a trip to the Projects tree.
+- The summary reads **"… · 12 already filed, 298 left"** — toolness item 14, *a "what's left" counter
+  that never lies*.
+- A filed clip is **not armed** for the next run, but is still listed and still tickable: he may want
+  to re-file after a rename. Not-armed-by-default is not the same as forbidden.
+
+`test/organize-shows-already-filed.test.mjs` (6 vm tests) + `test/e2e/filed-clips-shown-done.e2e.mjs`
+(6 e2e), both parts proven by breaking them. Guards the other direction: an empty ledger claims
+nothing, a broken ledger never breaks the scan, and a fresh folder shows no "0 already filed" noise.
+
+**Loose-assertion catch again:** the badge test first matched `/filed/i` and `/vlog/` against the whole
+ROW — and "vlog" is in the metadata chips, so suppressing the badge entirely left it green. Bound to
+`.fin-src-badge.done`. **Assert on the element you added, not on text that happens to be nearby.**
+
+Both tiers green: vm **1108/990/118/0**, e2e **118/117/1/0**.
+
+**The Tier 1 filing thread is now complete end to end:** fileable (`bj`) → selectable and opt-in
+(`bk`) → honestly described before the run (`bl`) → a real destination (`bm`) → never the root (`bo`)
+→ useful folders (`bp`) → the ledger learns (`bq`) → and progress is visible (`br`).
+
 ### 2026-07-19bq — ⭐ the app's learning loop had never once run. Now filing teaches the ledger.
 
 `finalize:run` builds ledger entries as `{ rel: relRaw }` — `relRaw` is the destination MAP's path,

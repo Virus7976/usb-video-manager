@@ -8170,6 +8170,23 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     if (opts.includePhotos) files = files.concat(await listImagesShallow(dir));
   } catch (err) { return { ok: false, error: err.message }; }
 
+  // WHAT HAS HE ALREADY DONE? Filing COPIES, so his clips stay in the Compressed folder afterwards
+  // and this scan lists them again — the same 310 rows, with nothing to show that any were filed.
+  // Doing the work never made the pile smaller, and "Select all → Run" would re-file the lot.
+  //
+  // The project ledger already knows: it records `clipNames` per project, and since it finally
+  // receives entries from his no-plan runs (2026-07-19bq) it is the store that makes progress
+  // visible. No new bookkeeping needed. Best-effort — a ledger problem must never break a scan.
+  const filedIn = new Map();
+  try {
+    for (const rec of (config.projectLedger || [])) {
+      for (const n of ((rec && rec.clipNames) || [])) {
+        const k = String(n || '').toLowerCase();
+        if (k && !filedIn.has(k)) filedIn.set(k, rec.rel || rec.name || '');
+      }
+    }
+  } catch { /* ignore — nothing here is worth failing a scan over */ }
+
   const store = currentFinalMeta();
   const byName = {}; const byStem = {};
   for (const [k, v] of Object.entries(store)) {
@@ -8211,13 +8228,16 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     }
     // Photos almost never have a saved record yet (IMG_1234.jpg), but they should still
     // be SELECTABLE so Analyze can name them — so treat a photo as "matched/included".
-    return { name: f.name, sourcePath: f.sourcePath, size: f.size, isPhoto: !!f.isPhoto, matched: !!rec || !!f.isPhoto, matchType: rec ? matchType : (f.isPhoto ? 'photo' : matchType), meta: rec };
+    const already = filedIn.get(String(f.name || '').toLowerCase());
+    return { name: f.name, sourcePath: f.sourcePath, size: f.size, isPhoto: !!f.isPhoto, matched: !!rec || !!f.isPhoto, matchType: rec ? matchType : (f.isPhoto ? 'photo' : matchType), meta: rec, filed: already !== undefined, filedIn: already || '' };
   }));
   return {
     ok: true, dir,
     files: out,
     total: out.length,
-    matchedCount: out.filter((x) => x.matched).length
+    matchedCount: out.filter((x) => x.matched).length,
+    // The counter that must shrink as he works.
+    filedCount: out.filter((x) => x.filed).length
   };
 });
 

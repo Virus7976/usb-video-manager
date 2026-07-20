@@ -13352,12 +13352,16 @@ function finRenderList() {
   // Default the clips he has already worked on to selected; leave the UNNAMED ones unticked so he
   // opts in. Both are fileable now, but 4263 clips armed by default behind one Run button is a
   // library-wide move nobody asked for — a capability needs a control, not just a default.
-  for (const f of matched) if (f.selected === undefined) f.selected = !!f.matched;
+  // Never re-arm work he has already finished. A filed clip stays LISTED (he may want to re-file it
+  // after a rename) but the obvious next action should only touch what is genuinely left.
+  for (const f of matched) if (f.selected === undefined) f.selected = !!f.matched && !f.filed;
   const nameN = matched.filter((f) => f.matchType === 'name').length;
   const describedN = matched.filter((f) => f.matched).length;
   const plainN = matched.length - describedN;
+  const filedN = matched.filter((f) => f.filed).length;
+  const leftN = matched.length - filedN;
   let summary = files.length
-    ? `${files.length} clip${files.length !== 1 ? 's' : ''} found · ${describedN} with metadata${plainN ? ` · ${plainN} will file by date` : ''}`
+    ? `${files.length} clip${files.length !== 1 ? 's' : ''} found · ${describedN} with metadata${plainN ? ` · ${plainN} will file by date` : ''}${filedN ? ` · ${filedN} already filed, ${leftN} left` : ''}`
     : 'No video files in this folder.';
   if (nameN) summary += ` (${nameN} from filename)`;
   $('finSummaryLine').textContent = summary;
@@ -13380,7 +13384,7 @@ function finRenderList() {
     if (f.matched) {
       li.innerHTML = `<input type="checkbox" class="fin-check" ${f.selected ? 'checked' : ''} />
         <span class="fin-body">
-          <span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span>${finSrcBadge(f)}</span>
+          <span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span>${finSrcBadge(f)}${finFiledBadge(f)}</span>
           ${finMetaChips(f.meta)}
         </span>
         <span class="file-size">${fmtBytes(f.size)}</span>`;
@@ -13391,7 +13395,7 @@ function finRenderList() {
       // says where it will GO rather than "no metadata", which read as an error state — a clip the AI
       // never reached is not broken, it just files by its date.
       li.innerHTML = `<input type="checkbox" class="fin-check" ${f.selected ? 'checked' : ''} />
-        <span class="fin-body"><span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span><span class="fin-src-badge skip" title="No name yet — files into a dated folder you can sort later">files by date → _unsorted</span></span></span>
+        <span class="fin-body"><span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span><span class="fin-src-badge skip" title="No name yet — files into a dated folder you can sort later">files by date → _unsorted</span>${finFiledBadge(f)}</span></span>
         <span class="file-size">${fmtBytes(f.size)}</span>`;
       const cb2 = li.querySelector('.fin-check');
       cb2.addEventListener('change', () => { f.selected = cb2.checked; finUpdateSelectionUI(); });
@@ -13399,6 +13403,16 @@ function finRenderList() {
     listEl.appendChild(li);
   }
   finUpdateSelectionUI();
+}
+
+// "You already did this one." Filing copies, so a filed clip is still sitting in the Compressed
+// folder and still appears in this list — without this, finished work is indistinguishable from work
+// still to do, and the pile never appears to shrink. Names the project so the obvious follow-up
+// question ("filed where?") is already answered.
+function finFiledBadge(f) {
+  if (!f || !f.filed) return '';
+  const where = f.filedIn ? ` → ${escapeHtml(f.filedIn)}` : '';
+  return `<span class="fin-src-badge done" title="Already filed${where ? ` into ${escapeAttr(f.filedIn)}` : ''} — re-running is safe, it just skips">filed${where}</span>`;
 }
 
 // Where a clip's metadata came from — saved (rich, embedded earlier) vs parsed back

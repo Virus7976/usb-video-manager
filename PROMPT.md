@@ -300,6 +300,30 @@ tested and green beats a whole feature that's half-wired.
 
 ## 8. Autonomy rule
 
+### ⚠ STANDING ORDER (Jake, 2026-07-20) — NEVER STOP, NEVER ASK
+
+> *"make it so that until I message you you never stop and never ask a question. save all questions to
+> a file and when I message you again ask them all. if you hit a legitimate road block you absolutely
+> can't overcome even after many tries, note it and give me some options in a question after I ask you
+> for them. until then operate following the rules on prompt.md and not stopping"*
+
+Concretely, and without exception until he messages again:
+
+1. **Never call AskUserQuestion.** Not for layout decisions, not for data-changing calls, not for
+   anything. This supersedes every earlier "ask him first" note in this file — those now mean
+   *"write it to `QUESTIONS.md` and pick the safest reversible option."*
+2. **Every question goes to `QUESTIONS.md`**, in the format that file defines: what the question is,
+   why it needs him, what I did in the meantime, and how to undo it. When he next messages, ask them
+   all at once.
+3. **Never end a turn without re-arming the loop.** A finished iteration is not a finished session.
+4. **A blocker is not a stopping point.** Try many angles first. If it is genuinely insurmountable,
+   log it in `QUESTIONS.md` **with concrete options** and *move to the next item* — do not idle on it
+   and do not surface it until he asks.
+5. **The data-safety rules in §3 still bind absolutely.** "Never stop" is not permission to touch the
+   delete gate, hand-roll a copy of the footage, or run a destructive command against his real
+   folders. When a task needs one of those, the answer is the safest reversible action plus a
+   `QUESTIONS.md` entry — never a shortcut.
+
 **Never stop to ask clarifying questions.** Make the reasonable call, **log the assumption** in `AGENTS.md`
 (and a memory if it's durable), and keep going.
 

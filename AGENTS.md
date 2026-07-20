@@ -322,6 +322,33 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20a — every number the run reports, checked against the disk.
+
+The last two real bugs were the same shape: **the summary said one thing and the disk said another.**
+`filedRels` named the folder we requested rather than the one used (cg), and the run painted "Done"
+while exiftool threw on every clip (cb). The whole Organize screen is built from these counters, so
+when they drift the app lies confidently — and no amount of internal consistency can catch it,
+because the counters agree with each other perfectly. The only fix is to go and LOOK.
+
+`test/summary-tells-the-truth.test.mjs` (8) files real mp4s and then cross-checks the filesystem:
+`moved` against the clips in the tree, `backedUp` against the NAS folder, every `filedRels` entry
+against a folder that exists with the clip in it, and `embedded` against the record actually present
+in the file — read with an **independent** exiftool, since the app's own reader shares the singleton
+and would agree with itself. Plus: no counter may exceed the run size (a double-count is how "moved 6"
+appears for 3 clips), a run that moved nothing must say why, and re-running must not duplicate.
+
+**A blind test, found by breaking — worth remembering as a pattern.** Deleting the
+`=== 'copied'` guard on `summary.backedUp` changed nothing, because into a CLEAN NAS folder every
+copy succeeds, so the guard was never exercised. The distinguishing case is the second run, where the
+file is already there and the verdict differs. That number gates a card delete — it must not drift —
+so it now has a test that runs twice and requires the second to report zero.
+
+**The general lesson: a guard on a rare return value needs a case that PRODUCES that return value.**
+Same family as the fixture that could not tell case-sensitivity apart because every name was
+lowercase.
+
+vm **1222/1079/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-19cg — one subject, two folders: 83 clips reunited. Plus a reporting bug I had shipped.
 
 Parsed **all 513 of his real filenames** to see the parser's output at scale: 37 unparsed (raw camera

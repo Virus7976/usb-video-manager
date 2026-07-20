@@ -2917,3 +2917,16 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .fr-fields, .fr-opts { display: flex; flex-wrap: wrap; gap: 10px 16px; }
 .fr-chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
 .fr-preview { margin: 10px 2px 0; min-height: 18px; }
+
+/* Keyboard focus in the face review. A ring rather than a fill: the card's own confirmed/suggested
+   state already colours it, and stacking a second colour on top made it unreadable. 120ms, ease, no
+   glow — the house motion rule. */
+.face-grid-card-item.kb-focus {
+  outline: 2px solid var(--accent, #4c8dff);
+  outline-offset: 2px;
+  border-radius: 10px;
+  transition: outline-color 120ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .face-grid-card-item.kb-focus { transition: none; }
+}

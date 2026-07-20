@@ -10292,7 +10292,13 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   </div>`;
   document.body.appendChild(ov);
   const scroll = ov.querySelector('.face-grid-scroll');
-  const close = () => { savePendingNow(clusters); ov.remove(); refreshNames && refreshNames(); refreshAllClipPeople(); resolveGrid(); };
+  // The key handler lives on `document` so it works wherever focus happens to be inside the overlay,
+  // and is removed on close — a listener that outlives its screen would answer keys for a grid that
+  // no longer exists.
+  const close = () => {
+    document.removeEventListener('keydown', onReviewKey, true);
+    savePendingNow(clusters); ov.remove(); refreshNames && refreshNames(); refreshAllClipPeople(); resolveGrid();
+  };
   ov.querySelector('.fg-done').addEventListener('click', close);
   ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
 
@@ -10475,6 +10481,28 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
   // "every click takes forever to register". Audit #67 coalesced these hard during a SCAN
   // (PENDING_SAVE_MS); this is the same problem during the REVIEW, which that fix didn't cover.
   // Anything that genuinely mutates a cluster (assign / reject / undo / skip) still saves.
+  // KEYBOARD-FIRST REVIEW. This screen is one decision repeated hundreds of times — his click log
+  // shows 226 confirmations and 41 rejections, and 458 clusters are still waiting. Every one of those
+  // was a mouse journey to a small button, which is the whole reason the review gets abandoned.
+  //
+  // `kbFocus` is the cluster index under the keyboard. It is RENDERED (a `.kb-focus` class), because
+  // a keyboard mode with no visible cursor is worse than none at all.
+  let kbFocus = -1;
+  window.__reviewClusters = clusters;   // lets the focus helpers and the e2e see the live state
+
+  // The next card still awaiting a decision, so focus follows the work: after each answer the common
+  // case is "Y Y N Y" without the hand ever moving.
+  function nextUndecided(from) {
+    const order = clusters.filter((c) => !c.skipped);
+    const start = order.findIndex((c) => c._i === from);
+    for (let k = start + 1; k < order.length; k += 1) {
+      const c = order[k];
+      if (!c.done && !c.rejected && !c.skipped) return c._i;
+    }
+    const any = order.find((c) => !c.done && !c.rejected && !c.skipped);
+    return any ? any._i : -1;
+  }
+
   function render(opts) {
     const persist = !opts || opts.persist !== false;
     // Every click through this screen calls render(), which replaces `scroll.innerHTML` wholesale —
@@ -10509,6 +10537,11 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     if (!scenes.length && !live.length) scroll.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">All faces handled ✓</p>';
     wire();
     wireScenes(scenes);
+    // Land the focus on the first card that still needs a decision, and show it.
+    if (kbFocus < 0 || !clusters.some((c) => c._i === kbFocus && !c.done && !c.rejected && !c.skipped)) {
+      kbFocus = nextUndecided(-1);
+    }
+    paintFocus();
     // Put the viewport back exactly where it was (see keepTop above). Assigned straight after the
     // innerHTML swap and before any smooth-scroll runs, so the user never sees the intermediate
     // position — restoring it in a rAF instead would show a visible jump-then-snap.
@@ -10564,6 +10597,65 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     if (ph) ph.classList.add(kind === 'ok' ? 'flash-ok' : 'flash-no');
     setTimeout(fn, 280);
   }
+  // Show which card the keyboard is on, and keep it in view without yanking the scroll around.
+  function paintFocus() {
+    scroll.querySelectorAll('.face-grid-card-item.kb-focus').forEach((el) => el.classList.remove('kb-focus'));
+    if (kbFocus < 0) return;
+    const el = scroll.querySelector(`.face-grid-card-item[data-i="${kbFocus}"]`);
+    if (el) { el.classList.add('kb-focus'); el.scrollIntoView({ block: 'nearest' }); }
+  }
+
+  // Y/Enter = yes · N = no · S = skip · arrows = move. Deliberately the same five actions the mouse
+  // has, no more: a shortcut he has to look up is a shortcut he will not use.
+  function onReviewKey(e) {
+    // NEVER hijack typing. He corrects names in a field on the card, and stealing "n" or "s" from a
+    // name is the exact failure that makes people switch shortcuts off.
+    const t = e.target;
+    const tag = t && t.tagName ? String(t.tagName).toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || (t && t.isContentEditable)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    const cl = clusters.find((c) => c._i === kbFocus);
+    const key = String(e.key || '').toLowerCase();
+
+    if (key === 'arrowdown' || key === 'arrowright') {
+      e.preventDefault();
+      const live = clusters.filter((c) => !c.skipped);
+      const at = live.findIndex((c) => c._i === kbFocus);
+      if (at >= 0 && at + 1 < live.length) { kbFocus = live[at + 1]._i; paintFocus(); }
+      return;
+    }
+    if (key === 'arrowup' || key === 'arrowleft') {
+      e.preventDefault();
+      const live = clusters.filter((c) => !c.skipped);
+      const at = live.findIndex((c) => c._i === kbFocus);
+      if (at > 0) { kbFocus = live[at - 1]._i; paintFocus(); }
+      return;
+    }
+    if (!cl || cl.done) return;
+
+    if (key === 'y' || key === 'enter') {
+      if (!cl.suggest || cl.rejected) return;   // nothing to confirm — don't guess a name
+      e.preventDefault();
+      kbFocus = nextUndecided(cl._i);
+      assign(cl, cl.suggest.name);
+      return;
+    }
+    if (key === 'n') {
+      e.preventDefault();
+      cl.rejected = true;
+      kbFocus = nextUndecided(cl._i);
+      render();
+      return;
+    }
+    if (key === 's') {
+      e.preventDefault();
+      cl.skipped = true;
+      kbFocus = nextUndecided(cl._i);
+      render();
+    }
+  }
+
   function wire() {
     scroll.querySelectorAll('.face-grid-card-item').forEach((card) => {
       const cl = clusters[Number(card.dataset.i)];
@@ -10589,6 +10681,7 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     }
     for (const c of pending) { /* eslint-disable-next-line no-await-in-loop */ await assign(c, c.suggest.name); }
   });
+  document.addEventListener('keydown', onReviewKey, true);
   render();
   });
 }

@@ -322,6 +322,43 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bt — TIER 2 UNLOCKED: keyboard-first face review. 458 mouse trips become 458 keystrokes.
+
+**The Tier 1 gate is met** — a shoot goes card→filed in one sitting, proven end to end (`bn`) — so
+cutting per-item effort is finally worth doing. Before that it would only have made the abandonment
+faster, which is why the backlog forbade starting here.
+
+The face review had **no keyboard at all**. It is one decision repeated hundreds of times (his log:
+226 "✓ Yes", 41 "✗ No") with 458 clusters still waiting, and every one was a mouse journey to a small
+button.
+
+**Y / Enter** confirms · **N** rejects · **S** skips · **arrows** move. One card is focused at a time
+and it is VISIBLE (`.kb-focus`, an outline ring — the card's own state already colours it, and
+stacking a second colour made it unreadable; 120ms ease, reduced-motion respected). **Focus follows
+the work**: after each answer it lands on the next undecided card, so the common case is "Y Y N Y"
+without the hand moving. The listener is removed on close — one that outlives its screen would answer
+keys for a grid that no longer exists.
+
+**Keys are ignored while typing.** He corrects names in a field on the card, and stealing "n" from a
+name is the exact failure that makes people switch shortcuts off. Guarded by a test.
+
+`test/e2e/face-review-keyboard.e2e.mjs`, 8 tests, driven through the real DOM.
+
+**THREE test-quality lessons here, all mine:**
+1. **My tests stacked overlays.** Each `openReview` appended a new grid without closing the old, so
+   `document.querySelector` found the PREVIOUS overlay's card and a test failed while the behaviour
+   was correct. Verified by driving the sequence once in a clean window before touching the code.
+   **When a test fails, check the harness before the product.**
+2. **A fixture where all cards are undecided cannot distinguish "follow the work" from "recompute
+   from scratch"** — both land on the same card, so deleting the explicit advance left every test
+   green. Only answering a MIDDLE card while an earlier one is still unanswered tells them apart.
+3. **The failing test taught me the code's real behaviour**: `nextUndecided` WRAPS to the first
+   unanswered card when nothing follows, which is correct (at the end of the list, the next thing to
+   do is whatever is left). My first version of the test asserted that away as a bug. **A test that
+   fails is a claim to check, not a bug to fix.**
+
+Both tiers green: vm **1123/997/126/0**, e2e **126/125/1/0**.
+
 ### 2026-07-19bs — the home screen's count now goes DOWN as he works
 
 Loose end from `br`, one screen earlier and arguably more important. `pending:work` set

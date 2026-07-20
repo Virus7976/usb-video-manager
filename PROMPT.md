@@ -528,9 +528,30 @@ Highest-value first; the top five are things that actively mislead:
 15. The Phone screen is the only main screen with no menu route; View duplicates two File items under
     different names.
 
-**Batch 1 done 2026-07-20 (commit 3751cff):** findings 1, 3, 5 and 8 above, plus finding 12 (the
-Cancel button that skipped the mid-copy warning — that one could cost footage, not just confuse).
-Remaining: 2, 4, 6, 7, 9, 10, 11, 13, 14, 15.
+**Batch 1 done 2026-07-20 (commit 3751cff):** findings 1, 3, 5, 8, and 12 (the Cancel button that
+skipped the mid-copy warning — that one could cost footage, not just confuse).
+
+**Batch 2 done 2026-07-20 (commit 7beb38d):** findings 9, 10, 11 and 13. Thirteen is the structural
+one and worth knowing about: `showScreen(id)` in 01-core.js now owns which section is visible,
+derived from `APP_SCREENS`. **Use it for any new screen** — the six hand-written hide-lists it
+replaces are exactly how `goToCopyProgress` came to leave `#finalize` visible. `goHome` and
+`goToCopyProgress` are migrated; the remaining open-coded sites in 09-phone-finalize.js (`:11`,
+`:500`, `:571`, `:1671`) and 01-core.js (`:593`, `:601`, `:632`, `:1049`) should follow.
+
+Also closed AI-backlog item 8 (face-chip ranking read `p.faces.length`, a field `people:get` never
+sends, so tier 2 was always 0 and chips were alphabetical).
+
+**Remaining UI: 2, 4, 6, 7, 14, 15.** Nothing left in this list can lose data — they are consistency
+and information-architecture items now:
+- 2: Compress is a modal while its two siblings are full screens with step pills.
+- 4: the Done screen's static "Copied & named — in your Uncompressed folder" panel is wrong on the
+  phone flow (videos stage in `_Phone Video Temp`); `showDone()` should branch on `isPhoneFlow()`.
+- 6: `.ghost` and `.subtle` are pixel-identical with ~50 arbitrary usages, plus a third bare-`btn`
+  tier mixed into the same rows.
+- 7: three different footer button orders and three different escape labels across the finalize
+  steps; step 2's Continue is not `primary`.
+- 14: Settings is both a container and a peer of its own contents; emoji vs the monochrome SVG rule.
+- 15: the Phone screen has no menu route at all; View duplicates two File items under other names.
 
 **Sequencing note:** he chose "close safety data first, then build new". Data safety is now CLOSED,
 so this list and the AI-pipeline items below are the current front. The UI work should land as

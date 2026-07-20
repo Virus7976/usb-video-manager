@@ -141,6 +141,7 @@ const MENUS = {
     { label: 'Settings…', action: showSettingsHub },
     { sep: true },
     { label: 'Edit subjects…', action: showEditSubjects },
+    { label: 'Tidy up subjects…', action: showSubjectTidy },
     { sep: true },
     { label: 'Filing & destinations', submenu: () => [
       { label: 'Visualize destinations…', action: showDestinationMapAuto },

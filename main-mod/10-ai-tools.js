@@ -1484,6 +1484,100 @@ ipcMain.handle('subjects:canonicalize', (_e, proposed) => {
 // below is already used by subjects:canonicalize, and the HTTP backend reads core/subjects.js
 // directly, so nothing is blocked. Add the handler and its binding in the SAME commit as the picker.
 
+// ⚠⚠ TIDY UP THE SUBJECTS HE HAS ALREADY WRITTEN — and this is the one that moves the number.
+//
+// Snapping new names stops the fragmentation growing. It does nothing for the 4,594 clips already
+// carrying 112 competing subjects, and those are what filing has to group TODAY. One clip is filed.
+//
+// THIS REWRITES HIS EXISTING METADATA, which makes it the most dangerous operation added to this app.
+// Three rules, all enforced below and each with a test:
+//   1. PLAN FIRST. Nothing is applied without a plan he can look at, with exact counts.
+//   2. ONLY WHAT HE PICKED. The plan proposes; apply takes an explicit list of merges. There is no
+//      "apply everything" path, because a bad merge files a personal vlog into a client job — a
+//      failure this repo has already had and reverted.
+//   3. UNDOABLE. The caller makes a save point first, and applying refuses if asked to touch a store
+//      that failed to read this launch.
+ipcMain.handle('subjects:mergePlan', () => {
+  const v = subjectVocabulary();
+  const drafts = currentDrafts() || {};
+  const finalMeta = currentFinalMeta() || {};
+  // Count what each name is actually attached to, so the plan states real consequences rather than
+  // "these look similar".
+  const uses = {};
+  const bump = (name, where) => {
+    const n = subjects.normalizeSubject(name);
+    if (!n) return;
+    uses[n] = uses[n] || { drafts: 0, filed: 0 };
+    uses[n][where] += 1;
+  };
+  for (const rec of Object.values(drafts)) if (rec && rec.subject) bump(rec.subject, 'drafts');
+  for (const rec of Object.values(finalMeta)) if (rec && rec.subject) bump(rec.subject, 'filed');
+
+  const merges = [];
+  for (const c of (v.clusters || [])) {
+    const from = c.members.filter((m) => m.name !== c.canonical).map((m) => m.name).filter((n) => uses[n]);
+    if (!from.length) continue;
+    const clips = from.reduce((t, n) => t + (uses[n] ? uses[n].drafts + uses[n].filed : 0), 0);
+    merges.push({
+      to: c.canonical,
+      from,
+      clips,
+      toClips: uses[c.canonical] ? uses[c.canonical].drafts + uses[c.canonical].filed : 0,
+      filed: from.reduce((t, n) => t + (uses[n] ? uses[n].filed : 0), 0),
+    });
+  }
+  merges.sort((a, b) => b.clips - a.clips);
+  const shotLike = Object.keys(uses)
+    .filter((n) => subjects.classifySubject(n).shotLike)
+    .map((n) => ({ name: n, clips: uses[n].drafts + uses[n].filed }))
+    .sort((a, b) => b.clips - a.clips);
+  return { ok: true, merges, shotLike, distinct: Object.keys(uses).length };
+});
+
+// Apply ONLY the merges he ticked. `picks` is [{ to, from: [...] }].
+ipcMain.handle('subjects:applyMerge', (_e, payload) => {
+  const picks = Array.isArray(payload && payload.picks) ? payload.picks : [];
+  if (!picks.length) return { ok: false, error: 'nothing selected', changed: 0 };
+  // ⚠ Refuse against a store we could not READ. Rewriting subjects into an empty default would wipe
+  // the names off every clip — the same contract the rest of the app follows.
+  for (const k of ['renameDrafts', 'finalMeta']) {
+    if (storeReadFailed[k]) return { ok: false, error: `${k} could not be read this launch — nothing changed`, changed: 0 };
+  }
+  const map = new Map();
+  for (const p of picks) {
+    const to = subjects.normalizeSubject(p && p.to);
+    if (!to) continue;
+    for (const f of (Array.isArray(p.from) ? p.from : [])) {
+      const from = subjects.normalizeSubject(f);
+      // A name may never merge into itself, and never into something that is itself being merged
+      // away — that would chain two renames and land clips somewhere he never picked.
+      if (from && from !== to) map.set(from, to);
+    }
+  }
+  for (const [from, to] of map) if (map.has(to)) map.delete(from);
+  if (!map.size) return { ok: false, error: 'nothing to do', changed: 0 };
+
+  let changed = 0; let filedChanged = 0;
+  const drafts = currentDrafts() || {};
+  for (const rec of Object.values(drafts)) {
+    if (!rec || !rec.subject) continue;
+    const to = map.get(subjects.normalizeSubject(rec.subject));
+    if (to) { rec.subject = to; changed += 1; }
+  }
+  const fm = currentFinalMeta() || {};
+  for (const rec of Object.values(fm)) {
+    if (!rec || !rec.subject) continue;
+    const to = map.get(subjects.normalizeSubject(rec.subject));
+    if (to) { rec.subject = to; changed += 1; filedChanged += 1; }
+  }
+  if (changed) {
+    try { saveStore('renameDrafts'); saveStore('finalMeta'); }
+    catch (err) { return { ok: false, error: `could not save: ${err.message}`, changed: 0 }; }
+  }
+  _vocabCache = null; _vocabSig = '';   // the vocabulary just changed under us
+  return { ok: true, changed, filedChanged, merged: map.size };
+});
+
 ipcMain.handle('ai:health', async () => {
   const ai = config.ai || {};
   const problems = [];

@@ -140,7 +140,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 27 | Autocomplete from everything he has typed before | ✓ | ✓ | – | partial — desktop only |
 | 28 | **Prune a bad autocomplete entry** | ✓ | – | – | **dead** — `fieldHistory:remove` has no caller, so every typo is offered forever |
 | 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — snap onto known subjects, add deliberately | ✓ | ✓ | ✓ | partial — engine + AI snapping + ask-on-type done (D); phone/backend todo |
-| 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | partial — detection done (112→91 on his data); no bulk-merge UI for the EXISTING 4,594 |
+| 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | done (D) — Edit → “Tidy up subjects…”: 21 merges over 46 clips on his data, save point first, nothing pre-ticked |
 | 31 | ⚠ Flag a subject that describes the SHOT not the JOB | ✓ | ✓ | – | partial — detection done and returned; not yet surfaced in the UI |
 | 32 | Batch-name a selection | ✓ | ✓ | – | partial — desktop only |
 | 33 | Find &amp; replace across names | ✓ | – | – | done |

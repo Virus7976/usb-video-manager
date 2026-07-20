@@ -238,6 +238,8 @@ contextBridge.exposeInMainWorld('api', {
   phoneQueueCount: () => ipcRenderer.invoke('phone:queueCount'),
   // The subject vocabulary — FEATURES.md item 29. Advisory: it proposes, the renderer decides.
   canonicalizeSubject: (s) => ipcRenderer.invoke('subjects:canonicalize', s),
+  subjectMergePlan: () => ipcRenderer.invoke('subjects:mergePlan'),
+  applySubjectMerge: (picks) => ipcRenderer.invoke('subjects:applyMerge', { picks }),
   // NOTE: `subjects:vocabulary` exists on the main side for the subject PICKER (FEATURES.md item
   // 29), but is deliberately NOT bridged yet — nothing calls it, and an exposed method with no
   // caller is dead bridge surface that reads as a working feature. Bridge it in the same commit

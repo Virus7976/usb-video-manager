@@ -136,6 +136,26 @@ function similarity(a, b) {
 // else in the cluster becomes an alias pointing at it.
 //
 // `counts` is { subject: timesUsed }.
+// A canonical has to still mean something on its own. A single shot word (`person`, `misc`) names a
+// frame, not a job — the distinction this module exists to protect.
+//
+// ⚠ THE LIMIT OF THIS, STATED HONESTLY. Against his real store the planner still offers
+// `boy-playing-snow` + `snow-playing` -> **`snow`**, and `child-playing-toy` -> **`playing`**. Those
+// are poor canonicals, and this check does not catch them because `snow` and `playing` are ordinary
+// words, not shot words. Distinguishing `snow` (a bad subject) from `curling` (a good one) needs
+// semantics this module does not have, and adding words to a list until his data looks right is
+// fitting the tool to one dataset.
+//
+// That is acceptable BECAUSE the merge is a review screen: nothing is pre-ticked, every row shows
+// `from -> to` with clip counts, and he simply does not tick the bad ones. The safeguard is his
+// judgement, not a cleverer heuristic — and pretending otherwise would be the more dangerous design.
+function isMeaningfulCanonical(name) {
+  const t = tokens(name);
+  if (!t.length) return false;
+  if (t.length === 1 && (SHOT_WORDS.has(t[0]) || WEAK_ALONE.has(t[0]))) return false;
+  return true;
+}
+
 function buildVocabulary(counts, { threshold = 0.7 } = {}) {
   const entries = Object.entries(counts || {})
     .map(([s, n]) => [normalizeSubject(s), Number(n) || 0])
@@ -162,10 +182,34 @@ function buildVocabulary(counts, { threshold = 0.7 } = {}) {
       const curCount = cur ? cur.count : 0;
       const shorter = tokens(name).length < tokens(best.canonical).length;
       const muchMoreUsed = n >= curCount * 2 && n > curCount;
+      // ⚠ NEVER CANONICALISE ONTO A MEANINGLESS NAME. Preferring the shorter name is right for
+      // `car-driving-down` -> `car`, and catastrophic when the shorter name is a bare shot word:
+      // running this against his real store proposed merging `boy-playing-snow` + `snow-playing`
+      // into **`snow`**, and `child-playing-toy` into **`playing`**. Those are worse than the
+      // fragmentation they replace — a folder called `snow` tells him nothing about which shoot it
+      // was, and filing by it groups unrelated jobs. Only real data showed this.
+      if (!isMeaningfulCanonical(name)) continue;
       if ((shorter && n * 2 >= curCount) || muchMoreUsed) best.canonical = name;
     } else {
       clusters.push({ canonical: name, count: n, members: [{ name, count: n }] });
     }
+  }
+
+  // ⚠⚠ PROMOTE A MEANINGFUL CANONICAL. The guard during clustering only covers a canonical CHANGE —
+  // a meaningless name that SEEDED its own cluster keeps the title and everything joins it. Against
+  // his real store that produced `boy-playing-snow` + `snow-playing` -> **`snow`**, and
+  // `child-playing-toy` -> **`playing`**: names worse than the fragmentation they replace, because a
+  // folder called `snow` says nothing about which shoot it was. Fixed here, after clustering, where
+  // every member is known.
+  //
+  // If NO member is meaningful the cluster keeps its canonical — merging `talking-head-young` into
+  // `talking-head` is still an improvement, and the shot-like flag is what tells him the real problem.
+  for (const c of clusters) {
+    if (isMeaningfulCanonical(c.canonical)) continue;
+    const better = c.members
+      .filter((m) => isMeaningfulCanonical(m.name))
+      .sort((a, b) => b.count - a.count || tokens(a.name).length - tokens(b.name).length)[0];
+    if (better) c.canonical = better.name;
   }
 
   const aliases = {};
@@ -201,4 +245,4 @@ function canonicalize(proposed, vocab, { threshold = 0.7 } = {}) {
   return out;
 }
 
-module.exports = { normalizeSubject, classifySubject, similarity, buildVocabulary, canonicalize, sameWord, SHOT_WORDS };
+module.exports = { normalizeSubject, classifySubject, similarity, buildVocabulary, canonicalize, sameWord, isMeaningfulCanonical, SHOT_WORDS };

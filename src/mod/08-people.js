@@ -2294,6 +2294,72 @@ function showPreferences() {
 }
 
 // Edit subjects — manage the reusable subject history.
+// ⚠⚠ TIDY UP SUBJECTS — the retroactive half of FEATURES.md item 29, and the one that moves the
+// number. Snapping new names stops the fragmentation growing; this fixes the 4,594 clips already
+// carrying 112 competing subjects, which is what filing has to group TODAY.
+//
+// It REWRITES existing metadata, so: a save point first, a plan he reads with exact counts, and
+// nothing applied that he did not tick. Everything starts UNticked — a screen that arrives with 20
+// destructive changes pre-selected is one where "Apply" is a mistake waiting to happen.
+async function showSubjectTidy() {
+  let plan = null;
+  try { plan = await window.api.subjectMergePlan(); } catch { plan = null; }
+  if (!plan || !plan.ok) { showToast('Could not read your subjects'); return; }
+  if (!plan.merges.length) {
+    showToast(`Nothing to tidy — your ${plan.distinct} subjects are already distinct \u2713`, 4000);
+    return;
+  }
+  const ov = document.createElement('div'); ov.className = 'modal-overlay';
+  const rows = plan.merges.map((m, i) => `
+    <label class="settings-card action" style="align-items:flex-start;gap:10px;cursor:pointer">
+      <input type="checkbox" class="tidy-pick" data-i="${i}" style="margin-top:3px" />
+      <span class="sc-text">
+        <span class="sc-title">${escapeHtml(m.from.join(', '))} \u2192 <b>${escapeHtml(m.to)}</b></span>
+        <span class="sc-sub">${m.clips} clip${m.clips !== 1 ? 's' : ''} renamed${m.filed ? ` \u00b7 ${m.filed} already filed` : ''}${m.toClips ? ` \u00b7 joins ${m.toClips} already using \u201c${escapeHtml(m.to)}\u201d` : ''}</span>
+      </span>
+    </label>`).join('');
+  const shot = plan.shotLike.length
+    ? `<p class="muted small" style="margin-top:14px">${plan.shotLike.length} of your subjects describe the SHOT rather than the job \u2014 ${plan.shotLike.slice(0, 4).map((x) => `\u201c${escapeHtml(x.name)}\u201d`).join(', ')}. Merging will not fix those; they need renaming to what the footage is FOR.</p>`
+    : '';
+  ov.innerHTML = `<div class="modal-card" style="width:min(720px,94vw);text-align:left">
+    <div class="ai-hd"><div class="ai-hd-text"><h3>Tidy up your subjects</h3>
+      <p class="muted small">You have <b>${plan.distinct}</b> different subjects. Filing groups clips by subject, so every spelling is its own group \u2014 which is why so little gets filed. Tick the ones that are the same thing.</p></div></div>
+    <div style="max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:8px">${rows}</div>
+    ${shot}
+    <div class="modal-actions">
+      <button type="button" class="btn primary tidy-apply">Apply selected</button>
+      <button type="button" class="btn subtle tidy-all">Select all</button>
+      <button type="button" class="btn ghost tidy-cancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.querySelector('.tidy-cancel').onclick = close;
+  ov.querySelector('.tidy-all').onclick = () => ov.querySelectorAll('.tidy-pick').forEach((c) => { c.checked = true; });
+  ov.querySelector('.tidy-apply').onclick = async () => {
+    const picked = [...ov.querySelectorAll('.tidy-pick')].filter((c) => c.checked)
+      .map((c) => plan.merges[Number(c.dataset.i)]).filter(Boolean);
+    if (!picked.length) { showToast('Tick at least one'); return; }
+    const clips = picked.reduce((t, m) => t + m.clips, 0);
+    const ok = await confirmDialog('Rename these subjects?',
+      `${picked.length} merge${picked.length !== 1 ? 's' : ''}, affecting about ${clips} clip${clips !== 1 ? 's' : ''}. A save point is taken first, so you can undo this from Edit \u2192 Version history.`,
+      'Rename', 'Cancel');
+    if (!ok) return;
+    // \u26a0 SAVE POINT BEFORE THE REWRITE, not after. If this throws, nothing has changed yet.
+    try { await saveVersionPoint('Before tidying subjects', true); } catch { /* best-effort */ }
+    let r = null;
+    try { r = await window.api.applySubjectMerge(picked.map((m) => ({ to: m.to, from: m.from }))); }
+    catch (err) { r = { ok: false, error: err.message }; }
+    close();
+    if (r && r.ok) {
+      showToast(`Renamed ${r.changed} clip${r.changed !== 1 ? 's' : ''} across ${r.merged} subject${r.merged !== 1 ? 's' : ''} \u2713 \u2014 undo from Edit \u2192 Version history`, 7000);
+      try { await refreshSubjectOptions(); refreshNames(); } catch { /* the list may not be mounted */ }
+    } else {
+      showToast(`Nothing was renamed \u2014 ${(r && r.error) || 'unknown problem'}`, 7000);
+    }
+  };
+}
+
 function showEditSubjects() {
   const ov = document.createElement('div');
   ov.className = 'modal-overlay';

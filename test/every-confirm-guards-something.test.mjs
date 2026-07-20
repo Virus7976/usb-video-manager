@@ -85,5 +85,12 @@ test('⚠ the count of confirmations has not quietly dropped', () => {
   // single point where a new subject enters his vocabulary.
   //
   // If this count changes again, say which and why — that is the whole point of pinning it.
-  assert.equal(all, 17, `17 confirmations, each guarding footage, metadata or a long job — found ${all}`);
+  // 18 since 2026-07-20. The eighteenth is "Rename these subjects?" — the bulk subject tidy, and it
+  // is the most destructive thing in this list: it REWRITES the subject on up to 4,594 clips at once.
+  //
+  // It earns its place three times over. The dialog names the number of merges AND the number of
+  // clips, so the scale is visible before he commits. A save point is taken BEFORE the rewrite, so
+  // Edit → Version history undoes it. And nothing is pre-ticked, so "Apply" on an untouched screen
+  // does nothing at all.
+  assert.equal(all, 18, `18 confirmations, each guarding footage, metadata or a long job — found ${all}`);
 });

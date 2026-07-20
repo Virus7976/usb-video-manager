@@ -322,6 +322,32 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20c — the integrity throw at the heart of every copy had NO test.
+
+Branch-coverage audit continued into the copy machinery. `stageVerifiedCopy` calls itself *"the one
+way footage is written in this app"* — stage, flush, FULL verify, rename — and its failure path
+promises *"never leave a half-written clip behind under the real name."* **Zero tests reached that
+line.** It is the guarantee everything downstream leans on, including the delete gate, which will
+wipe a card once a copy "verified".
+
+Also untested: the collision branch where the existing file is a DIFFERENT clip. Its own comment
+records why it exists (*"the old size-only test could collide two different files of equal size"*),
+and getting it wrong overwrites one of his clips with another, silently and permanently.
+
+`test/copy-integrity-branches.test.mjs` (7): forces a verification failure and proves it throws,
+leaves nothing under the destination name, leaves no `.part-` temp behind, and does not touch the
+source — plus the opposite direction (a good copy still lands) and both collision verdicts.
+
+**A fixture that could not tell the branches apart, again.** For the "same size, different bytes"
+case I flipped the LAST byte of a 16-byte file — but sampling reads head/mid/tail and only engages
+above 6 MB, so a sampled hash sees that byte too. Removing `full: true` left the test green. The
+fixture now differs at 2.25 MB inside a 7 MB file: past the head chunk, before the middle one, in a
+region sampling genuinely never reads. **Third time this session a fixture has been unable to
+distinguish the behaviour it was written for** (lowercase-only names; a clean NAS folder; now a
+too-small file). The pattern: *the fixture has to be able to FAIL the way the guard prevents.*
+
+vm **1236/1093/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20b — the blind-guard sweep, pointed at the delete gate. Two branches had NO test.
 
 Applied yesterday's lesson (*a guard on a rare return value needs a case that PRODUCES it*) to the

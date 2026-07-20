@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20s — swept the same axis and found a third omission, then made the rule enforceable.
+
+`r` fixed faces. Sweeping every deferred write in the renderer found the **session state** missing
+too: a 250 ms debounce, so closing the window within a quarter-second of changing screen made the next
+launch reopen the screen he left **before** that — the exact opposite of what "resume where you left
+off" promises.
+
+That is three omissions in one net (drafts had it, faces did not, session did not), and all three were
+**single missing lines in a net that already existed**. Nothing detected any of them, because a
+missing flush produces no error, no log and no failing test — just occasional lost work that reads as
+the app forgetting.
+
+So the rule is now enforced instead of remembered.
+`test/debounced-saves-all-flush-on-exit.test.mjs` (6) names each deferred write of HIS WORK and
+requires the exit net to flush it, that each flusher writes **immediately** rather than re-debouncing,
+that none is a no-op, and that the net still covers all four exit signals — closing to tray,
+minimising, switching apps and quitting are four different events, and a flush wired to one of them is
+a flush that mostly does not happen.
+
+**Deliberately NOT absolute.** Cosmetic preferences (preview zoom, phone thumbnail size) are excluded:
+losing 400 ms of a zoom slider costs nothing, and a rule that flagged them would only teach people to
+suppress it. The list is explicit so adding a write to it is a deliberate act rather than an accident
+of pattern-matching.
+
+Five breaks proven, including dropping either flush from the net and replacing a flusher with a
+re-debounce.
+
+vm **1337/1194/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20r — the exit safety net saved drafts and forgot faces.
 
 Back to app work, on the biggest measured pile of unfinished work: **458 pending face clusters**, with

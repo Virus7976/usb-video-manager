@@ -604,10 +604,23 @@ function setStep(n) {
 // ---------------------------------------------------------------------------
 let sessionState = { view: 'home', step: null, sourcePath: '', sourceDesc: '', sourceKind: '' };
 let _sessionSaveT = null;
+// Write the session state now, skipping the debounce. Called by the exit safety net: closing the
+// window HIDES to tray, so a 250 ms debounce can still be outstanding — and losing it means the next
+// launch reopens the screen BEFORE the one he left, which is the exact opposite of what "resume
+// where you left off" promises.
+let _sessionDirty = false;
+function flushSessionSave() {
+  if (!_sessionDirty) return;
+  _sessionDirty = false;
+  clearTimeout(_sessionSaveT);
+  try { window.api.setPrefs({ session: sessionState.view === 'home' ? null : sessionState }); } catch { /* non-fatal */ }
+}
 function saveSession(patch) {
   sessionState = { ...sessionState, ...(patch || {}) };
   clearTimeout(_sessionSaveT);
+  _sessionDirty = true;
   _sessionSaveT = setTimeout(() => {
+    _sessionDirty = false;
     try { window.api.setPrefs({ session: sessionState.view === 'home' ? null : sessionState }); } catch { /* non-fatal */ }
   }, 250);
 }
@@ -1301,6 +1314,8 @@ function flushDraftSave() {
     // typeof because 08-people is later in the bundle: function declarations hoist, but this file is
     // also loaded alone in some tests.
     try { if (typeof flushPendingFacesSave === 'function') flushPendingFacesSave(); } catch { /* ignore */ }
+    // …and where he was, so resume reopens the screen he actually left.
+    try { flushSessionSave(); } catch { /* ignore */ }
   };
   // NOTE (audit #12, 2026-07-18): this async flush was suspected of losing the last renames when a
   // quit landed inside the 600 ms debounce. It doesn't — a two-launch e2e that types a name and

@@ -284,6 +284,15 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
   const sender = evt.sender;
   const staged = [];
   const total = items.length; let done = 0; let incomplete = 0;
+  // ⚠ `incomplete` counts only TRUNCATED pulls — a file that arrived SHORT of its known size. It was
+  // being read as "everything that went wrong", and it isn't: a file the device declined outright, or
+  // one we could not stat, fell into a bare `catch` and incremented nothing at all. So a pull that
+  // got 40 of 60 photos returned ok:true with incomplete:0, and the UI reported a clean transfer.
+  //
+  // (The originals do stay on the phone — nothing in this app deletes from a phone — so this is a
+  // false "all done", not lost footage. But it is the message he'd act on when deciding whether to
+  // clear the phone himself.)
+  let missed = 0;
   const prog = (name) => { done += 1; try { sender.send('phone:copy-progress', { done, total, name }); } catch { /* ignore */ } };
 
   // Pull a set of items off the phone into ONE local dest, then stage each with its LOCAL
@@ -299,7 +308,7 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
           let st = null; try { st = await fsp.stat(dst); } catch { /* not there yet */ }
           if (!st || st.size !== it.size) { await fsp.copyFile(it.abs, dst); st = await fsp.stat(dst); }  // resume
           staged.push({ sourcePath: dst, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind });
-        } catch { /* skip */ }
+        } catch { missed += 1; }   // counted, not silently dropped — see the note on `missed`
         prog(it.name);
       }
     } else {
@@ -331,14 +340,22 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
             incomplete += 1; continue;
           }
           staged.push({ sourcePath: p, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind });
-        } catch { /* couldn't verify — skip */ }
+        } catch { missed += 1; }   // the device never produced it, or we couldn't stat it — see `missed`
       }
     }
   };
 
   await pullInto(photos, photoDest, 'photo');
   if (!phoneAbort) await pullInto(videos, vDest, 'video');
-  return { ok: true, copied: staged.length, total, staged, incomplete, cancelled: phoneAbort };
+  // ok reflects what actually happened. It was a literal `true` regardless of how much was dropped.
+  // `missed` is reported separately from `incomplete` because they mean different things to him:
+  // truncated (re-pull will fix it) vs never produced (the device or the connection refused).
+  const shortfall = incomplete + missed;
+  return {
+    ok: shortfall === 0 || staged.length > 0,   // partial success is still ok:true, but now countable
+    complete: shortfall === 0,
+    copied: staged.length, total, staged, incomplete, missed, shortfall, cancelled: phoneAbort,
+  };
 });
 
 // MTP-copy a list of items (same rel-folder navigation) to ONE local dest, streaming
@@ -1048,6 +1065,16 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       try { await ensureDir(path.dirname(j.dest)); await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
       catch { failed += 1; }   // verify-before-destroy (never deletes an unverified source)
     }
+    // ⚠ REMOVE THE STAGING DIR. It was never cleaned — one `phonevid_<ts>` per pull, each holding
+    // full-size video for every clip whose move failed, sitting in %TEMP% forever. On a videographer's
+    // machine that is tens of GB of invisible growth. Its sibling in phone:distribute IS cleaned, so
+    // this was the usual one-path-fixed-its-twin-missed.
+    //
+    // `force: true` so a run where everything moved (leaving the dir empty, or already gone) is not an
+    // error, and best-effort so a locked temp file can never fail a transfer that already succeeded.
+    // Only the files that FAILED to move are still in here — and their originals are still on the
+    // phone, which is what makes discarding them safe.
+    try { await fsp.rm(tmp, { recursive: true, force: true }); } catch { /* temp only */ }
   }
   // `ok` was hardcoded true, so a run that failed to move a single video still reported success and
   // the renderer showed a green tick. Report reality.

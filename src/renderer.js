@@ -12812,7 +12812,12 @@ async function phoneCopy() {
     // truncated and was rejected) even on an otherwise-successful pull. The progress bar hitting
     // 100% otherwise implies EVERYTHING came off the phone — call out the ones that didn't, since
     // they're still on the phone and a re-pull will retry them.
-    const missed = res.incomplete || 0;
+    // ⚠ `shortfall`, not `incomplete`. `incomplete` counts only TRUNCATED pulls — a file that arrived
+    // SHORT of its known size. A file the device declined outright, or one that could not be stat'd,
+    // used to fall into a bare catch in main and increment nothing, so this read 0 and said nothing
+    // while N photos had silently not come across. Falls back to `incomplete` so an older main (or a
+    // resumed session mid-upgrade) still reports what it can.
+    const missed = (typeof res.shortfall === 'number') ? res.shortfall : (res.incomplete || 0);
     if (missed > 0) showToast(`Heads up: ${missed} item${missed !== 1 ? 's' : ''} didn’t transfer off the phone and ${missed !== 1 ? 'were' : 'was'} left on it — pull again to retry ${missed !== 1 ? 'them' : 'it'}.`, 6500);
     enterRenameWithPhoneFiles(res.staged);
   } else {

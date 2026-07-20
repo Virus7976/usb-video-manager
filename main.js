@@ -3213,6 +3213,15 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
   const sender = evt.sender;
   const staged = [];
   const total = items.length; let done = 0; let incomplete = 0;
+  // ⚠ `incomplete` counts only TRUNCATED pulls — a file that arrived SHORT of its known size. It was
+  // being read as "everything that went wrong", and it isn't: a file the device declined outright, or
+  // one we could not stat, fell into a bare `catch` and incremented nothing at all. So a pull that
+  // got 40 of 60 photos returned ok:true with incomplete:0, and the UI reported a clean transfer.
+  //
+  // (The originals do stay on the phone — nothing in this app deletes from a phone — so this is a
+  // false "all done", not lost footage. But it is the message he'd act on when deciding whether to
+  // clear the phone himself.)
+  let missed = 0;
   const prog = (name) => { done += 1; try { sender.send('phone:copy-progress', { done, total, name }); } catch { /* ignore */ } };
 
   // Pull a set of items off the phone into ONE local dest, then stage each with its LOCAL
@@ -3228,7 +3237,7 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
           let st = null; try { st = await fsp.stat(dst); } catch { /* not there yet */ }
           if (!st || st.size !== it.size) { await fsp.copyFile(it.abs, dst); st = await fsp.stat(dst); }  // resume
           staged.push({ sourcePath: dst, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind });
-        } catch { /* skip */ }
+        } catch { missed += 1; }   // counted, not silently dropped — see the note on `missed`
         prog(it.name);
       }
     } else {
@@ -3260,14 +3269,22 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
             incomplete += 1; continue;
           }
           staged.push({ sourcePath: p, name: it.name, ext: path.extname(it.name), size: st.size, mtimeMs: st.mtimeMs, kind });
-        } catch { /* couldn't verify — skip */ }
+        } catch { missed += 1; }   // the device never produced it, or we couldn't stat it — see `missed`
       }
     }
   };
 
   await pullInto(photos, photoDest, 'photo');
   if (!phoneAbort) await pullInto(videos, vDest, 'video');
-  return { ok: true, copied: staged.length, total, staged, incomplete, cancelled: phoneAbort };
+  // ok reflects what actually happened. It was a literal `true` regardless of how much was dropped.
+  // `missed` is reported separately from `incomplete` because they mean different things to him:
+  // truncated (re-pull will fix it) vs never produced (the device or the connection refused).
+  const shortfall = incomplete + missed;
+  return {
+    ok: shortfall === 0 || staged.length > 0,   // partial success is still ok:true, but now countable
+    complete: shortfall === 0,
+    copied: staged.length, total, staged, incomplete, missed, shortfall, cancelled: phoneAbort,
+  };
 });
 
 // MTP-copy a list of items (same rel-folder navigation) to ONE local dest, streaming
@@ -3977,6 +3994,16 @@ ipcMain.handle('phone:copyVideos', async (evt, payload) => {
       try { await ensureDir(path.dirname(j.dest)); await moveFileCrossDevice(src, j.dest); done += 1; okDests.push(j.dest); }
       catch { failed += 1; }   // verify-before-destroy (never deletes an unverified source)
     }
+    // ⚠ REMOVE THE STAGING DIR. It was never cleaned — one `phonevid_<ts>` per pull, each holding
+    // full-size video for every clip whose move failed, sitting in %TEMP% forever. On a videographer's
+    // machine that is tens of GB of invisible growth. Its sibling in phone:distribute IS cleaned, so
+    // this was the usual one-path-fixed-its-twin-missed.
+    //
+    // `force: true` so a run where everything moved (leaving the dir empty, or already gone) is not an
+    // error, and best-effort so a locked temp file can never fail a transfer that already succeeded.
+    // Only the files that FAILED to move are still in here — and their originals are still on the
+    // phone, which is what makes discarding them safe.
+    try { await fsp.rm(tmp, { recursive: true, force: true }); } catch { /* temp only */ }
   }
   // `ok` was hardcoded true, so a run that failed to move a single video still reported success and
   // the renderer showed a green tick. Report reality.
@@ -8249,14 +8276,28 @@ ipcMain.handle('compress:list', async (_e, dir) => {
   try { return { ok: true, dir: d, files: await listVideosShallow(d) }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
+let compressRunning = false;
 ipcMain.handle('compress:run', async (evt, payload) => {
   const { files, outDir } = payload || {};
   if (!Array.isArray(files) || !files.length) return { ok: false, error: 'No files to compress' };
+  // ⚠ RE-ENTRANCY GUARD, the same one copy:start decided it needed. Two concurrent runs share the
+  // `compressProc` and `compressAborted` globals, and this handler ends with an unconditional
+  // `fsp.rm(join(out, '.partial'), { recursive: true, force: true })` — so run A's sweep would delete
+  // run B's in-flight staged encode, and compress:cancel would kill whichever process happened to be
+  // current. The renderer's `cmpState.running` plus the modal make a second invocation hard to reach,
+  // which is why this was never hit; but "hard to reach from the UI" is not a guarantee for a handler
+  // that spawns processes and deletes a directory.
+  if (compressRunning) return { ok: false, error: 'A compression run is already going' };
   const out = outDir || config.finalizeSource;
   if (!out) return { ok: false, error: 'No output (Compressed) folder set' };
   try { await ensureDir(out); } catch (e) { return { ok: false, error: `Cannot create output folder: ${e.message}` }; }
   const s = compressSettings(payload && payload.settings);
   compressAborted = false;
+  // Set AFTER the validation early-returns above, so a rejected call never claims the slot. Released
+  // in the finally at the end: leaking it would disable compression until the app restarts, which is
+  // a worse failure than the double-run it prevents.
+  compressRunning = true;
+  try {
   const results = [];
   const produced = new Set();   // output paths created THIS run, to avoid collisions
   const send = (p) => { try { evt.sender.send('compress:progress', p); } catch { /* ignore */ } };
@@ -8383,6 +8424,7 @@ ipcMain.handle('compress:run', async (evt, payload) => {
   if (!compressAborted && okCount) notify('Compression complete', `Compressed ${okCount} clip${okCount !== 1 ? 's' : ''} into your Compressed folder.`);
   else if (!compressAborted && failedCount) notify('Compression failed', `None of the ${failedCount} clip${failedCount !== 1 ? 's' : ''} could be compressed.`);
   return { ok: !compressAborted && (okCount > 0 || failedCount === 0), cancelled: compressAborted, results, outDir: out, okCount, failedCount };
+  } finally { compressRunning = false; }
 });
 
 ipcMain.handle('finalize:getSource', () => config.finalizeSource || '');
@@ -9000,8 +9042,15 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         // Sidecar fallback. An XMP sidecar is a real, standard carrier — digiKam and Lightroom both
         // read `<file>.xmp` — so the metadata is not lost just because the container refused it.
         try {
-          sidecar = `${curPath}.xmp`;
-          await et.write(sidecar, tags, ['-overwrite_original']);
+          // ⚠ Assign `sidecar` only AFTER the write succeeds. It used to be set first, so on the
+          // failure path below it stayed truthy — and step 2's `if (sidecar)` then tried to
+          // moveFileCrossDevice a file that was never created, throwing and pushing a SECOND,
+          // misleading error: "Sidecar for X stayed at the source: ENOENT". Nothing was lost
+          // (`metaLanded` correctly stays false, so the metadata is kept for a retry), but one
+          // failure reported as two, and one of the two described a file that does not exist.
+          const sidePath = `${curPath}.xmp`;
+          await et.write(sidePath, tags, ['-overwrite_original']);
+          sidecar = sidePath;
           metaLanded = true;
           summary.sidecars = (summary.sidecars || 0) + 1;
           summary.errors.push(`Embed ${it.name}: ${err.message} — wrote ${path.basename(sidecar)} instead`);

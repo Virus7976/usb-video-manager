@@ -149,14 +149,28 @@ ipcMain.handle('compress:list', async (_e, dir) => {
   try { return { ok: true, dir: d, files: await listVideosShallow(d) }; }
   catch (e) { return { ok: false, error: e.message }; }
 });
+let compressRunning = false;
 ipcMain.handle('compress:run', async (evt, payload) => {
   const { files, outDir } = payload || {};
   if (!Array.isArray(files) || !files.length) return { ok: false, error: 'No files to compress' };
+  // ⚠ RE-ENTRANCY GUARD, the same one copy:start decided it needed. Two concurrent runs share the
+  // `compressProc` and `compressAborted` globals, and this handler ends with an unconditional
+  // `fsp.rm(join(out, '.partial'), { recursive: true, force: true })` — so run A's sweep would delete
+  // run B's in-flight staged encode, and compress:cancel would kill whichever process happened to be
+  // current. The renderer's `cmpState.running` plus the modal make a second invocation hard to reach,
+  // which is why this was never hit; but "hard to reach from the UI" is not a guarantee for a handler
+  // that spawns processes and deletes a directory.
+  if (compressRunning) return { ok: false, error: 'A compression run is already going' };
   const out = outDir || config.finalizeSource;
   if (!out) return { ok: false, error: 'No output (Compressed) folder set' };
   try { await ensureDir(out); } catch (e) { return { ok: false, error: `Cannot create output folder: ${e.message}` }; }
   const s = compressSettings(payload && payload.settings);
   compressAborted = false;
+  // Set AFTER the validation early-returns above, so a rejected call never claims the slot. Released
+  // in the finally at the end: leaking it would disable compression until the app restarts, which is
+  // a worse failure than the double-run it prevents.
+  compressRunning = true;
+  try {
   const results = [];
   const produced = new Set();   // output paths created THIS run, to avoid collisions
   const send = (p) => { try { evt.sender.send('compress:progress', p); } catch { /* ignore */ } };
@@ -283,6 +297,7 @@ ipcMain.handle('compress:run', async (evt, payload) => {
   if (!compressAborted && okCount) notify('Compression complete', `Compressed ${okCount} clip${okCount !== 1 ? 's' : ''} into your Compressed folder.`);
   else if (!compressAborted && failedCount) notify('Compression failed', `None of the ${failedCount} clip${failedCount !== 1 ? 's' : ''} could be compressed.`);
   return { ok: !compressAborted && (okCount > 0 || failedCount === 0), cancelled: compressAborted, results, outDir: out, okCount, failedCount };
+  } finally { compressRunning = false; }
 });
 
 ipcMain.handle('finalize:getSource', () => config.finalizeSource || '');
@@ -900,8 +915,15 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         // Sidecar fallback. An XMP sidecar is a real, standard carrier — digiKam and Lightroom both
         // read `<file>.xmp` — so the metadata is not lost just because the container refused it.
         try {
-          sidecar = `${curPath}.xmp`;
-          await et.write(sidecar, tags, ['-overwrite_original']);
+          // ⚠ Assign `sidecar` only AFTER the write succeeds. It used to be set first, so on the
+          // failure path below it stayed truthy — and step 2's `if (sidecar)` then tried to
+          // moveFileCrossDevice a file that was never created, throwing and pushing a SECOND,
+          // misleading error: "Sidecar for X stayed at the source: ENOENT". Nothing was lost
+          // (`metaLanded` correctly stays false, so the metadata is kept for a retry), but one
+          // failure reported as two, and one of the two described a file that does not exist.
+          const sidePath = `${curPath}.xmp`;
+          await et.write(sidePath, tags, ['-overwrite_original']);
+          sidecar = sidePath;
           metaLanded = true;
           summary.sidecars = (summary.sidecars || 0) + 1;
           summary.errors.push(`Embed ${it.name}: ${err.message} — wrote ${path.basename(sidecar)} instead`);

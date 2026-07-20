@@ -93,3 +93,28 @@ export async function scanFolder(app, win, dir) {
 // referenceable from page eval — this is what lets a test inspect the real thing, not a copy.
 export function read(win, expr) { return win.evaluate(`(() => (${expr}))()`); }
 export function run(win, body) { return win.evaluate(`(() => { ${body} })()`); }
+
+// WAIT FOR A CONDITION IN THE RENDERER — and do NOT reach for `page.waitForFunction()`.
+//
+// The app ships a strict CSP (`default-src 'self'`, no 'unsafe-eval'), and Playwright's
+// waitForFunction evaluates its polling predicate through eval INTERNALLY — so it throws
+// `EvalError: Evaluating a string as JavaScript violates the following Content Security Policy`
+// regardless of whether you pass it a string or a function. It is simply unusable here.
+//
+// `win.evaluate` is fine (that is what read/run use), so poll with that instead. `expr` is evaluated
+// exactly like read(): bare identifiers resolve against the bundle's top-level `let` bindings, which
+// are in script scope and are NOT window properties — `window.finScan` is permanently undefined while
+// `finScan` works.
+//
+// Throws on timeout rather than resolving quietly: a wait that gives up silently is indistinguishable
+// from no wait at all, and the test then asserts against half-finished state.
+export async function waitFor(win, expr, { timeout = 20000, every = 100, what = expr } = {}) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    let ok = false;
+    try { ok = await read(win, expr); } catch { ok = false; }
+    if (ok) return true;
+    if (Date.now() > deadline) throw new Error(`waitFor timed out after ${timeout}ms: ${what}`);
+    await new Promise((r) => setTimeout(r, every));
+  }
+}

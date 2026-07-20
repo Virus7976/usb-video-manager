@@ -322,6 +322,41 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bn — ⭐ PROOF: a clip now goes card→FILED end to end. Plus a harness fix for every future e2e.
+
+Rather than reason about whether a THIRD filing blocker existed, I drove the real screen against real
+files. **`test/e2e/file-a-clip-end-to-end.e2e.mjs` passes**: an unnamed clip is found by the Organize
+scan, ticked, Run pressed, and it lands at `Projects/2026-05-02/_unsorted/GX010042.MP4` — under its own
+shoot date, with the original untouched (filing COPIES), and the run reports it.
+
+**That is the first proof this app can complete its own pipeline.** His ledger has read 0 for months.
+
+**The test is real, not decorative:** breaking EITHER of today's two fixes turns it red — remove the
+`projectsRoot` default and it fails, drop unnamed clips again and it fails. It would have failed
+before both fixes.
+
+---
+
+**⚠ HARNESS FIX THAT AFFECTS EVERY FUTURE E2E TEST — `waitFor()` is now in `test/e2e/harness.mjs`.**
+
+**Do NOT use `page.waitForFunction()` in this app.** It evaluates its polling predicate through eval
+INTERNALLY, and the app ships a strict CSP (`default-src 'self'`, no `'unsafe-eval'`), so it throws
+`EvalError: Evaluating a string as JavaScript violates the following Content Security Policy` — **no
+matter whether you pass a string or a function.** `win.evaluate` is fine, which is why read/run work.
+
+`waitFor(win, expr, { timeout, what })` polls via `read()` and **throws on timeout**, because a wait
+that gives up quietly is indistinguishable from no wait at all.
+
+**And that is exactly how this test first fooled me.** My first version polled `window.finScan` — but
+`finScan` is a top-level `let`, so it lives in SCRIPT scope and is never a window property.
+`window.finScan` is permanently `undefined`, so the wait could never succeed... and the test PASSED,
+because a temp-dir scan finishes fast enough that the subsequent read found the data anyway. Two
+independent faults (a wait that cannot succeed, swallowed by `.catch(() => {})`) cancelling out into a
+green test. **A wait that cannot succeed is not a wait, and `.catch(() => {})` on a wait hides that it
+never worked.**
+
+Both tiers green: vm **1086/974/112/0**, e2e **112/111/1/0**.
+
 ### 2026-07-19bm — ⭐ the Organize screen filed clips into the folder they were already in
 
 Second structural blocker, found by checking his REAL config rather than reasoning about the code.

@@ -322,6 +322,43 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bx — I recreated his own complaint. The resume path reviewed scenes in random order.
+
+Second finding from the built-but-never-fed sweep, and **it was mine, from this session**. The Home
+"Faces waiting" card I added in `bi` resumes with:
+
+    showFaceReviewGrid(pending, state.scannedFiles || [], 0);
+
+On the Home screen no card has been scanned, so that list is `[]`. `showFaceReviewGrid` builds `byKey`
+purely from it, and the group-shot sort reads `byKey[a.clipKey]` — so every date became `''`, the sort
+collapsed, and the scenes fell back to raw clipKey string order.
+
+**The comment directly above that sort quotes the complaint it exists to fix:** *"Scenes were left in
+the order the SCAN happened to finish them — which is async, so it looked random ('all the photos are
+out of order')."* **He said that to me earlier today.** I then built a path that silently opted out of
+the fix. The pop-out preview mirror was dead on that path too, for the same reason.
+
+The clips aren't in memory there, but their dates ARE on disk — the drafts store is keyed by exactly
+the clipKey forms these clusters carry. The resume path now rebuilds a minimal clip list from
+`getDrafts()` (name/size/mtime parsed back out of the key, plus date/subject), which is enough for
+both the sort and for `byKey` to resolve. A scanned card still wins: a real clip carries far more than
+a draft does, and a test guards that.
+
+`test/e2e/resume-review-keeps-order.e2e.mjs`, 4 tests, guard proven by breaking it.
+
+**Test-harness lesson, and it cost the first run:** the Home card only renders when MAIN reports
+pending faces, and that count comes from the faces-pending STORE — nothing the renderer can stub. I
+seeded only drafts, so the card never appeared, the click hit nothing, and all four tests failed for a
+reason unrelated to the one under test. **Seed the store the feature reads, not the state you wish it
+read.**
+
+**The wider point: a new entry point inherits none of the fixes the old one accumulated.** That sort,
+the preview mirror, and the byKey indexing were all earned the hard way on the scan path; my Home
+shortcut bypassed every one. **When adding a second way into an existing screen, check what the first
+way was passing it — and why.**
+
+Both tiers green: vm **1146/1010/136/0**, e2e **136/135/1/0**.
+
 ### 2026-07-19bw — ⭐ a tested importer with NO BUTTON, beside 1354 hand-filed clips and a ledger of 0
 
 Swept a NEW axis suggested by the last three iterations — *a feature that is fully built but never

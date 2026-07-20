@@ -478,7 +478,34 @@ async function renderPendingWork() {
       let pending = [];
       try { pending = await loadPendingFaces(); } catch { pending = []; }
       if (!pending.length) { showToast('Nothing left to review — all faces are named'); renderPendingWork(); return; }
-      showFaceReviewGrid(pending, state.scannedFiles || [], 0);
+      // REBUILD THE CLIP CONTEXT. On the Home screen no card has been scanned, so `state.scannedFiles`
+      // is empty — and showFaceReviewGrid builds its `byKey` purely from that list. Handing it nothing
+      // makes every `byKey` lookup undefined, which silently opts this path out of the group-shot sort
+      // and leaves the scenes in whatever order the async scan finished them: the exact
+      // "all the photos are out of order" complaint that sort exists to fix.
+      //
+      // The clips aren't in memory, but their dates ARE on disk: the drafts store is keyed by the same
+      // clipKey forms these clusters carry. So rebuild a minimal clip list from it — enough for the
+      // sort (date, name) and for byKey to resolve — and fall back to whatever is in memory when a
+      // card really has been scanned, since a real clip carries far more than a draft does.
+      let ctx = state.scannedFiles || [];
+      if (!ctx.length) {
+        try {
+          const drafts = (await window.api.getDrafts()) || {};
+          ctx = Object.entries(drafts).map(([k, v]) => {
+            const parts = String(k).split('__');
+            return {
+              name: parts[0] || k,
+              size: Number(parts[1]) || 0,
+              mtimeMs: Number(parts[2]) || 0,
+              date: (v && v.date) || '',
+              subject: (v && v.subject) || '',
+              description: (v && v.description) || '',
+            };
+          });
+        } catch { ctx = []; }
+      }
+      showFaceReviewGrid(pending, ctx, 0);
     });
   }
 }

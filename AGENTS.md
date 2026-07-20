@@ -322,6 +322,43 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ce — the whole backlog, dry-filed. And the exiftool diagnosis was wrong AGAIN.
+
+**⚠ THIRD CORRECTION on the same bug. "Dead since 0.4.15" is false, and here is the evidence that
+killed it:** his Compressed folder contains
+`2026-05-31_lawn-mowing_dennis_v1.mp4_exiftool_tmp`, **dated 2026-06-15** — an exiftool working file.
+exiftool cannot produce one without constructing successfully, so it RAN on his machine in June. And
+that clip is the same one his single surviving final-meta entry describes.
+
+The real cause is a transitive dependency, not the refactor: `package.json` asks for
+`exiftool-vendored ^36.0.0`, which pulls `batch-cluster` — and **`package-lock.json` was not added
+until 2026-06-27**, after that temp file. So every install before then resolved a permissive
+batch-cluster; a later one added constructor validation for `maxProcAgeMillis`, and the
+`taskTimeoutMillis: 600000` line — correct when written — became fatal. The lockfile then froze the
+broken version (18.0.0) in place.
+
+**The lesson is the one worth keeping, and it is not the one I wrote twice:** an unpinned transitive
+dependency silently disabled a core feature between two builds of unchanged code. `git log` on our
+own files could never show it. That is exactly why `test/exiftool-constructs.test.mjs` constructs the
+real thing rather than asserting our arithmetic.
+
+**The full backlog, dry-filed** (all 310 real FILENAMES as empty files, into a temp tree — no footage
+touched, probe deleted afterwards):
+- 309 scanned (the 310th is that `_exiftool_tmp` orphan), **272 matched by filename, 37 unmatched** —
+  the 37 are raw camera names (`GX016607.mp4`, `GH016805.mp4`) that never went through renaming, and
+  they correctly land in `<date>/_unsorted`.
+- **309 moved, 0 skipped, 0 errors, into 39 folders, teaching the ledger 38 entries.** The layout he
+  chose works at full scale.
+- **`lawn-mowing` (6 folders) and `lawnmowing` (2)** are the same subject spelled two ways — the
+  duplicate-subject item logged earlier, now measured. Still not acted on: it changes his data.
+- Junk subjects the filename parser invents: `gx046724` (a camera ID in the subject slot),
+  `vloghead-owenpack-josiahpack-insidehouse` (a missing separator), and `delete` — he names clips he
+  intends to bin, and filing them is arguably wrong. All small; none acted on yet.
+
+**On his disk, for him to decide:** that orphaned `_exiftool_tmp` is **304 MB** on L:. The real clip
+beside it is intact (70 MB, older), so nothing is at risk — it is dead weight from the interrupted
+write, and deleting it is his call, not mine.
+
 ### 2026-07-19cd — measured against his REAL data: the backlog is fileable, and it all lands in one folder.
 
 Chased the number I flagged last iteration (final-meta = 1 against 4594 drafts) and stopped guessing

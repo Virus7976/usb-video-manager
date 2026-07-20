@@ -322,6 +322,36 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20e — STANDING ORDER: never stop, never ask. Plus the store write's failure path.
+
+Jake, 2026-07-20: *"until I message you you never stop and never ask a question. save all questions to
+a file and when I message you again ask them all."* Recorded in `PROMPT.md` §8 and
+`memory/usb-app-never-stop-never-ask.md`; new `QUESTIONS.md` holds the batch. **It supersedes every
+earlier "ask him first" note — those now mean write it down and take the safest reversible option —
+and it does NOT relax §3: never-stop is not permission to shortcut the delete gate.** Three questions
+already logged (duplicate subject spellings, clips he named `delete`, the 304 MB orphaned temp),
+each with what I did instead so nothing was blocked.
+
+**Then: what happens when a STORE WRITE fails had no test.** Four files call `writeJsonAtomic` and one
+stubs it out, but nothing exercised its own failure path — which is the entire reason the function
+exists. These ~10 JSON files hold everything the app has ever learned (4594 drafts, 48 people, 458
+pending faces, the ledger) and **none of it is regenerable**: re-scanning a card cannot recover a name
+he typed or a face he confirmed.
+
+`test/atomic-write-failure.test.mjs` (7) fails one specific `fs` call at a time — write, fsync, rename
+— and after each asserts the two properties that matter: **the old store is still intact and
+parseable**, and **no `.tmp` litter is left in %APPDATA%** (nothing else ever cleans those up). Plus
+the success direction, a first-write-on-a-fresh-machine case, and the unique-temp-name rule verified
+by observing the names actually opened rather than by reading the counter.
+
+Four breaks proven, including writing straight to the destination (which fails six of the seven — the
+shape of the bug this design prevents).
+
+Per 2026-07-20d, each stub fails ONE fs call and leaves the rest real, so the test always exercises
+the stage it names.
+
+vm **1248/1105/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20d — the cross-device move: untested, and it is the ONLY path his machine takes.
 
 `moveFileCrossDevice` renames first and falls back on `EXDEV`. `EXDEV` appeared in **zero tests** —

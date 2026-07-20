@@ -7,6 +7,45 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### The reason almost nothing gets filed (2026-07-20)
+
+Your library has **4,594 clips. 331 are named. One is filed.** Here is why, and what changed.
+
+Filing groups clips by their subject. You have **112 different subjects across 206 named clips** — so
+almost every clip is in a group of one, no group is ever big enough to be worth filing, and everything
+falls through to "unsorted". `car`, `car-driving`, `car-driving-down` and `car-parked` are four names
+for one thing. Nothing was ever going to file.
+
+- **New names now snap onto ones you already use.** When the AI suggests `lawn-mowing-dennis-yard` and
+  you already have `lawn-mowing`, it uses yours. A genuinely new shoot stays new — it only snaps when
+  it is confident, and it never touches a subject you typed yourself.
+- **When YOU type a variant, it asks.** "You typed `lawn-mowing-dennis`. You've already used
+  `lawn-mowing` on 12 clips — use that instead?" with **Keep mine** as a real answer. It will never
+  rename your work without asking.
+- **Edit → "Tidy up subjects…"** cleans up what is already there. It shows every proposed merge with
+  the exact clip counts, **nothing is pre-ticked**, and it takes a save point first so Edit → Version
+  history undoes the whole thing. On your library it offers 21 merges covering 46 clips.
+
+**Being straight about the limit:** 33 of your subjects (90 clips) are things like `talking-head`,
+`person-sitting-couch` and `vlog-young-man`. Those describe what is *on screen*, not what the footage
+is *for* — and no merge fixes that, because they are the wrong kind of name rather than a misspelling.
+The tidy screen lists them so you can see them, and the app has stopped generating more of them, but
+renaming those 90 is a judgement only you can make.
+
+### Also fixed
+
+- **Phone footage had no thumbnails at all.** Your log had 3,648 blocked requests — the folder phone
+  videos are staged in was never on the allowed list, so every preview image silently failed. You have
+  been naming phone clips blind.
+- **An AI run could write its results onto a different card's clips** if you went Home and scanned
+  another card while it was still going.
+- **A name typed within a second of swapping cards was silently lost.**
+- **"Follow AI ↓" secretly un-cancelled a run you had just cancelled.**
+- **Analyze and Improve could run at once** and fight over the same clips.
+- The app now tells you when **ffmpeg is missing** instead of silently producing no thumbnails and no
+  clip durations.
+
+
 ### Fixed — two features that had never once worked, and the screens that misled you (2026-07-20)
 
 - **Confirming a face didn't tag any clip you'd already filed.** The face review sends one kind of ID

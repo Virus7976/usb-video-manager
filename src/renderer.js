@@ -1105,6 +1105,18 @@ async function startFlow() {
   }
 
   setStep(1);
+  // ⚠⚠ FLUSH BEFORE THE ARRAY IS REPLACED, or the last thing he typed is silently lost.
+  //
+  // Both scheduleDraftSave and flushDraftSave guard on `state.scannedFiles.length`, and that guard is
+  // evaluated at FIRE time — 600ms after the edit. This line empties the array and does not refill it
+  // until after `await window.api.scanVideos(...)`, which is seconds. So a save armed in the
+  // preceding 600ms fires into that window, sees length 0, and no-ops. The pagehide/blur safety net
+  // has the identical guard, so it does not catch it either.
+  //
+  // Trigger: type a name (or tag a person) and within 600ms swap to a different card. He loses the
+  // edit, and the UI showed a ✓ the whole time. Flushing here closes the window entirely — the map
+  // is built while the clips it describes are still present.
+  flushDraftSave();
   state.scannedFiles = [];
   state.copied = [];
   $('renameList').innerHTML = '';
@@ -1775,6 +1787,14 @@ async function renderAiHealth() {
 async function applyAiHealthFix(p, card) {
   const done = (msg) => { showToast(msg, 4500); renderAiHealth(); };
   try {
+    if (p.fix === 'copyLink') {
+      // For problems whose fix is a manual install. The card must still DO something when pressed —
+      // applyAiHealthFix falls through silently on an unknown fix id, and a button that does nothing
+      // is the defect this codebase keeps finding.
+      try { await window.api.clipboardWrite(p.arg); } catch { /* clipboard denied */ }
+      showToast(`Link copied — paste it into your browser: ${p.arg}`, 8000);
+      return;
+    }
     if (p.fix === 'useVision') {
       const r = await withBusyBtn(card, 'Switching…', () => window.api.aiUseVisionModel(p.arg));
       if (r && r.ok) { aiCfg.model = p.arg; done(`Now using ${p.arg} — it actually sees what's in your footage ✓`); }
@@ -3897,6 +3917,8 @@ function aiCallGuard(promise, ms = 150000) {
 // type, motion, style + memories. "Go back, see where it went wrong, fix it."
 async function aiImproveSelected() {
   if (!requireAi()) return;
+  if (!beginAiRun('improve')) return;
+  try {
   const sel = state.scannedFiles.map((c, i) => (c.selected ? i : -1)).filter((i) => i >= 0);
   const targets = sel.length ? sel : state.scannedFiles.map((c, i) => i);
   const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsFor(c) && clipObsFor(c).obs) || '';
@@ -3941,6 +3963,9 @@ async function aiImproveSelected() {
   }
   if (ok) showToast(`Improved ${ok} description${ok !== 1 ? 's' : ''}${fail ? ` · ${fail} failed` : ''} ✓`, 4000);
   else showToast(`Couldn't improve${lastErr ? `: ${lastErr}` : ''}`, 5000);
+  // Released on every exit path, including a throw — leaking the claim would refuse every future AI
+  // run until the app restarts, which is worse than the double-run it prevents.
+  } finally { endAiRun(); }
 }
 
 // INSTANT, OFFLINE name-swap: rewrite existing descriptions to use recognized people's
@@ -4046,10 +4071,38 @@ function scheduleReflectFromNaming(indices) {
 // One-click AUTO-ENHANCE: kick off the AI in the background to do useful work —
 // name any unnamed clips, then learn rules from the whole batch. Non-modal; you can
 // keep working (and scroll away — the Follow button brings you back).
+// ⚠⚠ ONE AI NAMING RUN AT A TIME, ACROSS ALL THREE ENTRY POINTS.
+//
+// `aiAutoEnhance` guarded itself; `aiAnalyzeSelected` and `aiImproveSelected` did not. Two problems
+// followed, and the second is the bad one:
+//
+//  1. Both loops write `state.scannedFiles[i]` BY INDEX and both call flushDraftSave(), so concurrent
+//     runs over overlapping clips interleave their writes — the later run's subject/description wins
+//     non-deterministically. Nothing blanks (writeDrafts merges non-destructively against empties),
+//     but which name he ends up with is a coin toss.
+//  2. Both open with `aiAborted = false`. So STARTING Improve silently UN-CANCELS a running Analyze —
+//     the same defect just fixed in the "Follow AI ↓" button, by a different route. It also un-does
+//     reportCardGone(), resuming analysis against a card that has been pulled out.
+//
+// Both also call setAiRunOrder(...), which replaces `aiStageClips` wholesale, so the conveyor and the
+// footer counter describe one run while two are writing.
+//
+// Refusing the second run fixes all of it, and is what he would want anyway: these are long GPU jobs.
+let aiRunActive = '';   // '' | 'analyze' | 'improve' | 'enhance'
+const AI_RUN_LABEL = { analyze: 'Analyze', improve: 'Improve descriptions', enhance: 'Auto-name' };
+function beginAiRun(kind) {
+  if (aiRunActive) {
+    showToast(`${AI_RUN_LABEL[aiRunActive] || 'An AI run'} is already running — let it finish, or cancel it first.`, 4500);
+    return false;
+  }
+  aiRunActive = kind;
+  return true;
+}
+function endAiRun() { aiRunActive = ''; }
 let autoEnhancing = false;
 async function aiAutoEnhance() {
   if (!requireAi()) return;
-  if (autoEnhancing) { showToast('AI is already enhancing…'); return; }
+  if (!beginAiRun('enhance')) return;
   const all = state.scannedFiles.map((c, i) => i);
   if (!all.length) { showToast('No clips to enhance'); return; }
   autoEnhancing = true;
@@ -4097,6 +4150,7 @@ async function aiAutoEnhance() {
   clearAllAnalyzing(); clearTask('ai'); maybeFlushEdits(true);
   await releaseGpu();
   autoEnhancing = false;
+  endAiRun();
   // Say what actually happened. "complete ✓" over a run that named nothing is the failure mode that
   // makes him stop trusting the screen — and trusting it is the whole point of the app.
   const missed = Math.max(0, planned - done);
@@ -4527,6 +4581,8 @@ function showLedgerMatchDialog(matches, fresh) {
 // same-shoot offer and the mode all over again.
 async function aiAnalyzeSelected(preset = null) {
   if (!requireAi()) return;
+  if (!beginAiRun('analyze')) return;
+  try {
   let idxs = state.scannedFiles.map((c, i) => (c.selected ? i : -1)).filter((i) => i >= 0);
   if (!idxs.length) { showToast('Tick the clips you want to analyse first'); return; }
   if (!preset) {
@@ -4769,6 +4825,8 @@ async function aiAnalyzeSelected(preset = null) {
     const named = idxs.filter((i) => { const c = state.scannedFiles[i]; return c && (c.subject || c.description); });
     reflectFromClips(named);
   }
+  // Released on every exit path, including a throw and every early return inside the body.
+  } finally { endAiRun(); }
 }
 
 // Pre-analyze dialog: lets the user type free-form DIRECTION for this run (folded

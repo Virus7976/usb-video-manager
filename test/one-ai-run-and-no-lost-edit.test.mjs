@@ -1,0 +1,122 @@
+// Three from the standing backlog, all found by audits rather than by use.
+//
+//   ⚠⚠ A NAME TYPED WITHIN 600ms OF SWAPPING CARDS WAS SILENTLY LOST. Both scheduleDraftSave and
+//      flushDraftSave guard on `state.scannedFiles.length`, and that guard is evaluated at FIRE time.
+//      startFlow empties the array and does not refill it until after `await scanVideos(...)` —
+//      seconds. A save armed in the preceding 600ms fires into that window, sees length 0, and
+//      no-ops. The pagehide/blur safety net has the identical guard, so it did not catch it either.
+//      The UI showed a ✓ throughout.
+//
+//   ⚠⚠ ANALYZE AND IMPROVE HAD NO RUN GUARD while auto-enhance did. Both write
+//      `state.scannedFiles[i]` BY INDEX and both flush drafts, so concurrent runs interleave and the
+//      winning name is a coin toss. Worse: both open with `aiAborted = false`, so STARTING Improve
+//      silently un-cancelled a running Analyze — the same defect just fixed in the "Follow AI ↓"
+//      button, by another route, and it also un-does reportCardGone().
+//
+//   ⚠ FFMPEG'S ABSENCE WAS INVISIBLE. On a clean Windows box it is not installed, and every failure
+//      is swallowed: thumbnails never appear, durations read 0, and only compress:run surfaces
+//      anything — as a raw "spawn ffmpeg ENOENT". Unlike exiftool (vendored) and the face models
+//      (bundled), ffmpeg is assumed. This does not bundle it — that is an ~80 MB decision on a
+//      135 MB installer and his to make — but it stops the absence being silent.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const read = (...p) => readFileSync(join(process.cwd(), ...p), 'utf8');
+const strip = (s) => s.replace(/\/\/.*$/gm, '');
+const core = strip(read('src', 'mod', '01-core.js'));
+const tasks = strip(read('src', 'mod', '04-tasks-ai.js'));
+const aiTools = strip(read('main-mod', '10-ai-tools.js'));
+
+test('⚠⚠ drafts are flushed BEFORE the clip array is replaced', () => {
+  const at = core.indexOf('state.scannedFiles = [];');
+  assert.ok(at > -1, 'found where the array is emptied');
+  const before = core.slice(Math.max(0, at - 300), at);
+  assert.match(before, /flushDraftSave\(\);/,
+    '⚠ flush first — the guard inside flushDraftSave is evaluated at fire time and would see an empty array');
+});
+
+test('the flush is not merely present somewhere earlier in the function', () => {
+  // Bind to adjacency, not existence: a flush 200 lines up would satisfy a naive search while the
+  // window this closes stayed wide open.
+  const at = core.indexOf('state.scannedFiles = [];');
+  const flushAt = core.lastIndexOf('flushDraftSave();', at);
+  assert.ok(flushAt > -1 && at - flushAt < 300,
+    `the flush is immediately before the reset — gap was ${at - flushAt} chars`);
+});
+
+test('⚠⚠ all three AI naming runs claim the same slot', () => {
+  // One guard for all of them, or the two unguarded ones keep un-cancelling the third.
+  assert.match(tasks, /let aiRunActive = '';/, 'there is one shared claim');
+  const claims = (tasks.match(/if \(!beginAiRun\('(analyze|improve|enhance)'\)\) return;/g) || []);
+  assert.equal(claims.length, 3, `analyze, improve and auto-enhance all claim it — found ${claims.length}`);
+  for (const kind of ['analyze', 'improve', 'enhance']) {
+    assert.ok(claims.some((c) => c.includes(`'${kind}'`)), `${kind} claims the slot`);
+  }
+});
+
+test('⚠ and each releases it in a finally', () => {
+  const releases = (tasks.match(/\} finally \{ endAiRun\(\); \}/g) || []).length;
+  assert.ok(releases >= 2, `the wrapped runs release on every exit — found ${releases}`);
+  assert.match(tasks, /function endAiRun\(\) \{ aiRunActive = ''; \}/, 'and the release really clears it');
+  // auto-enhance releases inline at its existing exit rather than via a wrapper.
+  assert.match(tasks, /autoEnhancing = false;\s*\n\s*endAiRun\(\);/, 'auto-enhance releases too');
+});
+
+test('⚠ the refusal names WHICH run is going, and is visible', () => {
+  // "Nothing happened" on a long GPU job reads as the app ignoring him.
+  const at = tasks.indexOf('function beginAiRun(kind)');
+  assert.ok(at > -1, 'found the claim');
+  const body = tasks.slice(at, tasks.indexOf('\n}', at));
+  assert.match(body, /showToast\(/, 'it says something');
+  assert.match(body, /AI_RUN_LABEL\[aiRunActive\]/, 'and names the run that is already going');
+  assert.match(body, /cancel it first/, 'and tells him what he can do about it');
+});
+
+test('⚠ starting a second run can no longer un-cancel the first', () => {
+  // The mechanism: both entry points open with `aiAborted = false`, so the SECOND one resurrected a
+  // run the user had cancelled. Refusing the second call is what closes it — so the claim must come
+  // BEFORE that assignment, not after.
+  for (const fn of ['async function aiImproveSelected()', 'async function aiAnalyzeSelected(preset = null)']) {
+    const at = tasks.indexOf(fn);
+    assert.ok(at > -1, `found ${fn}`);
+    const head = tasks.slice(at, at + 400);
+    const claim = head.indexOf('beginAiRun');
+    const reset = head.indexOf('aiAborted = false');
+    assert.ok(claim > -1, `${fn} claims the slot`);
+    if (reset > -1) assert.ok(claim < reset, `⚠ ${fn} must claim BEFORE clearing aiAborted`);
+  }
+});
+
+test('⚠ ffmpeg is probed, and its absence is reported', () => {
+  assert.match(aiTools, /id: 'no-ffmpeg'/, 'the health check reports it');
+  assert.match(aiTools, /severity: 'high'/, 'as a real problem');
+  const at = aiTools.indexOf("id: 'no-ffmpeg'");
+  const body = aiTools.slice(Math.max(0, at - 600), at);
+  assert.match(body, /runCapture\(config\.ffmpegPath \|\| 'ffmpeg', \['-version'\]/,
+    '⚠ through runCapture, not a bare spawn — it owns the timeout and the tree-kill');
+  assert.match(body, /onlyOnSuccess: true/, 'a non-zero exit reads as absent, which is the honest answer');
+});
+
+test('⚠⚠ the ffmpeg card DOES something when pressed', () => {
+  // applyAiHealthFix falls through silently on an unknown fix id, and every health card renders a
+  // button. A card whose button does nothing is the exact defect this codebase keeps being audited
+  // for — so the fix id must be one the renderer actually handles.
+  const at = aiTools.indexOf("id: 'no-ffmpeg'");
+  const entry = aiTools.slice(at, at + 700);
+  const m = entry.match(/fix: '([a-zA-Z]+)'/);
+  assert.ok(m, 'the problem declares a fix');
+  assert.ok(core.includes(`p.fix === '${m[1]}'`),
+    `⚠ the renderer must handle fix '${m[1]}' — an unhandled id makes the button a no-op`);
+});
+
+test('the copyLink fix uses a bridge that exists', () => {
+  // Reusing the clipboard bridge instead of inventing an open-external IPC, which would then also
+  // need a preload binding and a renderer caller or the reachability test would flag it as dead.
+  const at = core.indexOf("if (p.fix === 'copyLink')");
+  const body = core.slice(at, core.indexOf('return;', at));
+  assert.match(body, /window\.api\.clipboardWrite\(p\.arg\)/, 'it copies the link');
+  assert.match(read('preload.js'), /clipboardWrite: \(text\) => ipcRenderer\.invoke\('clipboard:write', text\)/,
+    'and that bridge is really exposed');
+});

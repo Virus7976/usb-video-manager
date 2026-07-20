@@ -1103,6 +1103,18 @@ async function startFlow() {
   }
 
   setStep(1);
+  // ⚠⚠ FLUSH BEFORE THE ARRAY IS REPLACED, or the last thing he typed is silently lost.
+  //
+  // Both scheduleDraftSave and flushDraftSave guard on `state.scannedFiles.length`, and that guard is
+  // evaluated at FIRE time — 600ms after the edit. This line empties the array and does not refill it
+  // until after `await window.api.scanVideos(...)`, which is seconds. So a save armed in the
+  // preceding 600ms fires into that window, sees length 0, and no-ops. The pagehide/blur safety net
+  // has the identical guard, so it does not catch it either.
+  //
+  // Trigger: type a name (or tag a person) and within 600ms swap to a different card. He loses the
+  // edit, and the UI showed a ✓ the whole time. Flushing here closes the window entirely — the map
+  // is built while the clips it describes are still present.
+  flushDraftSave();
   state.scannedFiles = [];
   state.copied = [];
   $('renameList').innerHTML = '';
@@ -1773,6 +1785,14 @@ async function renderAiHealth() {
 async function applyAiHealthFix(p, card) {
   const done = (msg) => { showToast(msg, 4500); renderAiHealth(); };
   try {
+    if (p.fix === 'copyLink') {
+      // For problems whose fix is a manual install. The card must still DO something when pressed —
+      // applyAiHealthFix falls through silently on an unknown fix id, and a button that does nothing
+      // is the defect this codebase keeps finding.
+      try { await window.api.clipboardWrite(p.arg); } catch { /* clipboard denied */ }
+      showToast(`Link copied — paste it into your browser: ${p.arg}`, 8000);
+      return;
+    }
     if (p.fix === 'useVision') {
       const r = await withBusyBtn(card, 'Switching…', () => window.api.aiUseVisionModel(p.arg));
       if (r && r.ok) { aiCfg.model = p.arg; done(`Now using ${p.arg} — it actually sees what's in your footage ✓`); }

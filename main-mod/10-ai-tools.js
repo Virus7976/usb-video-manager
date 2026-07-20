@@ -1502,6 +1502,39 @@ ipcMain.handle('ai:health', async () => {
     const guess = defaultProjectsRoot();
     let found = false;
     try { found = fs.statSync(guess).isDirectory(); } catch { found = false; }
+  // ⚠ IS FFMPEG ACTUALLY THERE? On a clean Windows box it is not, and NOTHING says so — the failures
+  // are all silent by design:
+  //   • thumbnails/posters: `proc.on('error', () => resolve(false))` — they simply never appear;
+  //   • probeMeta swallows it and returns durationSec 0, so every clip shows no duration and the
+  //     compress progress bar goes indeterminate;
+  //   • only compress:run surfaces anything, and it surfaces the raw "spawn ffmpeg ENOENT".
+  // There is also no ffmpeg path field anywhere in the UI, so someone with it installed off-PATH
+  // cannot point the app at it without hand-editing config.json.
+  //
+  // Unlike exiftool (vendored and asarUnpack'd) and the face models (bundled), ffmpeg is assumed.
+  // This does not bundle it — that is an ~80 MB decision on an installer already at 135 MB, and his
+  // to make — but it stops the absence being invisible.
+  // Through runCapture, NOT a bare spawn — scripts/check-primitives.mjs refused the bare version and
+  // it was right to: runCapture owns the timeout, the tree-kill and the output cap, and a probe that
+  // hangs would hang the health check with it. `onlyOnSuccess` discards output from a non-zero exit,
+  // so a present-but-broken ffmpeg reads as absent, which is the honest answer for our purposes.
+  const ffOut = await runCapture(config.ffmpegPath || 'ffmpeg', ['-version'], { timeoutMs: 4000, onlyOnSuccess: true });
+  const ffProbeOk = /ffmpeg version/i.test(ffOut);
+  if (!ffProbeOk) {
+    problems.push({
+      id: 'no-ffmpeg',
+      severity: 'high',
+      title: 'ffmpeg is not installed',
+      detail: 'ffmpeg does the thumbnails, the clip durations and the local compression. Without it those just quietly do nothing — no error, no preview images, every clip showing no length. Install it and point the app at it, or put it on your PATH.',
+      // `copyLink` reuses the clipboard bridge that already exists rather than inventing an
+      // open-external IPC. An unknown fix id would fall through applyAiHealthFix and do NOTHING —
+      // a button that does nothing is the exact defect this app keeps being audited for.
+      fix: 'copyLink',
+      fixLabel: 'Copy download link',
+      arg: 'https://www.gyan.dev/ffmpeg/builds/',
+    });
+  }
+
     problems.push({
       id: 'no-projects-root',
       severity: 'high',

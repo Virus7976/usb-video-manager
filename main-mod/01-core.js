@@ -133,6 +133,8 @@ const USER_CONFIG = path.join(ROAMING_DIR, 'USB SD Auto-Action', 'config.json');
 // existing reader is unchanged) but persisted INDEPENDENTLY via saveStore(key). One
 // writer per file (single-instance lock) makes a fresh re-read cheap and race-free.
 const STORE_DIR = path.join(ROAMING_DIR, 'USB SD Auto-Action');
+// Shared with the HTTP backend — see core/clip-key.js for why core/ exists and its three rules.
+const subjects = require('./core/subjects');
 // Sweep orphaned atomic-write temp files (`<store>.<pid>.<n>.tmp`) left by a crash/power-loss between
 // openSync and renameSync. Cleanup otherwise only ran in the same-process catch, so these leaked
 // forever — and for the multi-MB stores they can be large. Called once at boot.

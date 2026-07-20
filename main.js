@@ -135,6 +135,8 @@ const USER_CONFIG = path.join(ROAMING_DIR, 'USB SD Auto-Action', 'config.json');
 // existing reader is unchanged) but persisted INDEPENDENTLY via saveStore(key). One
 // writer per file (single-instance lock) makes a fresh re-read cheap and race-free.
 const STORE_DIR = path.join(ROAMING_DIR, 'USB SD Auto-Action');
+// Shared with the HTTP backend — see core/clip-key.js for why core/ exists and its three rules.
+const subjects = require('./core/subjects');
 // Sweep orphaned atomic-write temp files (`<store>.<pid>.<n>.tmp`) left by a crash/power-loss between
 // openSync and renameSync. Cleanup otherwise only ran in the same-process catch, so these leaked
 // forever — and for the multi-MB stores they can be large. Called once at boot.
@@ -11194,6 +11196,65 @@ ipcMain.handle('ai:release', async () => ollamaReleaseAll());
 
 // What's resident right now — so the UI can tell the truth about it instead of guessing.
 ipcMain.handle('ai:loaded', async () => ({ ok: true, models: await ollamaLoaded() }));
+
+// ⚠⚠ THE SUBJECT VOCABULARY — FEATURES.md item 29, the unblock.
+//
+// Measured on his store: 112 distinct subjects across 206 named clips, 20 of them fragments of each
+// other (car / car-driving / car-driving-down). Filing groups by subject, so nothing groups and
+// nothing files — ONE clip filed out of 4,594.
+//
+// The renderer already had `matchKnownSubject`, but it only matched EXACTLY (after slugging), so it
+// caught `snow-walking` vs `snowwalking` and never `car-driving` vs `car`. That is why this exists:
+// not a second snapping path — the renderer's one now calls through to this — because a twin would
+// drift, which is the failure this codebase produces most often.
+//
+// Built from every subject he has actually used: the remembered subject list, plus what is on his
+// drafts and filed metadata. Cached per call-burst; an AI run canonicalises once per clip and the
+// vocabulary does not change during it.
+// ⚠ CACHED ON CONTENT, NOT ON TIME. The first version held the vocabulary for 30 seconds, which
+// meant a subject he had JUST typed was invisible to the next clip's canonicalisation — the exact
+// window in which it matters most, since a naming run walks clips seconds apart. Found by a test
+// that seeded a subject and immediately canonicalised against it.
+//
+// The signature is cheap (three counts), so rebuilding only happens when something actually changed.
+let _vocabCache = null; let _vocabSig = '';
+function subjectVocabSignature() {
+  let d = 0; let f = 0; let s = 0;
+  try { s = (config.subjects || []).length; } catch { /* ignore */ }
+  try { d = Object.keys(currentDrafts() || {}).length; } catch { /* ignore */ }
+  try { f = Object.keys(currentFinalMeta() || {}).length; } catch { /* ignore */ }
+  return `${s}:${d}:${f}`;
+}
+function subjectVocabulary() {
+  const sig = subjectVocabSignature();
+  if (_vocabCache && _vocabSig === sig) return _vocabCache;
+  const counts = {};
+  const bump = (v) => {
+    const s = subjects.normalizeSubject(v);
+    if (s) counts[s] = (counts[s] || 0) + 1;
+  };
+  try { for (const s of (config.subjects || [])) bump(s); } catch { /* ignore */ }
+  try { for (const rec of Object.values(currentDrafts() || {})) if (rec && rec.subject) bump(rec.subject); } catch { /* ignore */ }
+  try { for (const rec of Object.values(currentFinalMeta() || {})) if (rec && rec.subject) bump(rec.subject); } catch { /* ignore */ }
+  _vocabCache = subjects.buildVocabulary(counts);
+  _vocabSig = sig;
+  return _vocabCache;
+}
+
+// Canonicalise a proposed subject. ADVISORY: it returns what it would use and why, and the caller
+// decides. It never rewrites anything on its own — silently renaming his subjects would be the same
+// mistake as an AI that decides instead of proposes.
+ipcMain.handle('subjects:canonicalize', (_e, proposed) => {
+  const v = subjectVocabulary();
+  const r = subjects.canonicalize(proposed, v);
+  return { ok: true, ...r, known: (v.subjects || []).length };
+});
+
+// NOTE: there is deliberately NO `subjects:vocabulary` handler yet. The subject PICKER
+// (FEATURES.md item 29) will need one, but an ipcMain handler with no preload binding is main-side
+// code nothing can invoke — the app's own reachability test refuses it, correctly. The builder
+// below is already used by subjects:canonicalize, and the HTTP backend reads core/subjects.js
+// directly, so nothing is blocked. Add the handler and its binding in the SAME commit as the picker.
 
 ipcMain.handle('ai:health', async () => {
   const ai = config.ai || {};

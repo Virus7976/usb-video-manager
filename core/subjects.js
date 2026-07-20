@@ -84,12 +84,28 @@ function classifySubject(s) {
 // different as strings but obviously the same subject, while `curling` and `curlers-ice-rink` share
 // no whole token yet are related. Containment is what catches his actual fragmentation — every one of
 // his 20 duplicate pairs is one name's tokens being a subset of another's.
+// Do two tokens mean the same word? `butcher`/`butchering`, `mow`/`mowing`, `curler`/`curlers`.
+//
+// Deliberately CONSERVATIVE: one must be a prefix of the other, the shorter must be at least 4
+// characters, and the remainder must be a common English inflection. That is enough for his real
+// variants and short of a real stemmer, which would start matching `car`/`cargo` and `plan`/`plant`.
+const INFLECTIONS = ['s', 'es', 'ing', 'ed', 'er', 'ers', 'ings', 'd', 'ly'];
+function sameWord(a, b) {
+  if (a === b) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (short.length < 4 || !long.startsWith(short)) return false;
+  let rest = long.slice(short.length);
+  // Handle a doubled final consonant before the suffix: mop -> mopping.
+  if (rest.length > 1 && rest[0] === short[short.length - 1]) rest = rest.slice(1);
+  return INFLECTIONS.includes(rest);
+}
+
 function similarity(a, b) {
   const A = new Set(tokens(a));
   const B = new Set(tokens(b));
   if (!A.size || !B.size) return 0;
   let shared = 0;
-  for (const w of A) if (B.has(w)) shared += 1;
+  for (const w of A) if ([...B].some((x) => sameWord(w, x))) shared += 1;
   if (!shared) return 0;
 
   // ⚠ A SINGLE GENERIC TOKEN MUST NOT ACT AS A MAGNET. Measured on his real data: with plain
@@ -185,4 +201,4 @@ function canonicalize(proposed, vocab, { threshold = 0.7 } = {}) {
   return out;
 }
 
-module.exports = { normalizeSubject, classifySubject, similarity, buildVocabulary, canonicalize, SHOT_WORDS };
+module.exports = { normalizeSubject, classifySubject, similarity, buildVocabulary, canonicalize, sameWord, SHOT_WORDS };

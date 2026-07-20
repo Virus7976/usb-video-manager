@@ -41,10 +41,20 @@ before(async () => {
   writeFileSync(join(dir, 'faces', 'aaa.png'), Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
     'base64'));
-  writeFileSync(join(dir, 'faces-pending.json'), JSON.stringify([
+  // ⚠ ENOUGH CARDS THAT SOME ARE GENUINELY FAR OFF-SCREEN. With only two, the second sits within the
+  // observer's 300px pre-fetch margin at a 390x844 viewport — so "2 of 2 loaded" was CORRECT
+  // behaviour and my lazy-loading assertion was simply undemonstrable on that fixture. A card is
+  // ~500px tall, so twelve puts the tail thousands of pixels down.
+  //
+  // Third time in this session that my test DATA was the problem rather than the code (a JPEG
+  // Chromium would not decode; a fixture too small to fail; this). Worth the pause each time: an
+  // assertion that cannot distinguish "broken" from "my data is wrong" is not a test.
+  const clusters = [
     { thumb: 'file:///C:/x/faces/aaa.png', suggest: { name: 'Josiah', dist: 0.3 }, clipKeys: ['k1'], descriptors: [[1]] },
     { thumb: 'file:///C:/x/faces/aaa.png', suggest: null, clipKeys: ['k2'], descriptors: [[2]] },
-  ]));
+  ];
+  for (let i = 3; i <= 12; i += 1) clusters.push({ thumb: 'file:///C:/x/faces/aaa.png', suggest: null, clipKeys: [`k${i}`], descriptors: [[i]] });
+  writeFileSync(join(dir, 'faces-pending.json'), JSON.stringify(clusters));
   writeFileSync(join(dir, 'people.json'), JSON.stringify([
     { id: 'p1', name: 'Liam', thumb: 'file:///C:/x/faces/aaa.png', faces: [{ confirmed: true }] },
   ]));
@@ -78,7 +88,13 @@ const pair = async () => {
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   await page.evaluate((t) => localStorage.setItem('uvd.token', t), TOKEN);
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.card', { timeout: 8000 });
+  await page.waitForSelector('.card', { timeout: 15000 });
+  // ⚠ RESET THE SCROLL. Browsers RESTORE scroll position across a reload, and one test scrolls to the
+  // bottom to prove lazy loading works. That scroll survived into the next test, which then found
+  // every crop already fetched and failed its "off-screen crops are not fetched" assertion — passing
+  // alone and failing in the full suite. Test pollution, and mine.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForFunction(() => window.scrollY === 0, { timeout: 5000 });
 };
 
 test('⚠ an unpaired phone is asked to pair, and shows no data', { skip: !RUN }, async () => {
@@ -108,7 +124,7 @@ test('⚠⚠ the review renders, and the face crops actually LOAD', { skip: !RUN
   // The bug this file exists for. `thumb` was a file:// URL — valid JSON, unusable image. An <img>
   // that 404s or fails to decode has naturalWidth 0, which is the only honest check.
   await pair();
-  assert.equal(await page.locator('.card').count(), 2, 'both unanswered faces render');
+  assert.equal(await page.locator('.card').count(), 12, 'every unanswered face renders');
 
   // ⚠ ONLY THE VISIBLE ONE. The crops are `loading="lazy"`, so a card below the fold legitimately has
   // not fetched its image — at a 390x844 phone viewport the second card is off-screen. My first
@@ -131,7 +147,7 @@ test('⚠⚠ the review renders, and the face crops actually LOAD', { skip: !RUN
   await page.waitForFunction(() => {
     const imgs = [...document.querySelectorAll('img.crop')];
     return imgs.length > 1 && imgs[1].complete && imgs[1].naturalWidth > 0;
-  }, { timeout: 8000 });
+  }, { timeout: 20000 });
 });
 
 test('⚠ crops are lazy, because he has hundreds of faces', { skip: !RUN }, async () => {

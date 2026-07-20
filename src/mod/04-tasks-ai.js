@@ -845,6 +845,32 @@ function matchKnownSubject(subj) {
   return '';
 }
 
+// ⚠⚠ THE SUBJECT VOCABULARY — FEATURES.md item 29, and the reason only ONE of his 4,594 clips is
+// filed.
+//
+// `matchKnownSubject` above only matches EXACTLY (after slugging). That catches `snow-walking` vs
+// `snowwalking` and never catches `car-driving` vs `car` — which is why he has 112 distinct subjects
+// across 206 named clips, 20 of them fragments of each other. Filing groups by subject, so nothing
+// groups, so nothing files.
+//
+// This calls through to core/subjects.js via main rather than reimplementing the matching here: the
+// renderer is a bundled browser script and cannot require a core module, and a second copy of the
+// logic would drift from the first — the failure this codebase produces most often.
+//
+// ADVISORY, deliberately. It returns what it WOULD use; the caller applies it to an AI suggestion
+// (fine — the AI proposes and we tidy) but must not silently rewrite something Jake typed himself.
+async function canonicalSubject(proposed) {
+  const raw = String(proposed || '').trim();
+  if (!raw) return { subject: '', canonical: '', matched: false, shotLike: false };
+  // Exact/known first — cheap, and keeps working if the bridge is unavailable.
+  const known = matchKnownSubject(raw);
+  try {
+    const r = await window.api.canonicalizeSubject(raw);
+    if (r && r.ok) return r;
+  } catch { /* older main, or the handler is gone — fall back below */ }
+  return { subject: raw, canonical: known || raw, matched: !!known, shotLike: false, why: '' };
+}
+
 // Watchdog: guarantee an AI loop ALWAYS advances even if one call wedges (a model
 // reloading, a clip the model chokes on, a stalled HTTP body). Races the IPC call
 // against a hard ceiling so we never sit on clip 1 forever — a stuck clip is marked
@@ -1455,6 +1481,19 @@ async function aiSuggestClip(i, mode = 'all', opts = {}) {
     if (obs) {
       clip.observation = obs;
       noteClipObs(clip, obs);
+    }
+    // ⚠ Canonicalise the AI's SUBJECT before it lands. The model proposes a fresh phrase per clip
+    // ("car-driving-down"), and with nothing snapping it onto what he already uses, every clip
+    // invents its own subject — 112 of them, so filing groups nothing. Only the AI's proposal is
+    // tidied this way; a subject HE typed is never rewritten.
+    if (res.subject) {
+      try {
+        const c = await canonicalSubject(res.subject);
+        if (c && c.canonical && c.matched) res.subject = c.canonical;
+        // A name that describes the SHOT rather than the job is worth asking about rather than
+        // silently accepting — 46% of his named clips are this shape today.
+        if (c && c.shotLike) res._subjectShotLike = c.why || true;
+      } catch { /* never fail a naming run over tidy-up */ }
     }
     return applyAiResult(i, res, mode);
   } catch (err) {

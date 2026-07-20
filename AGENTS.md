@@ -322,6 +322,32 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ao — Tier 2 item 32 REJECTED on measurement, and pinned so nobody "tidies" it later.
+
+*"Remove the confirm dialogs from non-destructive actions — they cost a click and teach nothing."*
+Surveyed all **16**, and the premise does not hold here. Every one guards footage, his metadata, or a
+job long enough that starting it by accident matters:
+
+the delete gate ×2 · cancel a running copy · low disk space before a big import · file N clips into
+Projects · organize N clips · *"these clips aren't on your Organize map"* (the guard that exists
+because filing without it dumped 310 clips loose in his root) · undo last organize · restore a save
+point · clear ALL save points · re-analyse from scratch · retry failed clips · merge into an existing
+person · remove a tag from saved clips · re-tag affected clips · start a face detection pass.
+
+Several would have LOOKED gratuitous to the audit — "restore a save point" and "re-analyse from
+scratch" are not destructive in the delete sense — but each **overwrites something he typed or the AI
+produced**. *A confirm is not clutter when the sentence it shows is the only warning he gets.*
+
+So the deliverable is the opposite of the backlog line: `test/every-confirm-guards-something.test.mjs`
+(7) pins the consequential ones by name AND asserts the total is still 16 — so a future session that
+removes one has to say which, and why it was safe. Both breaks proven (delete confirm, low-space
+warning).
+
+**This is the second backlog item this session that measurement rejected** (16 was already built).
+Reading the code before believing the backlog keeps being worth the ten minutes.
+
+vm **1461/1318/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20an — turned the revert into a permanent test. My FIRST version of it was blind too.
 
 `am` reverted a bad rung. This makes the failure impossible to reintroduce silently: a fixture built

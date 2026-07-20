@@ -656,7 +656,7 @@ anything here, grep for the sibling before writing the test — five of this loo
 "one path fixed, its twin missed".
 
 
-## 8e. ERROR-PATH AUDIT — 2026-07-20. Findings 1-5 CLOSED (commit 745f596); 6-10 open.
+## 8e. ERROR-PATH AUDIT — 2026-07-20. Findings 1-9 CLOSED (745f596, 4e9a1cb). Only 10 remains.
 
 The technique that produced these: audit the branches that only run when something goes WRONG. They
 are the least-exercised code in the app, and the sibling-sweep works there too — the guard present on
@@ -667,8 +667,13 @@ it threw partway (+ its unguarded progress emitter) · undo orphaning the XMP si
 disarming the empty-folder cleanup · `projects:move` and `compress:run` both reporting ok:true when
 every item failed.
 
-**Still open, ranked:**
-6. `finalize:run` assigns `sidecar = ${curPath}.xmp` BEFORE the write. On the failure path it stays
+**Also closed (second batch):** the premature `sidecar` assignment · phone:pull's literal `ok:true`
+and its uncounted drops (⚠ the audit's claim that a "phone-clear step" reads this is WRONG — nothing
+in this app deletes from a phone, so it was a false "all done", not lost footage) · the leaking
+`phonevid_<ts>` temp dir · compress:run's missing re-entrancy guard.
+
+**Still open — ONE item, and it is benign:**
+~~6. `finalize:run` assigns `sidecar = ${curPath}.xmp` BEFORE the write. On the failure path it stays
    truthy, so step 2 tries to move a file that was never created and pushes a second, misleading
    error (`Sidecar for X stayed at the source: ENOENT`). Nothing is lost — `metaLanded` correctly
    stays false — but one failure reports as two, one describing a file that does not exist. Assign

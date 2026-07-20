@@ -1720,6 +1720,8 @@ async function finRunScan() {
     return;
   }
   finScan.files = res.files;
+  finScan.photosHere = res.photosHere || 0;   // for the empty state's photo hint
+
   finRenderList();
 }
 
@@ -1775,7 +1777,14 @@ function finRenderList() {
   if (!ordered.length) {
     const li = document.createElement('li');
     li.className = 'fin-empty-state';
-    li.innerHTML = `<span class="illo">${ILLO_EMPTY}</span><p class="fin-empty-tx">${q ? `No clips match “${escapeHtml(finQuery.trim())}”` : 'No clips in this folder'}</p>${q ? '<p class="muted small">Try a different search, or clear the filter.</p>' : '<p class="muted small">This folder has no video files — choose another above.</p>'}`;
+    // "No video files" is true and useless when the folder holds 203 photos one tick away. Measured:
+    // his `01 - Uncompressed` has exactly that, and stills are never compressed so they never reach
+    // the folder this screen scans by default. Say which kind of empty this is, and offer the tick.
+    const nPhotos = (finScan && finScan.photosHere) || 0;
+    const photoHint = (!q && nPhotos && !uiPrefs.finalizePhotos)
+      ? `<p class="muted small">There ${nPhotos === 1 ? 'is' : 'are'} <b>${nPhotos}</b> photo${nPhotos === 1 ? '' : 's'} here — tick <b>Include photos</b> above to file ${nPhotos === 1 ? 'it' : 'them'}.</p>`
+      : '<p class="muted small">This folder has no video files — choose another above.</p>';
+    li.innerHTML = `<span class="illo">${ILLO_EMPTY}</span><p class="fin-empty-tx">${q ? `No clips match “${escapeHtml(finQuery.trim())}”` : 'No clips in this folder'}</p>${q ? '<p class="muted small">Try a different search, or clear the filter.</p>' : photoHint}`;
     listEl.appendChild(li);
   }
   for (const f of ordered) {

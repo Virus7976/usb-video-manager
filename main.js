@@ -8249,9 +8249,21 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
   const dir = opts.dir || config.finalizeSource;
   if (!dir) return { ok: false, error: 'No folder chosen' };
   let files;
+  // COUNT THE PHOTOS EVEN WHEN WE ARE NOT LISTING THEM. Measured on his real setup: `01 - Uncompressed`
+  // holds 203 app-named stills, and photos are never compressed, so they never reach the Compressed
+  // folder this screen scans. With the toggle off the screen said "This folder has no video files",
+  // which is true and useless — it cannot distinguish an empty folder from 203 photos one tick away.
+  // Reporting the count lets the screen say which it is; it does NOT change what gets listed.
+  let photosHere = 0;
   try {
     files = await listVideosShallow(dir);
-    if (opts.includePhotos) files = files.concat(await listImagesShallow(dir));
+    if (opts.includePhotos) {
+      const imgs = await listImagesShallow(dir);
+      photosHere = imgs.length;
+      files = files.concat(imgs);
+    } else {
+      try { photosHere = (await listImagesShallow(dir)).length; } catch { photosHere = 0; }
+    }
   } catch (err) { return { ok: false, error: err.message }; }
 
   // WHAT HAS HE ALREADY DONE? Filing COPIES, so his clips stay in the Compressed folder afterwards
@@ -8327,7 +8339,10 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     total: out.length,
     matchedCount: out.filter((x) => x.matched).length,
     // The counter that must shrink as he works.
-    filedCount: out.filter((x) => x.filed).length
+    filedCount: out.filter((x) => x.filed).length,
+    // How many stills are sitting in this folder, listed or not — so an empty result can say WHICH
+    // kind of empty it is. See the photosHere comment above.
+    photosHere,
   };
 });
 

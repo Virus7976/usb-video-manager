@@ -322,6 +322,34 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20l — "This folder has no video files" over 203 of his photos.
+
+Acted on yesterday's Q4 in the way that needs no decision from him. With "Include photos" unticked,
+the Organize empty state said *"This folder has no video files — choose another above."* True, and
+useless: it cannot tell an empty folder from a folder holding **203 of his stills**, so the advice it
+gives ("choose another") is the exact opposite of what would work ("tick the box").
+
+I verified the payoff before building anything: pointing a scan at `01 - Uncompressed` files
+**203/203 into 10 dated folders, 0 errors**. The work was one tick away and the screen was actively
+steering him off it.
+
+`finalize:scan` now counts stills **whether or not it lists them** and returns `photosHere`; the empty
+state names the number and the control. **Deliberately not a default change** — what the screen scans
+is his call and stays logged as Q4.
+
+`test/empty-state-names-the-photos.test.mjs` (8), covering the three conditions the hint needs (no
+active search, photos present, toggle off), the surviving fallback for a genuinely empty folder, and
+persistence onto `finScan` — because `finRenderList` re-runs on search and filter changes, so reading
+the count from the response alone would make the hint vanish the moment he typed.
+
+**A break that did nothing, and the tell.** My first "phantom count" break set the initial
+`let photosHere = 7`, which the real count immediately overwrote — zero tests failed because the patch
+had no effect, not because the tests were weak. **A break that changes nothing proves nothing:** when
+a break comes back green, check the patch actually altered behaviour before blaming the test. Redone
+as `+ 1` on the real count, it fails 3.
+
+vm **1289/1146/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20k — validated the week's changes against his REAL data, and a false alarm I caught.
 
 Six iterations of coverage work; this one went back to measurement. Re-ran the full 310-filename probe

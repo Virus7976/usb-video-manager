@@ -375,6 +375,14 @@ ordered by what actually yielded confirmed, user-visible bugs.
    question that fills it was gated on a flag latched inside an unrelated *render* (a race), and its
    only call site was the card flow, so the Organize path never asked at all.
 
+8. **⚠ A CHANGE TO THE DESTINATION LADDER SHIPS WITH THE TWO-RUN REAL-DATA PROBE, or not at all.**
+   Stage his real FILENAMES as empty files in a temp dir (no footage touched), load his real
+   `ai.routes`, file them into a temp tree — **twice** — and check: run 2 moved 0, the folder counts
+   are sane, and nothing crossed between projects. That probe caught a bug 8 unit tests missed, and
+   the failure only appeared on the SECOND run because filing writes the ledger that the next run
+   reads. `test/filing-is-idempotent-on-a-real-day.test.mjs` now encodes it, but run the probe too —
+   his real card has shapes no fixture has thought of yet.
+
 **And the counter-rule: an "obvious consistency fix" that changes ACCURACY is not obvious.**
 `people:reassignFace` dedups at `0.2` where its sibling uses `FACE_DEDUP_T` (0.35). That is a
 behaviour change to face matching, not a rename — it would enrol fewer faces and shift matching from
@@ -405,6 +413,18 @@ A passing test is a claim, not evidence. Every one of these passed while proving
 6. **The break itself did nothing.** Patching an initial value that the real code immediately
    overwrites changes no behaviour, so nothing failing proves nothing. **When a break comes back green,
    check the patch actually altered behaviour before blaming the test.**
+
+7. **⚠ THE FIXTURE COULD NOT REPRODUCE THE REAL FAILURE — and I did not know how reality failed until
+   I forced it to.** I shipped a filing rung with 8 green tests, including one asserting a same-date
+   clip "with nothing in common" is not pulled in. Real days are not like that. On a day he shot a
+   lawn job AND a vlog, a personal vlog was filed into a **client project**. The bridge was a single
+   clip — `_vlog_dennis-lawn-tour` — whose DESCRIPTION matched his lawn rule, so it routed into the
+   client project and taught the ledger that the project contains the subject "vlog". My fixture had
+   the two shoots but **not the clip that connects them**, and one filename was the whole difference
+   between proving something and proving nothing.
+8. **A regression test that does not catch its own regression is worse than none** — it certifies the
+   bug as fixed. My first version of the idempotence test passed with the reverted bug re-applied.
+   **Always re-apply a reverted bug and watch its regression test fail** before trusting it.
 
 **And when two guards overlap, break them separately AND together.** In the undo cleanup, removing
 either the empties check or the non-recursive `rmdir` was still safe; removing both was not. "One

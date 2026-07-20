@@ -1294,7 +1294,14 @@ function flushDraftSave() {
 // window is hidden, blurred, or unloaded — belt-and-suspenders against losing the last
 // few edits. (The main-process save is non-destructive, so an extra flush is harmless.)
 (function wireDraftSafetyFlush() {
-  const flush = () => { try { flushDraftSave(); } catch { /* ignore */ } };
+  const flush = () => {
+    try { flushDraftSave(); } catch { /* ignore */ }
+    // FACES TOO. This net only ever covered drafts, so a face decision made inside its 700ms debounce
+    // was lost when the window hid — on the largest pile of unfinished work in the app. Guarded by
+    // typeof because 08-people is later in the bundle: function declarations hoist, but this file is
+    // also loaded alone in some tests.
+    try { if (typeof flushPendingFacesSave === 'function') flushPendingFacesSave(); } catch { /* ignore */ }
+  };
   // NOTE (audit #12, 2026-07-18): this async flush was suspected of losing the last renames when a
   // quit landed inside the 600 ms debounce. It doesn't — a two-launch e2e that types a name and
   // quits immediately shows the draft persisting (test/e2e/drafts-quit-flush.e2e.mjs). A graceful

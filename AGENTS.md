@@ -322,6 +322,38 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20r — the exit safety net saved drafts and forgot faces.
+
+Back to app work, on the biggest measured pile of unfinished work: **458 pending face clusters**, with
+**226 "✓ Yes" and 41 "✗ No"** already in his click log.
+
+Face decisions are debounced — 700 ms normally, **8 SECONDS during a scan**. `wireDraftSafetyFlush`
+exists precisely because closing the window HIDES to tray rather than quitting, and it flushes on
+`beforeunload`, `pagehide`, `visibilitychange`→hidden and `blur`. **It only ever called
+`flushDraftSave()`.** A "✓ Yes" given in the last moment before he closed the window was dropped, and
+during a scan the exposure was eight seconds of decisions.
+
+That lands on the one feature he singled out as good (*"I love the popup for when it asks me who is
+who in faces"*), where the governing principle is that walking away must never cost him anything —
+because he always walks away. Losing the last decision of every session is the "it forgets to remember
+things" complaint, in the place it stings most.
+
+`flushPendingFacesSave()` now rides the same net. Three properties earn their tests:
+- it writes **synchronously** — re-debouncing would lose the race it exists to win;
+- it does nothing when no save is outstanding, because serializing hundreds of clusters on **every
+  window blur** is real main-thread work (that cost is why this store was slow enough to complain
+  about before);
+- the marker is **cleared** on a synchronous write, so an exit cannot replay a stale snapshot —
+  `savePendingNow` REPLACES the whole store, so a late stale flush would resurrect decisions he had
+  already undone.
+
+The `_pendingLoadFailed` latch still blocks the write: the new exit path must not become a way around
+the guard that stops an unreadable store being overwritten (2026-07-20f/g).
+
+`test/face-decisions-flush-on-exit.test.mjs` (8), six breaks proven.
+
+vm **1331/1188/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20q — a meta-test so the vacuous-assertion class cannot come back. And I got it wrong twice.
 
 Four shape-pinned tests and six blind fixtures this session, so I stopped fixing instances and wrote

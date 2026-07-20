@@ -1296,7 +1296,14 @@ function flushDraftSave() {
 // window is hidden, blurred, or unloaded — belt-and-suspenders against losing the last
 // few edits. (The main-process save is non-destructive, so an extra flush is harmless.)
 (function wireDraftSafetyFlush() {
-  const flush = () => { try { flushDraftSave(); } catch { /* ignore */ } };
+  const flush = () => {
+    try { flushDraftSave(); } catch { /* ignore */ }
+    // FACES TOO. This net only ever covered drafts, so a face decision made inside its 700ms debounce
+    // was lost when the window hid — on the largest pile of unfinished work in the app. Guarded by
+    // typeof because 08-people is later in the bundle: function declarations hoist, but this file is
+    // also loaded alone in some tests.
+    try { if (typeof flushPendingFacesSave === 'function') flushPendingFacesSave(); } catch { /* ignore */ }
+  };
   // NOTE (audit #12, 2026-07-18): this async flush was suspected of losing the last renames when a
   // quit landed inside the 600 ms debounce. It doesn't — a two-launch e2e that types a name and
   // quits immediately shows the draft persisting (test/e2e/drafts-quit-flush.e2e.mjs). A graceful
@@ -10158,13 +10165,29 @@ let _pendingSaveTimer = null;
 // faces:savePending REPLACES the whole store, so writing while this is set wipes the faces waiting
 // to be reviewed from every other card.
 let _pendingLoadFailed = false;
+// The clusters a debounced save is currently holding, so the app-exit safety net can flush them.
+//
+// Face decisions are debounced 700ms (8s during a scan). The draft safety net in 01-core flushes
+// DRAFTS on beforeunload/pagehide/hidden/blur — but nothing flushed FACES, so a "✓ Yes" given in the
+// last moment before he closes the window was simply lost. On his store that is the biggest pile of
+// unfinished work in the app (458 pending clusters, 226 confirmations already made), and the whole
+// design principle for it is that walking away must never cost him anything.
+let _pendingInFlight = null;
+function flushPendingFacesSave() {
+  if (!_pendingInFlight) return;
+  const c = _pendingInFlight;
+  _pendingInFlight = null;
+  try { savePendingNow(c); } catch { /* the exit path must never throw */ }
+}
 function schedulePendingSave(clusters) {
   clearTimeout(_pendingSaveTimer);
   if (_pendingLoadFailed) return;
+  _pendingInFlight = clusters;
   _pendingSaveTimer = setTimeout(() => { try { window.api.savePendingFaces(_serializePending(clusters)); } catch { /* ignore */ } }, PENDING_SAVE_MS());
 }
 function savePendingNow(clusters) {
   clearTimeout(_pendingSaveTimer);
+  _pendingInFlight = null;                     // nothing left outstanding once we write synchronously
   if (_pendingLoadFailed) return Promise.resolve();
   try { return window.api.savePendingFaces(_serializePending(clusters)); } catch { return Promise.resolve(); }
 }

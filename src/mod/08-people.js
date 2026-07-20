@@ -480,13 +480,29 @@ let _pendingSaveTimer = null;
 // faces:savePending REPLACES the whole store, so writing while this is set wipes the faces waiting
 // to be reviewed from every other card.
 let _pendingLoadFailed = false;
+// The clusters a debounced save is currently holding, so the app-exit safety net can flush them.
+//
+// Face decisions are debounced 700ms (8s during a scan). The draft safety net in 01-core flushes
+// DRAFTS on beforeunload/pagehide/hidden/blur — but nothing flushed FACES, so a "✓ Yes" given in the
+// last moment before he closes the window was simply lost. On his store that is the biggest pile of
+// unfinished work in the app (458 pending clusters, 226 confirmations already made), and the whole
+// design principle for it is that walking away must never cost him anything.
+let _pendingInFlight = null;
+function flushPendingFacesSave() {
+  if (!_pendingInFlight) return;
+  const c = _pendingInFlight;
+  _pendingInFlight = null;
+  try { savePendingNow(c); } catch { /* the exit path must never throw */ }
+}
 function schedulePendingSave(clusters) {
   clearTimeout(_pendingSaveTimer);
   if (_pendingLoadFailed) return;
+  _pendingInFlight = clusters;
   _pendingSaveTimer = setTimeout(() => { try { window.api.savePendingFaces(_serializePending(clusters)); } catch { /* ignore */ } }, PENDING_SAVE_MS());
 }
 function savePendingNow(clusters) {
   clearTimeout(_pendingSaveTimer);
+  _pendingInFlight = null;                     // nothing left outstanding once we write synchronously
   if (_pendingLoadFailed) return Promise.resolve();
   try { return window.api.savePendingFaces(_serializePending(clusters)); } catch { return Promise.resolve(); }
 }

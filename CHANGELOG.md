@@ -7,6 +7,40 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — where your clips go, and the photos coming off your phone (found 2026-07-20)
+
+Six audits ran over the app in parallel. These are the ones that were actually costing you work.
+
+- **The Organize map threw away every clip you placed by hand — and then filed them somewhere else.**
+  Drag clips into projects, press Back, and the map quietly rebuilt itself from the AI's plan. That
+  alone would be annoying. The real problem: Run files by whatever the map last published, so after
+  pressing Back it filed your footage to the *automatic* destinations while the screen had been
+  showing yours. Same thing happened if you toggled "Organize" or "Keep the originals". Where you put
+  a clip now sticks, and it wins over anything the planner suggests.
+- **A photo that copied off your phone perfectly could be deleted.** Phones routinely hold two photos
+  with the same filename in different folders (one in Camera, one in Pictures). The app correctly
+  saved the second as "IMG_0001 (1).jpg" — then went looking for it under the original name, found
+  the *first* photo instead, decided it was the wrong size, and deleted it. The photo was gone from
+  the import and the good copy was left orphaned. The same mix-up also made one of the two vanish
+  from the counts, and stopped a genuinely failed photo from being retried.
+- **Confirming a face didn't count as work, so it was the first thing deleted.** On your library
+  that's 200 clips where the only thing recorded was who's in them — and that was exactly what the
+  cleanup threw out first.
+- **Merging two spellings of the same person destroyed some of their faces.** Merging kept fewer
+  faces than every other part of the app, so combining a "Sara" and a "Sarah" who were both properly
+  trained could silently drop 20 faces you'd confirmed by hand. Fixing a duplicate made that person
+  *harder* to recognise.
+- **Faces you'd dismissed kept coming back.** The "don't ask me about this again" rule was only
+  applied on one of the two scan paths — and the path missing it is the one behind the Organize and
+  phone screens, so on the screens you actually use, dismissed faces returned on every scan.
+- **Cancelling an analyze threw away the faces it had already found**, while still marking those
+  clips as scanned — so they were skipped forever after.
+- **The app claimed success when nothing worked.** "Filed 12 clips ✓" when all 12 failed, and
+  "AI auto-enhance complete ✓" even when you pulled the card mid-run. Both now say what actually
+  happened.
+- **After a phone pull, AI questions were never flagged on any clip** — the toast said three were
+  waiting and no clip was marked, so there was no way to reach them.
+
 ### Fixed — the names you type and the faces you train (found 2026-07-19)
 
 These are the ones worth reading. Each was silently losing work you'd already done.

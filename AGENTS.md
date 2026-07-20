@@ -322,6 +322,38 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20f — the corrupt-store guard was tested only from the middle of the chain.
+
+The guard that stops a corrupt store being replaced by an empty one is well covered — but every
+existing test sets the latch **by hand** (`storeReadFailed['renameDrafts'] = true`) and then checks
+that `saveStore` refuses. That proves the CONSEQUENCE. **Nothing ever produced the corruption**, so
+the DETECTION was unverified.
+
+That is the blind-guard pattern in its most expensive form: the untested half decides whether the
+tested half ever runs. If `readJsonRetry` returned `{}` instead of `null` for a truncated file, every
+one of those tests would stay green while the real failure played out —
+
+    corrupt file → parsed as empty → in-memory store empty → next saveStore writes {} over it
+
+— and 4594 drafts, or 48 enrolled people, are gone permanently. Proved it exactly that way: making
+`readJsonRetry` return `{}` fails **5 of the 7** new tests and none of the old ones.
+
+`test/corrupt-store-detection.test.mjs` (7) writes genuinely broken files — truncated JSON, pure
+garbage, a zero-byte file (the classic interrupted-write result on Windows) — and asserts the whole
+chain: the latch is set AND the file is still byte-for-byte untouched after a save.
+
+**The distinction the design rests on, now pinned in both directions:** *absent is fine, present but
+unreadable is dangerous.* A missing file is a first run and must save normally; getting that backwards
+would brick a fresh install, so that has its own test (and breaking it fails 3). The block is also
+per-store: a corrupt clip-observations file must not stop him saving names.
+
+**A break that did not apply, worth noting:** `storeReadFailed[key] = true` appears twice (boot
+detection and the re-read path), so my first patch asserted-out instead of silently editing the wrong
+one. The `assert s.count(a)==1` in every break script is what caught it — that guard is earning its
+keep.
+
+vm **1255/1112/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20e — STANDING ORDER: never stop, never ask. Plus the store write's failure path.
 
 Jake, 2026-07-20: *"until I message you you never stop and never ask a question. save all questions to

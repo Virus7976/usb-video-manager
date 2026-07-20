@@ -58,7 +58,24 @@ function buildRenameStep() {
   if (uiPrefs.dayDividers !== false) {
     const byDay = new Map();
     for (let i = 0; i < n; i += 1) { const d = state.scannedFiles[i].date || ''; if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(i); }
-    const days = [...byDay.keys()].sort((a, b) => String(b).localeCompare(String(a)));   // newest day first; '' (No date) sorts last
+    // BIGGEST SHOOTS FIRST, when he asks for it. Measured on his real library: 4263 unnamed clips
+    // across 410 days, median 4 clips a day — but the top 50 days hold 52% of them. Newest-first
+    // buries those fifty wins among 410 entries, so a backlog that is actually an afternoon's work
+    // reads as a marathon. Naming a whole day is already one click ("Select all" on the divider);
+    // this decides WHICH day is in front of him.
+    //
+    // Newest-first stays the default — recent footage is usually what he came for, and silently
+    // reordering it would be its own surprise. Undated clips sort last either way: they are the least
+    // useful to bulk-name, so they must never lead.
+    const days = [...byDay.keys()].sort((a, b) => {
+      const ua = !String(a || '').trim(); const ub = !String(b || '').trim();
+      if (ua !== ub) return ua ? 1 : -1;                                  // no-date always last
+      if (uiPrefs.dayBiggestFirst) {
+        const na = byDay.get(a).length; const nb = byDay.get(b).length;
+        if (na !== nb) return nb - na;                                    // most clips first
+      }
+      return String(b).localeCompare(String(a));                          // newest day first
+    });
     for (const d of days) for (const idx of byDay.get(d)) order.push(idx);
   } else {
     for (let i = 0; i < n; i += 1) order.push(i);

@@ -322,6 +322,39 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bu — TIER 2 #19: "biggest shoots first" — 50 decisions covers HALF his unnamed library
+
+**Checked before building, and half the item was already done** — the rename screen already groups by
+day AND already offers "Select all" on each divider (`selectDay`). Naming a whole shoot at once was
+solved. **The backlog entry was written without checking, which is the ~1-in-3 rate this repo's notes
+warn about; I would have spent an iteration rebuilding it.**
+
+What was NOT solved is WHICH shoot to do first. Measured on his real drafts:
+
+| | |
+|---|---|
+| unnamed clips | **4263** across **410 days** |
+| median day | **4 clips** |
+| top 20 days | **30%** of the unnamed |
+| top 50 days | **52%** |
+| top 100 days | **73%** |
+
+**Fifty decisions covers half his library** — but those fifty days sit scattered among 410, next to
+days holding four clips each. Newest-first buries every win. That is the diagnosis's second rule made
+concrete: *payoff must move earlier*.
+
+Added `dayBiggestFirst` (View menu, off by default). Newest-first stays the default because recent
+footage is usually what he came for, and silently reordering it would be its own surprise. Undated
+clips sort last either way — they are the least useful to bulk-name, so they must never lead.
+
+`test/e2e/biggest-shoots-first.e2e.mjs`, 6 tests, both parts proven by breaking them. **Two guard the
+thing that would actually hurt:** every clip is still present after a reorder, and `data-i` still
+points at the clip the card displays — the cards carry ORIGINAL indices and every per-row handler
+depends on them, so a renumbering reorder would edit the wrong clip. That is the worst possible
+outcome on a naming screen, and it is the reason this is a display-order change only.
+
+Both tiers green: vm **1129/997/132/0**, e2e **132/131/1/0**.
+
 ### 2026-07-19bt — TIER 2 UNLOCKED: keyboard-first face review. 458 mouse trips become 458 keystrokes.
 
 **The Tier 1 gate is met** — a shoot goes card→filed in one sitting, proven end to end (`bn`) — so

@@ -174,6 +174,7 @@ const MENUS = {
       { label: 'Compact view', type: 'check', checked: uiPrefs.compact, action: () => togglePref('compact') },
       { label: 'Show result filename', type: 'check', checked: uiPrefs.showResult, action: () => togglePref('showResult') },
       { label: 'Group by day (date dividers)', type: 'check', checked: uiPrefs.dayDividers !== false, action: () => { togglePref('dayDividers'); if (state.scannedFiles.length && !$('step1').classList.contains('hidden')) buildRenameStep(); } },
+      { label: 'Biggest shoots first', type: 'check', checked: !!uiPrefs.dayBiggestFirst, action: () => { togglePref('dayBiggestFirst'); if (state.scannedFiles.length && !$('step1').classList.contains('hidden')) buildRenameStep(); } },
       { label: 'Naming help', type: 'check', checked: uiPrefs.showHelp, action: () => togglePref('showHelp') },
       { label: 'Save a version before each AI run', type: 'check', checked: uiPrefs.autoVersionOnAi !== false, action: () => togglePref('autoVersionOnAi') },
       { label: 'Auto-restore previous naming (off = start fresh / ask)', type: 'check', checked: uiPrefs.autoRestore !== false, action: () => togglePref('autoRestore') }

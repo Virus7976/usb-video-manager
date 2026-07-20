@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20x — probed the four lazy stores across a relaunch. All correct; locked it in.
+
+Applied technique #7 (follow the data to where it is CONSUMED) to `ai.clipObs` — 1084 observations on
+his store. The chain reads correctly (`clipObs:get` → `clipObsStore()` → `ensureStore`), and the
+round-trip probe confirmed all four lazy stores persist a write across a relaunch.
+
+**No bug. But nothing was checking it**, and the gap in the existing coverage is precise:
+`stores.test.mjs` tests laziness thoroughly — what is read at boot, that an accessor pulls a sidecar
+in, that a never-loaded store is never written over — but every one of those tests **seeds the file
+itself**. That proves the app can read a file WE wrote. It does not prove the app persists what HE
+does. For a lazy store that difference is the whole failure mode: a write that reaches memory but not
+the sidecar the next launch reads looks perfectly healthy all session and is gone in the morning.
+
+`test/lazy-stores-survive-a-relaunch.test.mjs` (6) writes through the real IPC, disposes, relaunches
+on the same profile, and reads back — observations, pending faces, group shots, enrolled people. Two
+breaks fail all five: `saveStore` skipping lazy keys, and `ensureStore` never reading the sidecar.
+
+**⚠ THREE fixture flaws in one iteration, all caught before reporting anything:**
+1. the probe passed `appData` to `loadMain`, which takes **`userData`** — launch 2 silently got a
+   FRESH directory and read back nothing. **That looked exactly like a persistence bug.**
+2. the group-shot fixture had no `faces` array, and `faces:saveScenes` correctly drops anything with
+   fewer than two faces as "not a group shot";
+3. the sidecar test assumed `config.json` exists, but nothing had saved settings in that profile.
+
+All three would have been reported as app bugs a day ago. **The fixture has to be a thing the app
+accepts, built through the door the app uses** — and `§8b-2` now says so.
+
+vm **1363/1220/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20w — probed the delete gate, found it solid, and updated PROMPT.md instead.
 
 Aimed round-trip probing at the highest-stakes flow: copy → record → verify → delete. Ran four

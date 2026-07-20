@@ -1432,48 +1432,11 @@ ipcMain.handle('clips:retagPerson', (_evt, payload) => {
 // identically-named clip from another. So: when BOTH keys carry an mtime, require exact equality;
 // fall back to the stem only when one of them genuinely lacks it, where no better information
 // exists and stem-matching is already today's behaviour.
-function clipKeyStem(k) {
-  const s = String(k || '');
-  const i = s.indexOf('__');
-  if (i < 0) return '';
-  const j = s.indexOf('__', i + 2);
-  return j < 0 ? s : s.slice(0, j);
-}
-function clipKeyHasMtime(k) { return clipKeyStem(k) !== '' && String(k || '') !== clipKeyStem(k); }
-function clipKeyMatches(a, b) {
-  const x = String(a || ''); const y = String(b || '');
-  if (!x || !y) return false;
-  if (x === y) return true;
-  // Both fully qualified and not equal → genuinely different clips. Never fall through to the stem.
-  if (clipKeyHasMtime(x) && clipKeyHasMtime(y)) return false;
-  const sx = clipKeyStem(x); const sy = clipKeyStem(y);
-  return !!sx && sx === sy;
-}
-
-// ⚠ finalMeta IS NOT CLIP-KEYED. It is keyed by lower-cased FILE NAME (`store[name.toLowerCase()]`
-// at :1282), while every key the face code sends is a clipKeyV2 (`name__size__mtime`).
-// `clipKeyMatches` cannot bridge that: a bare filename has no `__`, so `clipKeyStem` returns '' and
-// the function returns false for EVERY comparison. So the finalMeta half of clips:tagPerson and
-// clips:untagPerson was dead code — and the finalMeta half is precisely the case the feature's own
-// comment says it exists for ("a cluster restored from faces-pending.json legitimately references
-// clips from EARLIER sessions — already renamed, already filed").
-//
-// Result: confirming a face tagged nothing durable for any clip he had already filed. The drafts
-// half worked, so it only ever tagged clips still sitting in the draft store.
-//
-// Deliberately NOT folded into clipKeyMatches. That function is also used to DELETE drafts (:1123)
-// and copiedLog entries (:1253); loosening it to accept bare names would widen those deletes, which
-// is a data-loss risk for a tagging fix. Name-only is the finest granularity finalMeta has — the
-// store itself cannot distinguish two same-named clips — so this matcher is as precise as the data.
-function clipKeyFileName(k) {
-  const s = String(k || '');
-  const i = s.indexOf('__');
-  return (i < 0 ? s : s.slice(0, i)).toLowerCase();
-}
-function finalMetaKeyMatches(clipKeyOrName, storeKey) {
-  const a = clipKeyFileName(clipKeyOrName);
-  return !!a && a === clipKeyFileName(storeKey);
-}
+// ⚠ `./core/`, NOT `../core/` — this line is written in main-mod/ but EXECUTES from the
+// concatenated main.js at the repo root, so the path resolves from there. See core/clip-key.js for
+// why core/ exists, and for the two rules that make it safe (it must be in package.json build.files,
+// and its modules must be stateless).
+const { clipKeyStem, clipKeyHasMtime, clipKeyMatches, clipKeyFileName, finalMetaKeyMatches } = require('./core/clip-key');
 
 ipcMain.handle('clips:tagPerson', (_evt, payload) => {
   const name = String((payload && payload.name) || '').trim();

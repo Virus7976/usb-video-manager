@@ -730,7 +730,13 @@ sibling sweep, applied to GUARDS: one path guarded, its twins not.
 **Closed:** two of the three face-clustering paths could erase each other's entire run (and the clips
 stayed marked scanned, so a re-scan skipped them — permanent loss).
 
-**Open, ranked. Note the shape they share: a guard that exists on one handler and not its twin.**
+**Closed 2026-07-20 (8370989, 88a8ec5):** 2 (Follow AI un-cancelling a run) · 3 (copy:start's guard
+claimed too late — it EXISTED, the audit was wrong about that, but `copyTask` is assigned ~70 lines
+and four awaits later) · 4 (finalize:run unguarded, two runs fighting over the single undo slot) ·
+5 (Analyze/Improve unguarded and un-cancelling each other) · 7 (the debounced draft save discarded
+when a new scan empties the array — a name typed within 600ms of swapping cards, silently lost).
+
+**Still open:**
 
 2. ⚠ **"Follow AI ↓" silently UN-CANCELS a run.** `src/mod/04-tasks-ai.js:582` does
    `aiFollow = true; aiAborted = false;`. That button is only visible DURING a run and only after he
@@ -759,7 +765,10 @@ stayed marked scanned, so a re-scan skipped them — permanent loss).
    start with `aiAborted = false` — so starting Improve un-cancels a running Analyze. Both call
    `setAiRunOrder(...)`, which replaces `aiStageClips` wholesale, so the conveyor describes one run
    while two are writing.
-6. An in-flight AI run writes into a `state.scannedFiles` that a NEW CARD has already replaced.
+6. ⚠ An in-flight AI run writes into a `state.scannedFiles` that a NEW CARD has already replaced.
+   **Partly mitigated but NOT closed:** the run guard added in 88a8ec5 stops two AI runs overlapping,
+   but nothing stops him navigating Home mid-analyze and scanning another card — `goHome` gates only
+   on `confirmLeaveTransfer()` (copy), and analyze is deliberately non-modal.
    `goHome` gates only on `confirmLeaveTransfer()` (copy), and analyze is deliberately non-modal — so
    leaving mid-analyze and scanning another card means card A's results are applied by INDEX to card
    B's clips. `enterRenameWithPhoneFiles` documents exactly this hazard for `aiQuestions` and re-binds
@@ -795,7 +804,11 @@ optional behind `useAdb:false`. **Do not "fix" any of those.**
 had no compress button at all) · `launchAtLogin` defaulting true and applied unconditionally ·
 `defaultProjectsRoot()` asserting his tree shape on every machine · the hardcoded `L:\` fallback.
 
-### ⚠ THE ONE REMAINING BLOCKER — ffmpeg. Needs a decision, do not guess.
+### ffmpeg — the PROBE is done (88a8ec5); bundling is still his decision.
+The health check now runs `ffmpeg -version` through `runCapture` and reports a high-severity
+`no-ffmpeg` problem with a copy-the-download-link action, so the absence is no longer silent. What
+remains undecided is whether to VENDOR it (~80 MB on a 135 MB installer). Do not do that unprompted.
+The original finding, kept for context:
 
 `ffmpegPath: 'ffmpeg'` / `ffprobePath: 'ffprobe'` (01-core.js) assume they are on PATH, and **nothing
 vendors them**. On a clean Windows box they are absent and the failures are SILENT:

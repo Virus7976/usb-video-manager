@@ -528,10 +528,28 @@ Highest-value first; the top five are things that actively mislead:
 15. The Phone screen is the only main screen with no menu route; View duplicates two File items under
     different names.
 
+**Batch 1 done 2026-07-20 (commit 3751cff):** findings 1, 3, 5 and 8 above, plus finding 12 (the
+Cancel button that skipped the mid-copy warning — that one could cost footage, not just confuse).
+Remaining: 2, 4, 6, 7, 9, 10, 11, 13, 14, 15.
+
 **Sequencing note:** he chose "close safety data first, then build new". Data safety is now CLOSED,
 so this list and the AI-pipeline items below are the current front. The UI work should land as
 incremental restructuring behind the existing tests — NOT the greenfield rebuild he floated, because
 1356 vm tests encode behaviour that was expensive to get right. See `ARCHITECTURE.md`.
+
+### AI pipeline — 5, 6 and 7 CLOSED 2026-07-20 (commit 3751cff)
+
+Both were fully built, shipped, and had never run once:
+- The Organize shoot question read `c.date` while finalize:scan keeps it at `f.meta.date` — `dates`
+  was always empty, so it early-returned before rendering. THIS is why shootMemory reads 0.
+- Its answer wrote `c.subject`, which on Organize is only the caption mirror; the persisted field is
+  `f.meta.subject` via saveFinalMeta. Fixed together, because fixing the first alone surfaces this.
+- `clips:tagPerson`/`untagPerson` could not match ANY finalMeta record (name-keyed store vs
+  clipKeyV2). Fixed with a dedicated matcher — NOT by loosening `clipKeyMatches`, which also drives
+  two DELETE paths.
+
+Remaining here: item 8 (face-chip ranking tier 2 reads `p.faces.length`, but `people:get` returns
+`{count, confirmed, unconfirmed}` and no `faces` array — chips fall through to alphabetical).
 
 ### Next up — the AI pipeline never completes ([[usb-app-toolness-100]])
 5. **The Organize shoot question can never fire.** `askAboutShoots` reads `c.date`, but

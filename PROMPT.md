@@ -359,10 +359,56 @@ ordered by what actually yielded confirmed, user-visible bugs.
 4. **Grep for RAW accesses, not just the accessor.** When migrating a key, `isScanned` looked up draft
    keys directly and would have silently re-scanned every clip.
 
+5. **⚠ ROUND-TRIP PROBING — the 2026-07-20 session's highest-yield technique, and the only one that
+   found bugs reading could not.** Do the thing, then go and LOOK at the result through the app's own
+   next step. `file → rescan`, `file → undo → list the tree`, `save → relaunch`. It found:
+   - the filed badge naming a folder that **did not exist** (two writers, each correct alone, quietly
+     disagreeing — the ledger kept the requested spelling while the summary reported the resolved one);
+   - undo leaving empty dated folders standing, which the folder-reuse rule would later treat as real
+     shoots.
+   **Why it beats inspection:** a two-writer disagreement is invisible in either writer. You cannot
+   read your way to it. Run it, then ask the app what it thinks happened, and compare that to the disk.
+6. **Ask what the screen says when the run achieved NOTHING.** A green "Done" over `moved: 0` sent him
+   away believing the job was finished — with Organize unticked there was not even a zero on screen to
+   notice, because the stat chips are built per-option.
+7. **Follow the data to where it is CONSUMED, not just written.** `shootMemory` read 0 for months: the
+   question that fills it was gated on a flag latched inside an unrelated *render* (a race), and its
+   only call site was the card flow, so the Organize path never asked at all.
+
 **And the counter-rule: an "obvious consistency fix" that changes ACCURACY is not obvious.**
 `people:reassignFace` dedups at `0.2` where its sibling uses `FACE_DEDUP_T` (0.35). That is a
 behaviour change to face matching, not a rename — it would enrol fewer faces and shift matching from
 then on. **Measure against real face data or leave it.** Same class as the AI tool strings.
+
+---
+
+## 8b-2. ⚠ THE SIX WAYS A GREEN TEST LIED (2026-07-20 — all found by breaking, none by reading)
+
+A passing test is a claim, not evidence. Every one of these passed while proving nothing:
+
+1. **The fixture could not fail the way the guard prevents.** A case-sensitivity test whose every
+   fixture name was lowercase; a NAS-copy guard exercised only against an empty NAS folder; a
+   sampled-vs-full hash test whose files differed in a byte sampling actually reads. **The fixture has
+   to be able to FAIL.**
+2. **The code under test overwrote the fixture's input.** `writeDrafts` stamps `ts: now` on every
+   incoming draft, so a draft cannot be old on the call that saves it — the age filter never ran. Seed
+   the store directly and trigger the prune with an unrelated save.
+3. **A tie-break test where every other ordering already pointed the right way.** Pending records got
+   the newest timestamps and survived the cap on timestamp alone; deleting the rule under test changed
+   nothing. **Make every other signal point the WRONG way.**
+4. **The assertion named an expression instead of an outcome.** Four tests broke on correct
+   improvements because they pinned a literal call or `if (...) return;`. Assert the behaviour.
+5. **A negative assertion on a collapsed slice.** `slice(indexOf(x))` with a missing anchor returns the
+   LAST CHARACTER, so every `doesNotMatch` on it passes forever. Now enforced by
+   `test/assertions-cannot-pass-vacuously.test.mjs`. **A length check does NOT guard this** — the
+   collapsed slice is one character long. Assert the INDEX resolved.
+6. **The break itself did nothing.** Patching an initial value that the real code immediately
+   overwrites changes no behaviour, so nothing failing proves nothing. **When a break comes back green,
+   check the patch actually altered behaviour before blaming the test.**
+
+**And when two guards overlap, break them separately AND together.** In the undo cleanup, removing
+either the empties check or the non-recursive `rmdir` was still safe; removing both was not. "One
+break didn't fail" is not evidence that a guard is redundant.
 
 ---
 

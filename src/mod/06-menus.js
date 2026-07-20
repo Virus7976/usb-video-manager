@@ -130,11 +130,16 @@ const MENUS = {
     { label: 'Quit', action: () => window.api.quit() }
   ],
   edit: [
+    // Settings is a CONTAINER, so it must not also list its own contents as siblings. Preferences,
+    // Keyboard shortcuts and Organizing fields are all cards inside the Settings hub, and they sat
+    // directly beneath "Settings…" in this menu — so the same three screens had two routes, one of
+    // them making Settings look like a peer of its own children.
+    //
+    // Deliberately NOT removed: 'Filing rules…' (inside Filing & destinations) and 'People & faces…'
+    // (inside AI) are also hub cards, but they sit next to the ACTIONS they belong with, which is
+    // useful placement rather than duplication noise. 'Edit subjects…' has no hub card at all.
     { label: 'Settings…', action: showSettingsHub },
-    { label: 'Keyboard shortcuts…', action: showKeyboardShortcuts },
     { sep: true },
-    { label: 'Preferences…', action: showPreferences },
-    { label: 'Organizing fields…', action: showOrganizeFields },
     { label: 'Edit subjects…', action: showEditSubjects },
     { sep: true },
     { label: 'Filing & destinations', submenu: () => [

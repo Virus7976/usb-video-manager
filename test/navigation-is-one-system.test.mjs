@@ -128,3 +128,30 @@ test('⚠ View no longer duplicates File’s navigation under other names', () =
   // The view OPTIONS must survive — this was a de-duplication, not a deletion.
   assert.match(body, /Play audio on hover/, 'view options are untouched');
 });
+
+test('⚠ Settings is a container, not a peer of its own contents', () => {
+  // Finding 14. The Settings hub has 8 cards; the Edit menu listed three of them — Preferences,
+  // Keyboard shortcuts, Organizing fields — as flat siblings DIRECTLY BENEATH "Settings…". Two routes
+  // to the same screen, one of which made the container look like a sibling of its children.
+  const at = menus.indexOf('  edit: [');
+  assert.ok(at > -1, 'found the Edit menu');
+  const body = menus.slice(at, menus.indexOf('\n  ],', at));
+  assert.match(body, /\{ label: 'Settings…', action: showSettingsHub \}/, 'the container is still there');
+  for (const dupe of ["'Preferences…'", "'Keyboard shortcuts…'", "'Organizing fields…'"]) {
+    assert.ok(!body.includes(dupe), `⚠ ${dupe} is a Settings card — it must not also be an Edit sibling`);
+  }
+  // The capability must NOT have been lost — each one still has exactly one route, via the hub.
+  const hubAt = menus.indexOf('function showSettingsHub');
+  const hub = menus.slice(hubAt, menus.indexOf('ov.innerHTML', hubAt));
+  for (const go of ['showPreferences', 'showKeyboardShortcuts', 'showOrganizeFields']) {
+    assert.ok(hub.includes(go), `${go} is still reachable from the Settings hub`);
+  }
+});
+
+test('items with no hub card keep their menu route', () => {
+  // The bound on the de-duplication: only remove what the hub actually contains. 'Edit subjects…' has
+  // no card, so removing it would have deleted the only way to reach it.
+  const at = menus.indexOf('  edit: [');
+  const body = menus.slice(at, menus.indexOf('\n  ],', at));
+  assert.match(body, /\{ label: 'Edit subjects…', action: showEditSubjects \}/, 'kept — it has no hub card');
+});

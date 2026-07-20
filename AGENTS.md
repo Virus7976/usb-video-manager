@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bs — the home screen's count now goes DOWN as he works
+
+Loose end from `br`, one screen earlier and arguably more important. `pending:work` set
+`ready = listVideosShallow(readyDir).length` — every video in the Compressed folder. Filing COPIES, so
+those files stay put: he could file all 310 and the card would still say **"310 clips ready to
+organize"**, forever.
+
+**The home screen is where he decides whether there is anything worth doing.** A number that never
+moves is a number he stops reading, and then the card meant to pull him into the work becomes
+wallpaper. That is the whole "visually appealing thing I never really use" complaint in one number.
+
+`ready` is now what is LEFT, using the same source of truth as the Organize list (the ledger's
+`clipNames`), so the two screens can never disagree. `readyTotal` still reports the folder count,
+because "310 in the folder, 12 left" says more than either number alone.
+
+**Fails toward SHOWING work:** a ledger problem leaves everything counted, because under-reporting is
+how this card silently stops doing its job.
+
+`test/home-count-excludes-filed.test.mjs`, 7 tests, both parts proven by breaking them.
+
+**⚠ A FIXTURE THAT CANNOT SEE THE BUG IS NOT A TEST.** Breaking the case-insensitive match left all
+six original tests green — every fixture name was lowercase, so `.toLowerCase()` made no difference to
+any of them. Windows paths ARE case-insensitive and the ledger can hold `A_V1.MP4` against a listing
+of `a_v1.mp4`, so this is a real path. Added a mismatched-case fixture, which fails when the
+lowercasing is removed. **Ask what the fixture would look like if the property were violated — if the
+answer is "the same", it proves nothing.**
+
+Both tiers green: vm **1114/996/118/0**, e2e **118/117/1/0**.
+
 ### 2026-07-19br — TIER 1 #14: the pile now visibly shrinks. Filed work looks finished.
 
 Filing COPIES — keeping the L: archive is the whole point — so after a run his 310 clips are still in

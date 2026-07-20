@@ -300,12 +300,27 @@ ipcMain.handle('finalize:pickSource', async () => {
 ipcMain.handle('pending:work', async () => {
   const intakeDir = config.intakeFolder || '';
   const readyDir = config.finalizeSource || config.organizeDest || '';
-  let uncompressed = 0; let ready = 0; let readyAnalyzed = 0;
+  let uncompressed = 0; let ready = 0; let readyTotal = 0; let readyAnalyzed = 0;
   try { uncompressed = (await listVideosShallow(intakeDir)).length; } catch { /* ignore */ }
   if (readyDir && readyDir !== intakeDir) {
     try {
       const files = await listVideosShallow(readyDir);
-      ready = files.length;
+      readyTotal = files.length;
+      // COUNT WHAT IS LEFT, not what is in the folder. Filing COPIES, so a filed clip stays in the
+      // Compressed folder — the card said "310 clips ready to organize" forever, however much work he
+      // did. A number that never moves is a number he stops reading, and then the card meant to pull
+      // him into the work becomes wallpaper. Same source of truth as the Organize list (the project
+      // ledger's clipNames), so the two screens can never disagree.
+      //
+      // Fails toward SHOWING work: a ledger problem leaves everything counted, because
+      // under-reporting is how this card silently stops doing its job.
+      const filed = new Set();
+      try {
+        for (const rec of (config.projectLedger || [])) {
+          for (const n of ((rec && rec.clipNames) || [])) filed.add(String(n || '').toLowerCase());
+        }
+      } catch { /* ignore */ }
+      ready = files.filter((f) => !filed.has(String(f.name || '').toLowerCase())).length;
       const store = currentFinalMeta();
       const stems = new Set(Object.keys(store).map((k) => stemOf(k)));
       for (const f of files) { const lc = f.name.toLowerCase(); if (store[lc] || stems.has(stemOf(lc))) readyAnalyzed += 1; }
@@ -329,7 +344,7 @@ ipcMain.handle('pending:work', async () => {
     if (Array.isArray(pend)) facesPending = pend.filter((c) => c && !c.done && !c.skipped && !c.rejected).length;
   } catch { facesPending = 0; }
 
-  return { ok: true, intakeDir, readyDir, uncompressed, ready, readyAnalyzed, facesPending };
+  return { ok: true, intakeDir, readyDir, uncompressed, ready, readyTotal, readyAnalyzed, facesPending };
 });
 
 // Scan the (top level of the) Compressed folder and match each file to a stored

@@ -23,7 +23,10 @@ const RUN = process.env.RUN_E2E === '1';
 const require = createRequire(join(process.cwd(), 'server', 'server.js'));
 
 const TOKEN = 'testtoken1234';
-const PORT = 8913;
+// ⚠ PORT 0 = let the OS pick a free one. A FIXED port made this test flaky: if a previous run's
+// socket is still in TIME_WAIT, or anything else on the machine holds it, listen() throws in before()
+// and every test in the file fails at once for a reason that has nothing to do with the code. Caught
+// by an e2e run failing once and passing on retry — a flake I introduced, not an app bug.
 let dir; let server; let browser; let page; let base;
 
 before(async () => {
@@ -52,8 +55,8 @@ before(async () => {
   // paths resolve from server/ — NOT from this test file's directory. Getting that wrong fails in the
   // before() hook, which reports as every test in the file failing at once for no visible reason.
   server = require('../server/server').build({ logger: false });
-  await server.listen({ port: PORT, host: '127.0.0.1' });
-  base = `http://127.0.0.1:${PORT}`;
+  await server.listen({ port: 0, host: '127.0.0.1' });
+  base = `http://127.0.0.1:${server.server.address().port}`;
 
   browser = await chromium.launch({ headless: true });
   // A real phone viewport: the layout claims 48px tap targets and safe-area padding, and those are

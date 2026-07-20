@@ -15,12 +15,16 @@ const crypto = require('node:crypto');
 const Fastify = require('fastify');
 const store = require('../core/store-read');
 const queue = require('../core/action-queue');
+const upload = require('../core/upload');
 
 const API_VERSION = 1;
 const PORT = Number(process.env.UVD_PORT) || 8787;
 const HOST = process.env.UVD_HOST || '0.0.0.0';
 const TOKEN = process.env.UVD_TOKEN || '';
 const STORE_DIR = process.env.UVD_STORE_DIR || undefined;
+// Where phone uploads land. Its OWN directory, never the intake folder or the Projects tree — the
+// desktop ingests from here on its own terms, exactly as it already does for phone pulls.
+const UPLOAD_DIR = process.env.UVD_UPLOAD_DIR || path.join(store.storeDir(STORE_DIR), 'phone-uploads');
 
 // ⚠ REFUSE TO START WITHOUT A TOKEN.
 //
@@ -49,7 +53,13 @@ function tokenOk(given) {
 }
 
 function build({ logger = false } = {}) {
-  const app = Fastify({ logger, bodyLimit: 1024 * 1024 });
+  // 64 MB body limit: chunks are the unit of retry, so they want to be big enough to be efficient
+  // and small enough that losing one to a dropped connection costs little. The phone picks the size;
+  // this is the ceiling.
+  const app = Fastify({ logger, bodyLimit: 64 * 1024 * 1024 });
+  // ⚠ Video chunks are RAW BYTES. Without this, Fastify tries to JSON-parse them and every upload
+  // fails with a parse error that says nothing about what actually went wrong.
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (req, body, done) => done(null, body));
 
   // Discovery + pairing. Unauthenticated ON PURPOSE, and therefore says nothing about his footage:
   // no counts, no names, no paths. Just enough for a client to confirm it found the right service
@@ -165,6 +175,53 @@ function build({ logger = false } = {}) {
   app.get('/api/actions', async () => {
     const pending = queue.read({ dir: store.storeDir(STORE_DIR) });
     return { ok: true, count: pending.length, actions: pending };
+  });
+
+  // ─── RESUMABLE UPLOAD ──────────────────────────────────────────────────────────────────────────
+  // He locks the phone and walks away mid-upload, so a 4 GB clip WILL be interrupted. A plain
+  // multipart POST restarts from zero each time, which means it effectively never finishes. These
+  // three routes let the phone ask "how much did you get?" and send only the remainder.
+
+  app.post('/api/upload/begin', async (req, reply) => {
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    // Refuse before a single byte if it cannot possibly fit. Finding out at 95% is the worst moment.
+    try {
+      const need = Number(b.size) || 0;
+      const st = await require('node:fs').promises.statfs(require('node:fs').existsSync(UPLOAD_DIR)
+        ? UPLOAD_DIR : path.dirname(UPLOAD_DIR));
+      const free = st.bsize * st.bavail;
+      if (need && free && need > free - (512 * 1024 * 1024)) {
+        reply.code(507);
+        return { ok: false, error: `Not enough room: needs ${Math.round(need / 1e6)} MB, ${Math.round(free / 1e6)} MB free.` };
+      }
+    } catch { /* cannot measure — proceed; finish() still verifies the byte count */ }
+    const r = upload.begin({ dir: UPLOAD_DIR, name: b.name, size: b.size, at: Date.now() });
+    if (!r.ok) { reply.code(400); return r; }
+    return r;
+  });
+
+  // Resume: how much is already here. The phone asks this before sending anything.
+  app.get('/api/upload/:id', async (req, reply) => {
+    const r = upload.status({ dir: UPLOAD_DIR, id: req.params.id });
+    if (!r.ok) reply.code(404);
+    return r;
+  });
+
+  // A chunk, as raw bytes. `offset` must match what is on disk — see appendChunk for why a mismatch
+  // is refused rather than appended.
+  app.put('/api/upload/:id', async (req, reply) => {
+    const r = upload.appendChunk({
+      dir: UPLOAD_DIR, id: req.params.id,
+      offset: (req.query || {}).offset, buf: req.body,
+    });
+    if (!r.ok) { reply.code(r.expected === undefined ? 400 : 409); return r; }
+    return r;
+  });
+
+  app.post('/api/upload/:id/finish', async (req, reply) => {
+    const r = upload.finish({ dir: UPLOAD_DIR, id: req.params.id });
+    if (!r.ok) { reply.code(409); return r; }
+    return r;
   });
 
   // Any OTHER write is still refused, loudly. Silently accepting and dropping would be the worst

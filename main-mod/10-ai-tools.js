@@ -693,7 +693,11 @@ async function backfillLedgerFromTree(root, onProgress) {
 
     const abs = path.join(base, ...rel.split('/'));
     // eslint-disable-next-line no-await-in-loop
-    const clips = await listVideosShallow(abs);
+    // PHOTOS COUNT AS FOOTAGE HERE. A folder holding only stills is a real project — measured, his
+    // 203 intake photos file into 10 dated folders — but a video-only listing sees it as empty and
+    // the `!clips.length` guard below then skips it as "a container folder". The importer whose whole
+    // job is to learn what is already on disk would silently omit every photo shoot he has.
+    const clips = [...await listVideosShallow(abs), ...await listImagesShallow(abs)];
     if (!clips.length) continue;   // a container folder, not a project
 
     // What do the filenames actually say? parseNamedClip understands this app's own naming scheme,

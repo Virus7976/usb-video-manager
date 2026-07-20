@@ -871,7 +871,10 @@ ipcMain.handle('ai:learnNames', async (_evt, payload) => {
   const pairs = [];
   if (dir) {
     let files = [];
-    try { files = await listVideosShallow(dir); } catch { /* ignore */ }
+    // Include stills: his photos carry the SAME app naming scheme
+    // (`2016-01-02_vlog_kakwa-trip_v1.jpg`), so they are examples of his style like any clip. A
+    // video-only listing threw away 203 real examples on his machine.
+    try { files = [...await listVideosShallow(dir), ...await listImagesShallow(dir)]; } catch { /* ignore */ }
     for (const f of files) {
       const p = parseNamedClip(f.name);
       if (p && (p.subject || p.description)) pairs.push(`${p.subject || '?'} / ${p.description || '?'}`);

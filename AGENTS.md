@@ -322,6 +322,37 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20n — the photo blind spot had two more, both in code that LEARNS from his library.
+
+Swept the axis behind `l` and `m` — *"counts videos, silently omits stills"* — across every
+`listVideosShallow` caller. Two of the six were real, and both sit in features whose entire purpose is
+to learn from what he already has:
+
+1. **`backfillLedgerFromTree`** listed videos, then skipped anything empty as *"a container folder,
+   not a project"*. A folder of stills is not a container; it is a shoot. **The importer built to
+   reconstruct his ledger from an existing library would have omitted every photo shoot he owns** —
+   and that is live now, because his 203 intake photos file into **10 dated folders** (2026-07-20k).
+   Ten real projects, silently dropped.
+2. **`ai:learnNames`** mined filenames for style examples, videos only. His stills carry the SAME
+   scheme (`2016-01-02_vlog_kakwa-trip_v1.jpg`), so it discarded **203 genuine examples** of how he
+   names things — on the feature whose whole job is learning his style.
+
+Same shape as the Home card and the Organize empty state: the code asks *"how many videos?"* when the
+question is *"how much of his work is here?"*
+
+`test/photo-only-project-is-a-project.test.mjs` (6). Crucially it also guards the direction that
+widening breaks: **a genuinely empty folder, and a folder of notes/CSVs, must still be skipped** —
+turning "what counts as footage" up must not make every parent directory a project. Removing that
+guard fails 2.
+
+Four breaks proven, including photos REPLACING videos rather than adding to them (fails the mixed and
+video-only cases).
+
+**The other four `listVideosShallow` callers are correct as they stand** — `compress:list` and the
+ready-folder count describe the compression queue, which stills genuinely never enter.
+
+vm **1303/1160/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20m — the Home card was blind to 203 files, and would have given impossible advice.
 
 Same measurement, one screen up. `pending:work` counted the intake with `listVideosShallow` — videos

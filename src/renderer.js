@@ -12719,6 +12719,7 @@ async function runPhoneCopy() {
   });
   let res = { ok: true, copied: 0 };
   let distributed = 0;
+  let photoFailed = 0;
   let pjobs = []; let dests = {}; let routedN = 0;
   // The two awaits below are individually try/caught, but buildPhotoJobs() between them is
   // NOT — and a sync throw there would unwind past `copyInProgress = false`, jamming the
@@ -12732,7 +12733,18 @@ async function runPhoneCopy() {
     ({ jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false));
     if (pjobs.length) {
       $('copyLabel').textContent = 'Backing up photos…'; $('copySub').textContent = '';
-      try { const r2 = await window.api.distributePhotos({ jobs: pjobs }); distributed = (r2 && r2.copied) || 0; } catch { /* non-fatal */ }
+      // The card flow reports `failed` and appends "⚠ N failed to copy"; this one read only
+      // `copied` and swallowed the throw, so a distribute that failed OUTRIGHT reported
+      // "0 photo copies → computer + NAS" — a line that reads like a routing setting was off,
+      // not like a backup that did not happen. Same numbers, same wording as the card path.
+      try {
+        const r2 = await window.api.distributePhotos({ jobs: pjobs });
+        distributed = (r2 && r2.copied) || 0;
+        photoFailed = (r2 && r2.failed) || 0;
+      } catch (e) {
+        photoFailed = photos.length;
+        logIssue('Phone', `Photo backup failed: ${(e && e.message) || e}`);
+      }
     }
   } finally {
     off(); clearTask('phone-copy'); copyInProgress = false; hideCopyChip();
@@ -12763,7 +12775,9 @@ async function runPhoneCopy() {
   $('copyBar').style.width = '100%'; $('copyPct').textContent = '100%';
   const destNames = [cfg.phoneDestComputer && cfg.phoneComputerFolder ? 'computer' : '', cfg.phoneDestNas && cfg.phoneNasFolder ? 'NAS' : ''].filter(Boolean).join(' + ');
   const routedNote = routedN ? ` (${routedN} also filed into Projects)` : '';
-  const photoLine = (dests.length || routedN) ? `${distributed} photo cop${distributed !== 1 ? 'ies' : 'y'} → ${destNames || 'Projects'}${routedNote}` : `${photos.length} photo${photos.length !== 1 ? 's' : ''} in 04 - Photos Temp`;
+  const photoWarn = photoFailed ? ` — ⚠ ${photoFailed} failed to copy` : '';
+  const photoLine = (dests.length || routedN) ? `${distributed} photo cop${distributed !== 1 ? 'ies' : 'y'} → ${destNames || 'Projects'}${routedNote}${photoWarn}` : `${photos.length} photo${photos.length !== 1 ? 's' : ''} in 04 - Photos Temp${photoWarn}`;
+
   const nVid = phonePendingVideos.length;
   const vidLine = nVid ? `${nVid} video${nVid !== 1 ? 's' : ''} named &amp; staged in _Phone Video Temp (Tdarr won't touch them yet)` : '';
   // Reveal a deliberate "Send to Uncompressed" button so YOU decide when Tdarr compresses.
@@ -12814,6 +12828,13 @@ async function runCopy() {
     // so a photos-only card could never be cleared through the app at all.
     if (clipPhotos().length) {
       const s = await distributeFlowPhotos();
+      // Analyse them, exactly as the mixed card does below (:1134). This branch is the THIRD
+      // entry point to the same work and it inherited neither of that line's fixes: a card with
+      // stills and no video was backed up and then left completely un-enriched — no observation,
+      // no people, no tags — so Organize had nothing to place it by. Photos are analysable
+      // (getContactSheet feeds the vision model the photo itself), and distributeFlowPhotos has
+      // already saved their finalMeta, so this is the only piece that was missing.
+      autoBackgroundEnrich(clipPhotos());
       showDone(s || 'Photos backed up');
       const watching = !$('flow').classList.contains('hidden') && !$('step2').classList.contains('hidden');
       if (state.copied.length && watching) setTimeout(() => buildDeleteStep(), 500);

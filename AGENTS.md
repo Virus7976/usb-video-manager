@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bz — the same axis, a THIRD entry point. A stills-only card was never analysed.
+
+`runCopy()` returns early for a card with photos and no video. The bottom of that same function
+carries a fix whose comment reads *"on a card they were silently never enriched: no observation, no
+people, no tags, nothing for Organize to place them by."* That fix went to the mixed-card path and
+the phone path. **The photos-only branch was added later, for a different bug (stills dead-ended and
+could never be cleared off the card), and inherited none of it.** So a GoPro stills card was backed
+up, verified, recorded, imported and its drafts cleared — and arrived at Organize with nothing known
+about it at all. `distributeFlowPhotos` already saves their finalMeta; enrichment was the one piece
+missing. Fixed with `autoBackgroundEnrich(clipPhotos())` — passing `clips` would have been worse than
+nothing, since `filesToCopy()` is empty in this branch by definition: a call that runs and does
+nothing, but looks fixed.
+
+**Second, in the phone flow:** the photo distribute read only `copied` and swallowed the throw, so a
+backup that failed outright reported `0 photo copies → computer + NAS ✓` — indistinguishable from the
+one case that legitimately copies nothing (no destinations configured). Now reads `failed`, counts a
+throw as all-failed, logs it, and appends the card path's exact "⚠ N failed to copy" to **both** arms
+of the summary.
+
+`test/photos-only-card-enriched.test.mjs` (8), each of the five parts broken separately and re-proved.
+
+**A new failure mode for the slicing pattern, worth naming:** `src.slice(indexOf(start), indexOf(end))`
+silently produced `''` because `const nVid` also appears in an EARLIER function, so the end index came
+out *before* the start. It failed loudly rather than passing — but it had been asserting nothing, and
+the break that should have caught it was masked by the same failure. **Always search for the end
+marker FROM the start index, and assert the slice is non-empty.**
+
+vm **1165/1029/136/0**.
+
 ### 2026-07-19by — the second-entry-point axis, swept deliberately. Two more, one silently losing metadata.
 
 Turned yesterday's mistake into an axis — *a screen with more than one entry point where the entries

@@ -634,10 +634,33 @@ function buildUploadStep() {
   // free-space check and still asks before copying into a volume that can't hold it, and copying
   // never deletes — clearing the card remains a deliberate act on the Delete step.
   if (autoMode() && !copyInProgress) {
-    showToast(isPhoneFlow() ? '⚡ Auto mode — copying to Uncompressed…' : '⚡ Auto mode — copying to intake…', 3000);
+    // SAY WHAT IT IS ABOUT TO DO, in his terms (Tier 1 item 10 — "a plain-English preview of every
+    // step it will take"). "⚡ Auto mode — copying to intake…" told him a mode was on, not what was
+    // about to happen to his footage. A button that acts on its own has to be legible BEFORE it acts,
+    // or the only way to know what it did is to go and look afterwards — the exact habit this app is
+    // trying to break.
+    //
+    // Built from the SAME values runCopy uses (filesToCopy / clipPhotos / the NAS config), so it can
+    // never describe a different run than the one that follows.
+    showToast(autoModePlan(), 6000);
     setTimeout(() => { if (!copyInProgress && !$('step2').classList.contains('hidden')) runCopy(); }, 800);
   }
 }
+// One sentence describing the run auto mode is about to make. Counts come from the same helpers the
+// copy itself uses, so the preview and the run cannot disagree — and it ends by naming the thing that
+// will NOT happen, because "nothing is deleted" is the fact he most needs to be sure of.
+function autoModePlan() {
+  const vids = filesToCopy().length;
+  const pics = clipPhotos().length;
+  const bits = [];
+  if (vids) bits.push(`${vids} clip${vids !== 1 ? 's' : ''}`);
+  if (pics) bits.push(`${pics} photo${pics !== 1 ? 's' : ''}`);
+  const what = bits.join(' + ') || 'this card';
+  const where = isPhoneFlow() ? 'Uncompressed' : 'your intake folder';
+  const nas = (cfg && cfg.nasBackup && cfg.nasBackup.enabled && cfg.nasBackup.path) ? ', mirrored to the NAS' : '';
+  return `⚡ Auto mode: copying ${what} → ${where}${nas}, verifying every copy. Nothing on the card is deleted — clearing it stays a separate step you do.`;
+}
+
 // Show free space on the intake volume vs. the import size, so a shortfall is obvious
 // before copying (turns red when there isn't enough room).
 async function refreshUploadFreeSpace() {

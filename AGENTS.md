@@ -322,6 +322,29 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ae — Tier 1 item 10: auto mode now says what it is about to do.
+
+The "Do it all" button already existed. **The preview did not.** Auto mode announced itself with
+*"⚡ Auto mode — copying to intake…"* — which tells him a MODE is on, not what is about to happen to
+his footage. **A thing that acts on its own has to be legible BEFORE it acts**, or the only way to
+know what it did is to go and look afterwards: exactly the habit this app exists to break.
+
+It now states the run — how many clips and photos, where they are going, whether the NAS mirror is
+on, that every copy is verified — and ends with the fact he most needs to be certain of:
+**"Nothing on the card is deleted — clearing it stays a separate step you do."** Card deletes are the
+one irreversible act and are never automated; an automatic mode that did not say so out loud would be
+quietly asking for trust on precisely the point where trust matters most.
+
+**Counts come from the same helpers the copy uses** (`filesToCopy`, `clipPhotos`, `cfg.nasBackup`), so
+the sentence cannot describe a different run than the one that follows. A preview computed separately
+from the action is the two-implementations-disagree shape — and here it would be a promise about his
+footage rather than a folder name.
+
+Six breaks proven, including the two that matter: dropping the "nothing is deleted" line, and letting
+the auto path reach `buildDeleteStep`.
+
+vm **1414/1271/143/0**, e2e **143/142/1/0**. **Tier 1: 14 of 18 done.**
+
 ### 2026-07-20ad — Tier 1 item 2: his own filing rules did nothing unless he opened the map.
 
 Took stock of Tier 1 first (12 of 18 done; `memory/usb-app-toolness-100.md` now records which, and

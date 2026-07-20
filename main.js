@@ -11247,7 +11247,11 @@ function subjectVocabulary() {
 ipcMain.handle('subjects:canonicalize', (_e, proposed) => {
   const v = subjectVocabulary();
   const r = subjects.canonicalize(proposed, v);
-  return { ok: true, ...r, known: (v.subjects || []).length };
+  // The COUNT is what makes the choice obvious to him — "you have used this on 12 clips" is a reason,
+  // "this is similar" is not. Only the matched name's count is sent; the whole table would be noise.
+  const knownCounts = {};
+  for (const e of (v.subjects || [])) if (e.name === r.canonical) knownCounts[e.name] = e.count;
+  return { ok: true, ...r, known: (v.subjects || []).length, knownCounts };
 });
 
 // NOTE: there is deliberately NO `subjects:vocabulary` handler yet. The subject PICKER

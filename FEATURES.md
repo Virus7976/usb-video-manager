@@ -139,9 +139,9 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 26 | Custom taxonomy fields he defines himself | ✓ | – | – | done |
 | 27 | Autocomplete from everything he has typed before | ✓ | ✓ | – | partial — desktop only |
 | 28 | **Prune a bad autocomplete entry** | ✓ | – | – | **dead** — `fieldHistory:remove` has no caller, so every typo is offered forever |
-| 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — pick from known subjects, add deliberately | ✓ | ✓ | ✓ | **todo — THE UNBLOCK.** 112 subjects for 206 clips is why 1 clip is filed |
-| 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | todo — 20 such pairs in his store today |
-| 31 | ⚠ Refuse a subject that describes the SHOT not the JOB | ✓ | ✓ | – | todo — 46% of his named clips are `talking-head`-style |
+| 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — snap onto known subjects, add deliberately | ✓ | ✓ | ✓ | partial — engine + AI snapping + ask-on-type done (D); phone/backend todo |
+| 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | partial — detection done (112→91 on his data); no bulk-merge UI for the EXISTING 4,594 |
+| 31 | ⚠ Flag a subject that describes the SHOT not the JOB | ✓ | ✓ | – | partial — detection done and returned; not yet surfaced in the UI |
 | 32 | Batch-name a selection | ✓ | ✓ | – | partial — desktop only |
 | 33 | Find &amp; replace across names | ✓ | – | – | done |
 | 34 | Apply one clip's name to everything selected | ✓ | ✓ | – | partial — desktop only |

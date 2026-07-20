@@ -75,5 +75,15 @@ test('⚠ the count of confirmations has not quietly dropped', () => {
   const all = [fin, boot, map, core, people, read('04-tasks-ai.js')]
     .map((s) => (s.match(/await confirmDialog\(/g) || []).length)
     .reduce((a, b) => a + b, 0);
-  assert.equal(all, 16, `16 confirmations, each guarding footage, metadata or a long job — found ${all}`);
+  // 17 since 2026-07-20. The new one is the subject-canonicalisation offer ("Use 'lawn-mowing'
+  // instead?"), and it earns its place by the same rule as the rest: it guards his METADATA.
+  //
+  // He has 112 distinct subjects across 206 named clips, 20 of them variants of each other. Filing
+  // groups by subject, so every variant is a group that never reaches a size worth filing — one clip
+  // filed out of 4,594. The alternative to asking was silently rewriting what he typed, which is the
+  // one thing a naming tool must never do. So: a dialog, with "Keep mine" as a real option, at the
+  // single point where a new subject enters his vocabulary.
+  //
+  // If this count changes again, say which and why — that is the whole point of pinning it.
+  assert.equal(all, 17, `17 confirmations, each guarding footage, metadata or a long job — found ${all}`);
 });

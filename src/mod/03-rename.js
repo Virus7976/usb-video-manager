@@ -702,7 +702,17 @@ function wireRowEditing(listEl) {
       state.scannedFiles[Number(inp.dataset.subject)].subject = inp.value;
       refreshNames();
     });
-    inp.addEventListener('change', () => { const c0 = state.scannedFiles[Number(inp.dataset.subject)]; recordAiEdit(c0, 'subject', inp.value); rememberSubject(inp.value); fillChapterSiblings(c0); });
+    // ⚠ Offer the canonical spelling when what he typed is a variant of a subject he already uses —
+    // see offerCanonicalSubject. It ASKS; "Keep mine" leaves his word exactly as typed. This is the
+    // choke point where a new subject enters his vocabulary, which is why the check lives here rather
+    // than inside rememberSubject (that is also called programmatically, and a dialog must only ever
+    // follow a deliberate keystroke).
+    inp.addEventListener('change', async () => {
+      const c0 = state.scannedFiles[Number(inp.dataset.subject)];
+      const chosen = await offerCanonicalSubject(inp.value);
+      if (chosen !== inp.value) { inp.value = chosen; if (c0) c0.subject = chosen; }
+      recordAiEdit(c0, 'subject', inp.value); rememberSubject(inp.value); fillChapterSiblings(c0);
+    });
     wireEditPlay(inp, Number(inp.dataset.subject));
     attachSubjectCombo(inp);
   });

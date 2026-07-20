@@ -859,6 +859,35 @@ function matchKnownSubject(subj) {
 //
 // ADVISORY, deliberately. It returns what it WOULD use; the caller applies it to an AI suggestion
 // (fine — the AI proposes and we tidy) but must not silently rewrite something Jake typed himself.
+// ⚠⚠ CATCH FRAGMENTATION AS HE TYPES IT — the other half of item 29.
+//
+// Snapping the AI's proposals stops the machine inventing 112 subjects. This stops HIM doing it: he
+// types `lawn-mowing-dennis`, has used `lawn-mowing` twelve times, and nothing has ever mentioned it.
+// Filing groups by subject, so those are two groups and neither reaches a threshold worth filing.
+//
+// ⚠ IT ASKS. It never rewrites what he typed — that is his work, and a tool that silently renames
+// his subjects is one he stops trusting. The dialog names the count ("you have used it 12 times"),
+// because that is the fact that makes the choice obvious, and "Keep mine" is a real option: some
+// shoots genuinely are a variant of another.
+//
+// Returns the subject to store.
+async function offerCanonicalSubject(typed) {
+  const raw = String(typed || '').trim();
+  if (!raw) return raw;
+  let c = null;
+  try { c = await window.api.canonicalizeSubject(raw); } catch { return raw; }
+  if (!c || !c.ok || !c.matched) return raw;                     // new subject → his, untouched
+  if (normSubj(c.canonical) === normSubj(raw)) return raw;        // already the canonical spelling
+  const used = (c.canonical && c.knownCounts && c.knownCounts[c.canonical]) || 0;
+  const ok = await confirmDialog(
+    `Use “${c.canonical}” instead?`,
+    `You typed “${raw}”. You have already used “${c.canonical}”${used ? ` on ${used} clip${used !== 1 ? 's' : ''}` : ''} — and filing groups clips by subject, so two spellings become two groups and neither gets filed.`,
+    `Use “${c.canonical}”`, 'Keep mine',
+  );
+  return ok ? c.canonical : raw;
+}
+function normSubj(s) { return String(s || '').trim().toLowerCase(); }
+
 async function canonicalSubject(proposed) {
   const raw = String(proposed || '').trim();
   if (!raw) return { subject: '', canonical: '', matched: false, shotLike: false };

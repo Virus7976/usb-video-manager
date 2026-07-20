@@ -2912,7 +2912,17 @@ function wireRowEditing(listEl) {
       state.scannedFiles[Number(inp.dataset.subject)].subject = inp.value;
       refreshNames();
     });
-    inp.addEventListener('change', () => { const c0 = state.scannedFiles[Number(inp.dataset.subject)]; recordAiEdit(c0, 'subject', inp.value); rememberSubject(inp.value); fillChapterSiblings(c0); });
+    // ⚠ Offer the canonical spelling when what he typed is a variant of a subject he already uses —
+    // see offerCanonicalSubject. It ASKS; "Keep mine" leaves his word exactly as typed. This is the
+    // choke point where a new subject enters his vocabulary, which is why the check lives here rather
+    // than inside rememberSubject (that is also called programmatically, and a dialog must only ever
+    // follow a deliberate keystroke).
+    inp.addEventListener('change', async () => {
+      const c0 = state.scannedFiles[Number(inp.dataset.subject)];
+      const chosen = await offerCanonicalSubject(inp.value);
+      if (chosen !== inp.value) { inp.value = chosen; if (c0) c0.subject = chosen; }
+      recordAiEdit(c0, 'subject', inp.value); rememberSubject(inp.value); fillChapterSiblings(c0);
+    });
     wireEditPlay(inp, Number(inp.dataset.subject));
     attachSubjectCombo(inp);
   });
@@ -3903,6 +3913,35 @@ function matchKnownSubject(subj) {
 //
 // ADVISORY, deliberately. It returns what it WOULD use; the caller applies it to an AI suggestion
 // (fine — the AI proposes and we tidy) but must not silently rewrite something Jake typed himself.
+// ⚠⚠ CATCH FRAGMENTATION AS HE TYPES IT — the other half of item 29.
+//
+// Snapping the AI's proposals stops the machine inventing 112 subjects. This stops HIM doing it: he
+// types `lawn-mowing-dennis`, has used `lawn-mowing` twelve times, and nothing has ever mentioned it.
+// Filing groups by subject, so those are two groups and neither reaches a threshold worth filing.
+//
+// ⚠ IT ASKS. It never rewrites what he typed — that is his work, and a tool that silently renames
+// his subjects is one he stops trusting. The dialog names the count ("you have used it 12 times"),
+// because that is the fact that makes the choice obvious, and "Keep mine" is a real option: some
+// shoots genuinely are a variant of another.
+//
+// Returns the subject to store.
+async function offerCanonicalSubject(typed) {
+  const raw = String(typed || '').trim();
+  if (!raw) return raw;
+  let c = null;
+  try { c = await window.api.canonicalizeSubject(raw); } catch { return raw; }
+  if (!c || !c.ok || !c.matched) return raw;                     // new subject → his, untouched
+  if (normSubj(c.canonical) === normSubj(raw)) return raw;        // already the canonical spelling
+  const used = (c.canonical && c.knownCounts && c.knownCounts[c.canonical]) || 0;
+  const ok = await confirmDialog(
+    `Use “${c.canonical}” instead?`,
+    `You typed “${raw}”. You have already used “${c.canonical}”${used ? ` on ${used} clip${used !== 1 ? 's' : ''}` : ''} — and filing groups clips by subject, so two spellings become two groups and neither gets filed.`,
+    `Use “${c.canonical}”`, 'Keep mine',
+  );
+  return ok ? c.canonical : raw;
+}
+function normSubj(s) { return String(s || '').trim().toLowerCase(); }
+
 async function canonicalSubject(proposed) {
   const raw = String(proposed || '').trim();
   if (!raw) return { subject: '', canonical: '', matched: false, shotLike: false };

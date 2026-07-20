@@ -117,3 +117,44 @@ test('an empty or missing subject is handled quietly', async () => {
     assert.equal(r.canonical, '', `"${junk}" yields nothing rather than throwing`);
   }
 });
+
+// --- the other half: catching fragmentation as HE types it ---
+
+test('⚠⚠ typing a variant OFFERS the canonical spelling — it never rewrites silently', () => {
+  // Snapping the AI's proposals stops the machine inventing subjects. This stops him doing it. But it
+  // must ASK: silently renaming what he typed is the one thing a naming tool cannot do and keep his
+  // trust, and some shoots genuinely ARE a variant of another.
+  const at = tasks.indexOf('async function offerCanonicalSubject');
+  assert.ok(at > -1, 'the offer exists');
+  const body = tasks.slice(at, tasks.indexOf('\nfunction normSubj', at));
+  assert.match(body, /if \(!c \|\| !c\.ok \|\| !c\.matched\) return raw;/,
+    '⚠ a genuinely new subject is returned untouched');
+  assert.match(body, /await confirmDialog\(/, 'a variant is offered, not applied');
+  assert.match(body, /'Keep mine'/, '⚠ and keeping his own word is a real choice');
+  assert.match(body, /return ok \? c\.canonical : raw;/, 'declining leaves exactly what he typed');
+});
+
+test('⚠ the offer states HOW MANY clips already use the canonical name', () => {
+  // "You have used this on 12 clips" is a reason; "this is similar" is not. The count is what makes
+  // the choice obvious, so it is fetched deliberately rather than left out.
+  const at = tasks.indexOf('async function offerCanonicalSubject');
+  const body = tasks.slice(at, tasks.indexOf('\nfunction normSubj', at));
+  assert.match(body, /c\.knownCounts\[c\.canonical\]/, 'the count is read');
+  assert.match(body, /on \$\{used\} clip/, 'and shown');
+  const tools = readFileSync(join(process.cwd(), 'main-mod', '10-ai-tools.js'), 'utf8');
+  assert.match(tools, /knownCounts\[e\.name\] = e\.count;/, 'and main actually supplies it');
+});
+
+test('⚠ the prompt fires on a deliberate keystroke, not on programmatic writes', () => {
+  // rememberSubject is also called by code paths that set a subject without him typing. A dialog
+  // appearing from a background action would be the app talking over him.
+  const rename = readFileSync(join(process.cwd(), 'src', 'mod', '03-rename.js'), 'utf8').replace(/\/\/.*$/gm, '');
+  const at = rename.indexOf("inp.addEventListener('change'");
+  assert.ok(at > -1, 'it is on the change handler');
+  const body = rename.slice(at, rename.indexOf('});', at));
+  assert.match(body, /await offerCanonicalSubject\(inp\.value\)/, 'the offer runs on commit');
+  assert.match(body, /if \(chosen !== inp\.value\)/, 'and the field only changes if he accepted');
+  const combo = readFileSync(join(process.cwd(), 'src', 'mod', '02-combo.js'), 'utf8');
+  assert.ok(!combo.includes('offerCanonicalSubject'),
+    '⚠ NOT inside rememberSubject — that is called programmatically and would pop a dialog at him');
+});

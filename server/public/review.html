@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- viewport-fit=cover + the safe-area padding below: this is used one-handed on a phone, so the
+     action bar must clear the home indicator rather than sitting under it. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Face review</title>
+<style>
+  :root { color-scheme: dark light; --bg:#111316; --fg:#e9edf2; --dim:#9aa4b2; --line:#262b31;
+          --accent:#3b82f6; --good:#22c55e; --warn:#f59e0b; }
+  @media (prefers-color-scheme: light) { :root { --bg:#fff; --fg:#14181d; --dim:#5b6673; --line:#e3e7ec; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  header { position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line);
+           padding:12px 16px calc(12px); display:flex; align-items:center; gap:12px; z-index:5; }
+  h1 { font-size:17px; margin:0; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; }
+  main { padding:16px; padding-bottom:calc(96px + env(safe-area-inset-bottom)); }
+  .card { border:1px solid var(--line); border-radius:14px; overflow:hidden; margin:0 0 18px; }
+  .crop { width:100%; aspect-ratio:1; object-fit:cover; display:block; background:#000; }
+  .meta { padding:12px 14px; }
+  .who { font-size:19px; font-weight:600; }
+  .muted { color:var(--dim); font-size:13px; }
+  /* 48px minimum: these are pressed with a thumb, repeatedly, often one-handed. */
+  .row { display:flex; gap:10px; padding:0 14px 14px; flex-wrap:wrap; }
+  button { min-height:48px; padding:0 18px; border-radius:11px; border:1px solid var(--line);
+           background:transparent; color:var(--fg); font-size:15px; font-weight:600; flex:1 1 auto; }
+  button.yes { background:var(--good); border-color:transparent; color:#06210f; }
+  button.no  { background:transparent; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; padding:0 14px 14px; }
+  .chip { min-height:44px; padding:0 14px; border-radius:999px; border:1px solid var(--line);
+          background:transparent; color:var(--fg); font-size:15px; flex:0 0 auto; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:var(--bg); border-top:1px solid var(--line);
+         padding:12px 16px calc(12px + env(safe-area-inset-bottom)); display:flex; gap:12px; align-items:center; }
+  .grow { flex:1; }
+  input { width:100%; min-height:48px; padding:0 14px; border-radius:11px; border:1px solid var(--line);
+          background:transparent; color:var(--fg); font-size:16px; }
+  .note { padding:14px; border:1px dashed var(--line); border-radius:12px; color:var(--dim); font-size:14px; }
+  .err { border-color:var(--warn); color:var(--fg); }
+  .hide { display:none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="grow"><h1>Face review</h1><div class="sub" id="sub">connecting…</div></div>
+</header>
+
+<main>
+  <!-- Pairing. Deliberately the first thing, and it explains WHY rather than just demanding a secret. -->
+  <section id="pair" class="hide">
+    <div class="note">
+      <p style="margin-top:0"><b>Pair this phone</b></p>
+      <p>Enter the token the server printed when it started. It is stored on this phone only, and every
+         request carries it — without it the server refuses to answer.</p>
+      <input id="tok" type="password" inputmode="text" autocomplete="off" placeholder="paste token" />
+      <button id="pairBtn" style="margin-top:12px; width:100%">Connect</button>
+      <p id="pairErr" class="hide" style="color:var(--warn)"></p>
+    </div>
+  </section>
+
+  <section id="list"></section>
+  <div id="empty" class="note hide"></div>
+</main>
+
+<div class="bar hide" id="bar">
+  <div class="grow"><div id="queued" class="muted">—</div></div>
+  <button id="refresh" style="flex:0 0 auto">Refresh</button>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  // localStorage, not a cookie: no cookie is ever sent automatically, so nothing can be triggered
+  // cross-site on his behalf. Every request attaches the token explicitly.
+  const KEY = 'uvd.token';
+  let token = localStorage.getItem(KEY) || '';
+  let people = [];
+
+  const api = async (path, opts = {}) => {
+    const r = await fetch(path, {
+      ...opts,
+      headers: { 'X-Pair-Token': token, ...(opts.body ? { 'Content-Type': 'application/json' } : {}), ...(opts.headers || {}) },
+    });
+    if (r.status === 401) { const e = new Error('unauthorized'); e.unauthorized = true; throw e; }
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    return body;
+  };
+
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function showPair(msg) {
+    $('pair').classList.remove('hide');
+    $('bar').classList.add('hide');
+    $('list').innerHTML = '';
+    $('empty').classList.add('hide');
+    if (msg) { $('pairErr').textContent = msg; $('pairErr').classList.remove('hide'); }
+    $('sub').textContent = 'not paired';
+  }
+
+  async function send(action, card) {
+    // Optimistic, but HONEST: the card says "queued", not "done". The desktop app applies it — this
+    // is the whole point of the queue, and pretending otherwise would be the same "success over
+    // nothing happened" bug the desktop app has been bitten by repeatedly.
+    card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    try {
+      await api('/api/actions', { method: 'POST', body: JSON.stringify(action) });
+      card.querySelector('.meta').innerHTML =
+        '<div class="who">Queued ✓</div><div class="muted">Applies next time the app runs on your PC.</div>';
+      card.querySelectorAll('.row,.chips').forEach((n) => n.remove());
+      refreshQueued();
+    } catch (err) {
+      if (err.unauthorized) return showPair('That token was rejected.');
+      card.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+      alert(`Could not queue that: ${err.message}`);
+    }
+  }
+
+  function cardFor(item) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    const name = item.suggest && item.suggest.name;
+    el.innerHTML = `
+      <img class="crop" loading="lazy" src="/api/face-crop?name=${encodeURIComponent(item.crop)}" alt="" />
+      <div class="meta">
+        <div class="who">${name ? `Is this ${esc(name)}?` : 'Who is this?'}</div>
+        <div class="muted">${item.clips} clip${item.clips === 1 ? '' : 's'}${item.samples ? ` · ${item.samples} samples` : ''}</div>
+      </div>`;
+    const row = document.createElement('div');
+    row.className = 'row';
+    if (name) {
+      const yes = document.createElement('button');
+      yes.className = 'yes'; yes.textContent = `Yes, ${name}`;
+      yes.onclick = () => send({ type: 'face.confirm', clusterId: item.id, name }, el);
+      row.appendChild(yes);
+    }
+    const skip = document.createElement('button');
+    skip.className = 'no'; skip.textContent = 'Later';
+    skip.onclick = () => send({ type: 'face.skip', clusterId: item.id }, el);
+    const no = document.createElement('button');
+    no.className = 'no'; no.textContent = 'Not a person';
+    no.onclick = () => send({ type: 'face.reject', clusterId: item.id }, el);
+    row.append(skip, no);
+    el.appendChild(row);
+
+    // Existing people as one-tap chips — typing a name on a phone is the thing that stops him
+    // answering, and these are the same names the desktop offers.
+    if (people.length) {
+      const chips = document.createElement('div');
+      chips.className = 'chips';
+      for (const p of people.slice(0, 12)) {
+        if (name && p.name === name) continue;
+        const c = document.createElement('button');
+        c.className = 'chip'; c.textContent = p.name;
+        c.onclick = () => send({ type: 'face.confirm', clusterId: item.id, name: p.name }, el);
+        chips.appendChild(c);
+      }
+      if (chips.children.length) el.appendChild(chips);
+    }
+    return el;
+  }
+
+  async function refreshQueued() {
+    try {
+      const q = await api('/api/actions');
+      $('queued').textContent = q.count
+        ? `${q.count} answer${q.count === 1 ? '' : 's'} waiting for your PC`
+        : 'nothing waiting';
+    } catch { /* the count is a nicety; never block the review on it */ }
+  }
+
+  async function load() {
+    if (!token) return showPair('');
+    $('pair').classList.add('hide');
+    try {
+      const status = await api('/api/status');
+      // Distinguish "no faces" from "the store is broken" — the desktop app has been bitten by
+      // conflating those more than once, and the phone must not repeat it.
+      if (!status.ok) {
+        $('sub').textContent = 'store problem';
+        $('empty').className = 'note err';
+        $('empty').textContent = `Could not read: ${status.broken.join(', ')}. Nothing has been changed.`;
+        $('bar').classList.remove('hide');
+        return;
+      }
+      people = (await api('/api/people')).people || [];
+      const data = await api('/api/faces/pending');
+      $('sub').textContent = `${data.count} to review`;
+      $('bar').classList.remove('hide');
+      const list = $('list');
+      list.innerHTML = '';
+      if (!data.count) {
+        $('empty').className = 'note';
+        $('empty').textContent = 'Nothing waiting — every face has been answered.';
+        $('empty').classList.remove('hide');
+      } else {
+        $('empty').classList.add('hide');
+        // Cap the first paint: 414 cards with 414 image requests would stall a phone. More load as
+        // he works through them.
+        for (const item of data.items.slice(0, 30)) list.appendChild(cardFor(item));
+      }
+      refreshQueued();
+    } catch (err) {
+      if (err.unauthorized) return showPair('That token was rejected.');
+      $('sub').textContent = 'error';
+      $('empty').className = 'note err';
+      $('empty').textContent = err.message;
+      $('empty').classList.remove('hide');
+    }
+  }
+
+  $('pairBtn').onclick = () => {
+    const v = $('tok').value.trim();
+    if (!v) return;
+    token = v; localStorage.setItem(KEY, v);
+    $('pairErr').classList.add('hide');
+    load();
+  };
+  $('refresh').onclick = load;
+  load();
+})();
+</script>
+</body>
+</html>

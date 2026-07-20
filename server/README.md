@@ -1,8 +1,13 @@
 # The local backend
 
 Serves the face review and the AI's open questions over HTTP, so they can be answered from a phone
-instead of only at the PC. **Read-only for now** — see the note at the top of `core/store-read.js`
-for why that is deliberate rather than unfinished.
+instead of only at the PC. Open `http://<pc-ip>:8787/` on the phone.
+
+**It reads every store and writes none of them.** Answering queues an *instruction* into
+`phone-actions.jsonl` — a file nothing else writes — and the desktop app applies it later through its
+own handlers. That is deliberate: the desktop owns atomic writes, the read-failure quarantine, the
+caps, the prunes and the single undo record, and a second writer would race all of it. It also means
+answering on the couch cannot fail because the PC is busy or asleep; the answer just waits.
 
 ## Why this has its OWN package.json
 
@@ -35,9 +40,9 @@ Then from the phone, on the same network: `http://<pc-ip>:8787/health`
 machine** — that is a deliberate non-action, not an oversight. Installing Docker Desktop is a large
 system change and is Jake's call. Until then `npm start` runs the same server directly.
 
-⚠ The compose file binds the store directory **read-only** (`:ro`). Do not remove that until the
-write path exists and has been designed against the desktop app's atomic-write and
-read-failure-quarantine behaviour.
+⚠ The compose file binds the store directory **read-only** (`:ro`), and that is still correct: the
+server never writes a store. The action queue lives in the same directory, so when the desktop-side
+consumer lands, the queue file will need its own writable mount rather than dropping `:ro` wholesale.
 
 ## What this is NOT
 

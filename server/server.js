@@ -14,6 +14,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const Fastify = require('fastify');
 const store = require('../core/store-read');
+const queue = require('../core/action-queue');
 
 const API_VERSION = 1;
 const PORT = Number(process.env.UVD_PORT) || 8787;
@@ -59,6 +60,14 @@ function build({ logger = false } = {}) {
     api: API_VERSION,
     needsToken: true,
   }));
+
+  // The phone page itself. Same origin as the API on purpose: no CORS to get wrong, and the token
+  // never crosses an origin boundary. Unauthenticated because it contains no data — it ASKS for the
+  // token and then fetches everything itself.
+  app.get('/', async (req, reply) => {
+    reply.header('Content-Type', 'text/html; charset=utf-8');
+    return require('node:fs').createReadStream(path.join(__dirname, 'public', 'review.html'));
+  });
 
   // Everything below is token-gated.
   app.addHook('preHandler', async (req, reply) => {
@@ -135,13 +144,34 @@ function build({ logger = false } = {}) {
     }
   });
 
-  // Every write route is deliberately absent. Confirming a face from the phone will hand the desktop
-  // app an instruction rather than touching these files — the desktop owns atomic writes, the
-  // read-failure quarantine, the caps and the undo record, and a second writer would race all of it.
-  // See the note at the top of core/store-read.js.
+  // ⚠⚠ THE ONLY WRITE, AND IT DOES NOT TOUCH A SINGLE STORE.
+  //
+  // An answer from the phone is APPENDED as an instruction to phone-actions.jsonl — a file nothing
+  // else writes — and the desktop app applies it later through its own handlers. The desktop keeps
+  // sole ownership of faces-pending.json, people.json and the rest, along with its atomic writes,
+  // read-failure quarantine, caps, prunes and undo record. One writer per file, always.
+  //
+  // The consequence he actually cares about: answering on the couch cannot fail because the PC is
+  // busy or asleep. The worst case is the answer waits in the queue.
+  app.post('/api/actions', async (req, reply) => {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const r = queue.append(body, { dir: store.storeDir(STORE_DIR), at: Date.now(), source: 'phone' });
+    if (!r.ok) { reply.code(400); return r; }
+    return { ok: true, id: r.id, queued: true };
+  });
+
+  // What is waiting to be applied. The phone shows this so a queued answer is visibly QUEUED rather
+  // than looking like it silently did nothing.
+  app.get('/api/actions', async () => {
+    const pending = queue.read({ dir: store.storeDir(STORE_DIR) });
+    return { ok: true, count: pending.length, actions: pending };
+  });
+
+  // Any OTHER write is still refused, loudly. Silently accepting and dropping would be the worst
+  // possible version of this.
   app.post('/api/*', async (req, reply) => {
     reply.code(501);
-    return { ok: false, error: 'This backend is read-only for now — writes go through the desktop app.' };
+    return { ok: false, error: 'Only /api/actions accepts writes — everything else goes through the desktop app.' };
   });
 
   return app;

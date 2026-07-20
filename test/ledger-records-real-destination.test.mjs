@@ -63,7 +63,11 @@ test('filing WITHOUT a plan still teaches the ledger', async () => {
     }]);
     const l = ledger();
     assert.equal(l.length, 1, 'the run was recorded');
-    assert.equal(l[0].rel, 'vlog', 'under the folder it actually went into');
+    // The CONTRACT is "the folder it actually went into", not a specific rung. Clips now group by
+    // shoot date under the subject (2026-07-19cd), so the real destination is `vlog/<date>` — and
+    // that is exactly what the ledger should have learned. Pinning the leaf made this test fail for
+    // a change that made the ledger STRICTLY better (one entry per shoot instead of one per subject).
+    assert.match(String(l[0].rel), /^vlog(\/|$)/, 'under the folder it actually went into');
   } finally { s.cleanup(); }
 });
 

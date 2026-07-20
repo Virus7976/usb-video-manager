@@ -180,7 +180,16 @@ test('the shape that used to move nothing now files by date', async () => {
   // landed; the property that matters is that it is no longer sitting loose where it started.
   const filed = readdirSync(src, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   assert.ok(filed.length > 0, `it landed in a subfolder rather than the root — found ${JSON.stringify(filed)}`);
-  assert.equal(existsSync(join(src, 'x', 'nowhere.mp4')), true, 'under its own subject, which is the best field it has');
+  // ...and then this line pinned the leaf ANYWAY, which is how it broke again when clips started
+  // grouping by shoot date under the subject (2026-07-19cd). The comment above had the right idea and
+  // the assertion did not follow it. Assert the subject FOLDER exists and the clip is somewhere
+  // beneath it — the depth is the ladder's business.
+  assert.equal(existsSync(join(src, 'x')), true, 'under its own subject, which is the best field it has');
+  const under = readdirSync(join(src, 'x'), { withFileTypes: true });
+  const here = under.some((e) => e.isFile() && e.name === 'nowhere.mp4');
+  const nested = under.filter((e) => e.isDirectory())
+    .some((d) => readdirSync(join(src, 'x', d.name)).includes('nowhere.mp4'));
+  assert.ok(here || nested, `the clip is under its subject — found ${JSON.stringify(under.map((e) => e.name))}`);
 });
 
 // --- the wiring that makes Run see the plan ---------------------------------------------

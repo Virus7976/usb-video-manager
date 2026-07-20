@@ -31,6 +31,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadMain } from './harness.mjs';
 
+// "Is this clip anywhere under this folder?" — the ladder decides how deeply to nest (subject, then
+// shoot date), and a test that cares about WHICH subject should not also pin the depth.
+function findClip(root, name) {
+  const { readdirSync } = require0('node:fs');
+  const stack = [root];
+  while (stack.length) {
+    let entries;
+    try { entries = readdirSync(stack.pop(), { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      if (e.isDirectory()) stack.push(join(e.parentPath || e.path, e.name));
+      else if (e.name === name) return true;
+    }
+  }
+  return false;
+}
+import { createRequire } from 'node:module';
+const require0 = createRequire(import.meta.url);
+
 let app;
 before(() => { app = loadMain(); });
 after(() => { try { app.dispose(); } catch { /* ignore */ } });
@@ -173,8 +191,12 @@ test('a clip with meta but NO folder fields still never lands in the root', asyn
     assert.equal(r.moved, 1, 'it was filed');
     assert.ok(!existsSync(join(s.dest, 'GX010099.MP4')), 'and NOT loose in the Projects root');
     // It carries a subject, so the ladder places it there rather than in the dated bucket — the
-    // point of this test is the ROOT, and any rung of the ladder satisfies it.
-    assert.ok(existsSync(join(s.dest, 'vlog', 'GX010099.MP4')), 'it fell back to a real field it had');
+    // point of this test is the ROOT, and any rung of the ladder satisfies it. So assert the
+    // CONTRACT — "somewhere under its own subject" — not the exact folder: clips now group by shoot
+    // date beneath the subject (2026-07-19cd), and pinning the leaf made this fail for a change that
+    // strictly improved it. Third time a test in this repo has broken by naming a rung.
+    assert.ok(existsSync(join(s.dest, 'vlog')), 'it fell back to a real field it had');
+    assert.equal(findClip(join(s.dest, 'vlog'), 'GX010099.MP4'), true, 'and the clip is under it');
   } finally { s.cleanup(); }
 });
 
@@ -211,7 +233,7 @@ test('a clip with a SUBJECT files under it, not into _unsorted', async () => {
       sourcePath: s.clip,
       meta: { date: '2026-03-14', subject: 'vlog', description: 'josiah-bedroom', category: '', project: '' },
     }]);
-    assert.ok(existsSync(join(s.dest, 'vlog', 'GX010099.MP4')), 'filed under its own subject');
+    assert.equal(findClip(join(s.dest, 'vlog'), 'GX010099.MP4'), true, 'filed under its own subject');
     assert.ok(!existsSync(join(s.dest, '2026-03-14', '_unsorted', 'GX010099.MP4')), 'not dumped as unsorted');
   } finally { s.cleanup(); }
 });

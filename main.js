@@ -8570,7 +8570,22 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
       // isn't the one the config happens to name.
       const subj = safeFolderName(String((meta && meta.subject) || '').trim());
       if (subj) {
-        parts = [subj];
+        // SUBJECT, THEN SHOOT DATE. Measured on his real library: all 310 clips in the Compressed
+        // folder carry `vlog` in the subject slot, so `[subject]` alone collapsed the entire backlog
+        // into ONE flat directory beside his real project folders — 310 clips in one folder is not
+        // filed, it is a second holding pen with a nicer name, and it taught the ledger exactly one
+        // entry. Grouping by the shoot date underneath splits it into ~40 real shoots, which is the
+        // unit he actually works in (usb-app-shoots-in-batches: the date predicts the subject 88% of
+        // the time). Jake picked this layout when shown the measurement.
+        //
+        // The date is only appended when we HAVE one — a subject with no date keeps the old flat
+        // behaviour rather than inventing a folder called `undated` inside it.
+        let day = String((meta && meta.date) || '').trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+          try { day = new Date((await fsp.stat(it.sourcePath || it.path)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
+        }
+        const dayPart = /^\d{4}-\d{2}-\d{2}$/.test(day) ? safeFolderName(day) : '';
+        parts = dayPart ? [subj, dayPart] : [subj];
       } else {
         let day = String((meta && meta.date) || '').trim();
         if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {

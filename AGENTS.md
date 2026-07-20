@@ -347,10 +347,27 @@ into one directory — beside his real folders (`2026 - Client Work`, `2026 - Pe
 `2026 - Social Media`), matching none of them. 310 clips in one folder is not filed; it is a second
 holding pen with a nicer name.
 
-**Deliberately NOT changed.** The fix is a layout decision over his real Projects tree — date-grouped
-under the subject, year-prefixed to match his existing naming, or something else — and guessing it
-would reshape 310 clips of his archive to suit my assumption. The measurement is the deliverable;
-the choice is his. Raised with him.
+**Asked him, then built what he picked: date-grouped under the subject.** I showed him the
+measurement and the three real alternatives (dated subfolders, mirroring his year-prefixed folder
+names, or one flat folder) rather than guessing at a layout that reshapes 310 clips of his archive.
+
+Re-running the same probe after the change: the 40 clips split into **7 real shoots**, and the ledger
+learned **7** entries instead of 1. `test/subject-groups-by-shoot-date.test.mjs` (7), each part broken
+separately, including the two directions that matter — the date must NEST under the subject rather
+than replace it, and an explicit map placement must still win over the whole ladder.
+
+**⚠ FOUR EXISTING TESTS BROKE, all the same way, and one of them had literally documented the
+lesson:** they asserted the exact FOLDER (`dest/vlog/clip.mp4`) instead of the contract ("under its
+own subject"), so a change that strictly improved the layout read as a regression.
+`organize-plan.test.mjs` even carries the comment *"Asserting specifically on a dated folder pinned
+the wrong rung and broke when the subject rung landed; the property that matters is…"* — and then
+pinned the leaf anyway on its very next line. **Writing the lesson in a comment does not apply it.**
+All four now assert the folder plus "the clip is somewhere beneath it"; the depth is the ladder's
+business.
+
+**One assertion was weak by nature and I only found out by breaking it:** the no-date branch is
+unreachable at runtime (the file's mtime always supplies a date), so `[subj, dayPart || 'undated']`
+left every test green. Pinned on the source as well as the behaviour, with the reason recorded.
 
 Also corrected the previous entry's scope (see the ⚠ above it): the finalMeta case fix is hardening,
 not a live bug — `finalMeta:save` already lowercases, and his real store confirms it.

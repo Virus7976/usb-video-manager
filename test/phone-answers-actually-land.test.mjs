@@ -159,3 +159,32 @@ test('⚠ the new core module is in the packaging allowlist', () => {
   const bundled = readFileSync(join(process.cwd(), 'main.js'), 'utf8');
   assert.match(bundled, /require\('\.\/core\/action-queue'\)/, 'and the require survives the bundle');
 });
+
+test('⚠⚠ EVERY action the server accepts is one the desktop can APPLY', () => {
+  // The structural guard for a mistake I actually made: `question.answer` was in the accepted set
+  // aspirationally, and nothing on the desktop consumed it. An instruction that can never be applied
+  // is worse than a rejected one — it banks silently and sits in the queue looking like pending work
+  // forever, which is precisely what core/action-queue.js's own comment warns against.
+  //
+  // This binds the two halves together: adding an action to the server without teaching the desktop
+  // to apply it now fails the suite, instead of quietly accumulating stuck answers on his machine.
+  const accepted = [...queue.ACTIONS];
+  assert.ok(accepted.length > 0, 'there are accepted actions');
+  const consumer = readFileSync(join(process.cwd(), 'main-mod', '11-phone-queue.js'), 'utf8');
+  for (const type of accepted) {
+    assert.ok(consumer.includes(`act.type === '${type}'`),
+      `⚠ the server accepts '${type}' but 11-phone-queue.js never applies it — it would queue forever`);
+  }
+});
+
+test('⚠ and the desktop does not claim to handle actions the server rejects', () => {
+  // The other direction: a handler for an action nothing can send is dead code that reads as a
+  // working feature. Both lists must agree.
+  const consumer = readFileSync(join(process.cwd(), 'main-mod', '11-phone-queue.js'), 'utf8');
+  const handled = [...consumer.matchAll(/act\.type === '([\w.]+)'/g)].map((m) => m[1]);
+  for (const type of handled) {
+    assert.ok(queue.ACTIONS.has(type),
+      `⚠ 11-phone-queue.js handles '${type}' but the server refuses it — nothing can ever send it`);
+  }
+  assert.deepEqual([...new Set(handled)].sort(), [...queue.ACTIONS].sort(), 'the two lists agree exactly');
+});

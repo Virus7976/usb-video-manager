@@ -97,7 +97,13 @@ test('an instruction the desktop could not understand is refused at the door', a
     [{ type: 'nonsense', clusterId: '0' }, /unknown action/],
     [{}, /unknown action/],
     [{ type: 'face.confirm', clusterId: '0', name: 'x'.repeat(200) }, /too long/],
-    [{ type: 'question.answer', questionId: 'q1' }, /answer is required/],
+    // ⚠ `question.answer` is now REFUSED OUTRIGHT, not validated. It was accepted aspirationally, and
+    // nothing on the desktop could apply it — an AI question is keyed by clipIndex into the LIVE card
+    // session, not a durable record, so there may be no session when the answer arrives and the index
+    // likely means a different clip if there is. Banking an instruction that can never land is the
+    // exact failure this test's own comment warns about. Faces work because a cluster is persisted
+    // with a stable id; questions need a durable model first.
+    [{ type: 'question.answer', questionId: 'q1', answer: 'lawn mowing' }, /unknown action/],
   ];
   for (const [payload, re] of cases) {
     const r = await post(payload);

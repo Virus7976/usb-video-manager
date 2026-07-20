@@ -32,11 +32,26 @@ const QUEUE_FILE = 'phone-actions.jsonl';
 // exactly that one action.
 function queuePath(dir) { return path.join(dir, QUEUE_FILE); }
 
+// ⚠ WHAT THE DESKTOP CAN ACTUALLY APPLY — nothing more.
+//
+// This list was written aspirationally and included `question.answer`. That was a mistake, and
+// exactly the one the comment on `validate` warns about: an instruction the desktop cannot apply is
+// WORSE than a rejected request, because it sits in the queue looking like pending work forever while
+// nothing ever consumes it. I built the thing I had just written a warning against.
+//
+// Why questions genuinely cannot be answered remotely yet, unlike faces: an AI question is keyed by
+// `clipIndex` into `state.scannedFiles` — a position in the LIVE card session in the renderer's
+// memory, not a durable record. There may be no session at all when the answer arrives, and if there
+// is, the index likely refers to a different clip (the same shifting-index hazard that made cluster
+// ids move to crop filenames). Faces work because a cluster is a persisted record with a stable id.
+//
+// Answering questions from the phone needs a durable question model first. Until that exists, the
+// server REFUSES the action rather than banking something that can never land. Reading questions
+// (GET /api/questions) is still fine — showing him what is waiting costs nothing and misleads nobody.
 const ACTIONS = new Set([
   'face.confirm',    // { clusterId, name }   — this cluster is this person
   'face.reject',     // { clusterId }         — not a person / don't ask again
   'face.skip',       // { clusterId }         — ask me later
-  'question.answer', // { questionId, answer }
 ]);
 
 // Validate before it ever reaches disk. An instruction the desktop cannot understand is worse than a
@@ -53,10 +68,6 @@ function validate(action) {
       if (!name) return { ok: false, error: 'name is required to confirm a face' };
       if (name.length > 120) return { ok: false, error: 'name is too long' };
     }
-  }
-  if (type === 'question.answer') {
-    if (!String(a.questionId || '')) return { ok: false, error: 'questionId is required' };
-    if (!String(a.answer || '').trim()) return { ok: false, error: 'answer is required' };
   }
   return { ok: true };
 }

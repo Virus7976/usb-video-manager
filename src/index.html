@@ -161,7 +161,7 @@
         <div id="renameList" class="rename-list"></div>
         <div class="row-actions">
           <button id="renameDoneBtn" class="btn primary" disabled>Continue to copy</button>
-          <button id="cancelFlowBtn" class="btn ghost">Cancel</button>
+          <button id="cancelFlowBtn" class="btn ghost">Back to home</button>
           <!-- Thin status text on the right (File-Explorer status-bar style) -->
           <div id="renameProgress" class="rename-progress hidden">
             <span id="rpStatus" class="rp-status">0 of 0 named</span>
@@ -266,7 +266,7 @@
         <p id="doneSummary" class="muted"></p>
         <div class="done-next">
           <div class="dn-steps">
-            <div class="dn-step dn-done"><span class="dn-ico">✓</span><span class="dn-tx"><b>Copied &amp; named</b><span class="muted small">In your Uncompressed folder</span></span></div>
+            <div class="dn-step dn-done"><span class="dn-ico">✓</span><span class="dn-tx"><b id="dnStep1T">Copied &amp; named</b><span class="muted small" id="dnStep1S">In your Uncompressed folder</span></span></div>
             <span class="dn-arrow">→</span>
             <div class="dn-step dn-now"><span class="dn-ico">2</span><span class="dn-tx"><b>Compress them</b><span class="muted small">Use the Compress screen → your Compressed folder</span></span></div>
             <span class="dn-arrow">→</span>
@@ -405,7 +405,7 @@
           <button id="finBack2Btn" class="btn ghost">Back</button>
           <!-- Continue was class="hidden" and nothing ever un-hid it, so Back was the ONLY visible
                control on this step: to reach Run you had to guess the step-3 pill was clickable. -->
-          <button id="finNext2Btn" class="btn">Continue →</button>
+          <button id="finNext2Btn" class="btn primary">Continue →</button>
         </div>
       </div>
 

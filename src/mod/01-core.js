@@ -768,6 +768,17 @@ function showDone(summary) {
   });
   ['step1', 'step2', 'step3'].forEach((id) => $(id).classList.add('hidden'));
   $('doneSummary').textContent = summary;
+  // ⚠ Step 1 of the "what's next" strip is written for a CARD, and it contradicts the very screen it
+  // is on when the flow was a phone. Phone videos are staged in `_Phone Video Temp`, NOT Uncompressed
+  // — which is why this same screen shows a "Send N videos to Uncompressed" button. The static panel
+  // was telling him the files were already in the folder the button below it was offering to put
+  // them in.
+  const d1t = $('dnStep1T'); const d1s = $('dnStep1S');
+  if (d1t && d1s) {
+    const phone = typeof isPhoneFlow === 'function' && isPhoneFlow();
+    d1t.textContent = phone ? 'Pulled & named' : 'Copied & named';
+    d1s.textContent = phone ? 'In your phone video temp folder' : 'In your Uncompressed folder';
+  }
   $('stepDone').classList.remove('hidden');
   // Replay the celebratory illustration each time we land here.
   const illo = $('doneIllo');
@@ -1067,10 +1078,8 @@ async function startFlow() {
       if (picked) onDrive(picked); else return;
     } else { const picked = await window.api.pickDrive(); if (picked) onDrive(picked); else return; }
   }
-  $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  showScreen('flow');   // omitted #phone, like every other hand-written copy of this
   $('driveBanner').classList.remove('hidden');
-  $('flow').classList.remove('hidden');
   // Remember we're in the rename/compress flow on this source, so the next launch
   // reopens straight here (drafts restore the naming automatically).
   if (state.drive) saveSession({ view: 'flow', step: 1, sourcePath: state.drive.mountpoint, sourceDesc: state.drive.description || '', sourceKind: state.drive.isCard ? 'card' : (state.drive.isUSB ? 'usb' : 'folder') });

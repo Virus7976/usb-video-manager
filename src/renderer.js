@@ -770,6 +770,17 @@ function showDone(summary) {
   });
   ['step1', 'step2', 'step3'].forEach((id) => $(id).classList.add('hidden'));
   $('doneSummary').textContent = summary;
+  // ⚠ Step 1 of the "what's next" strip is written for a CARD, and it contradicts the very screen it
+  // is on when the flow was a phone. Phone videos are staged in `_Phone Video Temp`, NOT Uncompressed
+  // — which is why this same screen shows a "Send N videos to Uncompressed" button. The static panel
+  // was telling him the files were already in the folder the button below it was offering to put
+  // them in.
+  const d1t = $('dnStep1T'); const d1s = $('dnStep1S');
+  if (d1t && d1s) {
+    const phone = typeof isPhoneFlow === 'function' && isPhoneFlow();
+    d1t.textContent = phone ? 'Pulled & named' : 'Copied & named';
+    d1s.textContent = phone ? 'In your phone video temp folder' : 'In your Uncompressed folder';
+  }
   $('stepDone').classList.remove('hidden');
   // Replay the celebratory illustration each time we land here.
   const illo = $('doneIllo');
@@ -1069,10 +1080,8 @@ async function startFlow() {
       if (picked) onDrive(picked); else return;
     } else { const picked = await window.api.pickDrive(); if (picked) onDrive(picked); else return; }
   }
-  $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  showScreen('flow');   // omitted #phone, like every other hand-written copy of this
   $('driveBanner').classList.remove('hidden');
-  $('flow').classList.remove('hidden');
   // Remember we're in the rename/compress flow on this source, so the next launch
   // reopens straight here (drafts restore the naming automatically).
   if (state.drive) saveSession({ view: 'flow', step: 1, sourcePath: state.drive.mountpoint, sourceDesc: state.drive.description || '', sourceKind: state.drive.isCard ? 'card' : (state.drive.isUSB ? 'usb' : 'folder') });
@@ -6617,6 +6626,7 @@ const MENUS = {
     { label: 'Home', action: goHome },
     { label: 'Name & copy clips', action: goToRename },
     { label: 'Organize & back up…', action: openFinalize },
+    { label: 'Back up a phone…', action: () => openPhone() },
     { sep: true },
     { label: 'Choose drive…', action: () => $('manualPickBtn').click() },
     { label: 'Phone backup folder (wireless)…', action: () => pickPhoneBackupFolder() },
@@ -6694,9 +6704,6 @@ const MENUS = {
     { label: 'Play audio on hover', type: 'check', checked: () => uiPrefs.autoplayAudio, action: () => togglePref('autoplayAudio') },
     { label: 'Pop-out preview window', type: 'check', checked: () => previewOpen, action: togglePreviewWindow },
     { label: 'Show notifications', type: 'check', checked: () => uiPrefs.notifications, action: () => togglePref('notifications') },
-    { sep: true },
-    { label: 'Back to home', action: goHome },
-    { label: 'Open Uncompressed folder', action: () => window.api.openFolder(state.intakeFolder) }
   ],
   help: [
     { label: 'Setup wizard…', action: () => showSetupWizard() },
@@ -12348,11 +12355,8 @@ function phoneVisibleMedia() { return phoneState.media.filter((m) => phoneState.
 
 async function openPhone(device) {
   closePopover();
-  $('flow').classList.add('hidden');
-  $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  showScreen('phone');
   $('driveBanner').classList.add('hidden');
-  $('phone').classList.remove('hidden');
   $('phCopyWrap').classList.add('hidden');
   $('phChooser').classList.add('hidden');
   $('phBar').classList.add('hidden');
@@ -12837,11 +12841,8 @@ async function enterRenameWithPhoneFiles(staged) {
     for (const fld of organizeFields) clip[fld.id] = '';
     return clip;
   }));
-  $('phone').classList.add('hidden');
-  $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  showScreen('flow');
   $('driveBanner').classList.add('hidden');
-  $('flow').classList.remove('hidden');
   setStep(1);
   $('scanState').classList.add('hidden');
   // Restore any naming/tags from a prior session (drafts are keyed by filename+size), so
@@ -12908,9 +12909,7 @@ async function resumePhoneStaged() {
 async function goToRename() {
   closePopover();
   if (!state.scannedFiles || !state.scannedFiles.length) { showToast('Choose a drive first — then you can name & copy its clips'); return; }
-  $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
-  $('flow').classList.remove('hidden');
+  showScreen('flow');   // this used to omit #phone entirely — see the note on showScreen
   buildRenameStep();
 }
 
@@ -14041,10 +14040,8 @@ function renderFinMap() {
 
 async function openFinalize() {
   closePopover();
-  $('flow').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  showScreen('finalize');   // also omitted #phone before — the same gap goToRename had
   $('driveBanner').classList.add('hidden');
-  $('finalize').classList.remove('hidden');
 
   // Seed the per-run controls from saved defaults (still editable on screen).
   //

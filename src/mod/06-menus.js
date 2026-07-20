@@ -120,6 +120,7 @@ const MENUS = {
     { label: 'Home', action: goHome },
     { label: 'Name & copy clips', action: goToRename },
     { label: 'Organize & back up…', action: openFinalize },
+    { label: 'Back up a phone…', action: () => openPhone() },
     { sep: true },
     { label: 'Choose drive…', action: () => $('manualPickBtn').click() },
     { label: 'Phone backup folder (wireless)…', action: () => pickPhoneBackupFolder() },
@@ -197,9 +198,6 @@ const MENUS = {
     { label: 'Play audio on hover', type: 'check', checked: () => uiPrefs.autoplayAudio, action: () => togglePref('autoplayAudio') },
     { label: 'Pop-out preview window', type: 'check', checked: () => previewOpen, action: togglePreviewWindow },
     { label: 'Show notifications', type: 'check', checked: () => uiPrefs.notifications, action: () => togglePref('notifications') },
-    { sep: true },
-    { label: 'Back to home', action: goHome },
-    { label: 'Open Uncompressed folder', action: () => window.api.openFolder(state.intakeFolder) }
   ],
   help: [
     { label: 'Setup wizard…', action: () => showSetupWizard() },

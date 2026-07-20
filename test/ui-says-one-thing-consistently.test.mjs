@@ -108,8 +108,11 @@ test('⚠ ONE name for the Uncompressed folder', () => {
   // Four names for one folder, including two buttons on the SAME handler under different labels.
   assert.doesNotMatch(html, /intake folder/i, 'the HTML says Uncompressed');
   assert.doesNotMatch(menus, /'Open intake folder'/, 'and so does the File menu');
+  // ONE entry now, not two. Batch 1 unified the two menu labels; batch 3 (finding 15) then deleted
+  // the View copy entirely, because View was duplicating File's navigation under other names. So the
+  // count going 2 -> 1 is the fix landing, not a regression: File is the navigation hub.
   const opens = (menus.match(/'Open Uncompressed folder'/g) || []).length;
-  assert.equal(opens, 2, `both menu entries agree — found ${opens}`);
+  assert.equal(opens, 1, `exactly one menu route to the folder — found ${opens}`);
   assert.match(html, /Open Uncompressed folder/, 'and the button matches the menu');
 });
 

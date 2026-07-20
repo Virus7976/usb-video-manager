@@ -8,11 +8,8 @@ function phoneVisibleMedia() { return phoneState.media.filter((m) => phoneState.
 
 async function openPhone(device) {
   closePopover();
-  $('flow').classList.add('hidden');
-  $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  showScreen('phone');
   $('driveBanner').classList.add('hidden');
-  $('phone').classList.remove('hidden');
   $('phCopyWrap').classList.add('hidden');
   $('phChooser').classList.add('hidden');
   $('phBar').classList.add('hidden');
@@ -497,11 +494,8 @@ async function enterRenameWithPhoneFiles(staged) {
     for (const fld of organizeFields) clip[fld.id] = '';
     return clip;
   }));
-  $('phone').classList.add('hidden');
-  $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  showScreen('flow');
   $('driveBanner').classList.add('hidden');
-  $('flow').classList.remove('hidden');
   setStep(1);
   $('scanState').classList.add('hidden');
   // Restore any naming/tags from a prior session (drafts are keyed by filename+size), so
@@ -568,9 +562,7 @@ async function resumePhoneStaged() {
 async function goToRename() {
   closePopover();
   if (!state.scannedFiles || !state.scannedFiles.length) { showToast('Choose a drive first — then you can name & copy its clips'); return; }
-  $('finalize').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
-  $('flow').classList.remove('hidden');
+  showScreen('flow');   // this used to omit #phone entirely — see the note on showScreen
   buildRenameStep();
 }
 
@@ -1701,10 +1693,8 @@ function renderFinMap() {
 
 async function openFinalize() {
   closePopover();
-  $('flow').classList.add('hidden');
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  showScreen('finalize');   // also omitted #phone before — the same gap goToRename had
   $('driveBanner').classList.add('hidden');
-  $('finalize').classList.remove('hidden');
 
   // Seed the per-run controls from saved defaults (still editable on screen).
   //

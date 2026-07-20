@@ -322,6 +322,42 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20am — ⚠⚠ I REVERTED yesterday's ledger rung. It filed a personal vlog into a client job.
+
+`al` shipped a ledger rung with 8 passing tests, including one asserting a same-date clip with nothing
+in common is NOT pulled in. **Then I filed his real 309 clips twice**, which is the discipline that has
+caught every serious bug this session, and it caught this one:
+
+    2026-06-01_vlog_josiah-talking-head_v1.mp4
+        run 1 → vlog/2026-06-01
+        run 2 → 2026/2026 - Client Work/Gourgess Lawns
+
+On 2026-06-01 he shot **both** a lawn job and a vlog of Josiah. Run 1 filed the lawn clips into
+Gourgess Lawns, the ledger learned that date belongs to that project, and on run 2 the vlog shared the
+date plus enough token overlap to read as `related`. **A personal vlog filed into a client job** — the
+exact failure I claimed the `related` flag prevented, one iteration after claiming it.
+
+It also broke **idempotency**, which had held at 309/309 all session: filing writes the ledger, and the
+ledger then changes where the next run puts things. A feedback loop in which re-running keeps moving
+his footage.
+
+**Reverted.** Run 2 is back to moved 0 / skipped 309, and his tree is the verified shape: 86 into
+Gourgess Lawns, 31 into Calisthetics Journey (both by his own rules), the rest by subject/date.
+
+**Why my tests missed it, and the lesson:** my fixture had ZERO overlap — "birthday" versus
+"lawnmowing". **Real days overlap partially.** A same-day-two-shoots fixture is the one that mattered,
+and I did not write it because I was testing the guard I had built rather than the days he actually
+shoots. *The fixture has to be able to fail the way REALITY fails, not the way the code is shaped.*
+
+The reverted code's replacement is a 25-line comment at the exact spot, so the next attempt starts
+from the failure: subject-level matching rather than any-token, a real score threshold, a
+same-day-two-shoots fixture, and the two-run probe before it ships.
+
+**The four surviving rungs are unchanged and still verified**: his placement → his rules →
+subject/date → dated `_unsorted`.
+
+vm **1448/1305/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20al — Tier 2 item 29: his filing history now informs filing, with no AI running.
 
 The task specified in `aj`, done to that spec. `maybeOfferLedgerProject` already matched today's card

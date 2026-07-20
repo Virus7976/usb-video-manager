@@ -8605,38 +8605,31 @@ async function destinationParts({ relRaw, levels, meta, sourcePath }) {
     return /^\d{4}-\d{2}-\d{2}$/.test(day) ? safeFolderName(day) : '';
   };
 
-  // WHERE HE FILED THIS SHOOT LAST TIME.
+  // ⚠ A LEDGER RUNG WAS TRIED HERE AND REVERTED — 2026-07-20am. Do not re-add it without reading this.
   //
-  // His ledger finally has entries, and it already knows which past project a clip belongs to — but
-  // that knowledge only surfaced during an AI run (`maybeOfferLedgerProject` sits behind
-  // `requireAi()`), so with Ollama asleep his own filing history told him nothing. Third instance of
-  // "value locked behind an unnecessary dependency" this session; the answer is JSON arithmetic.
+  // The idea (Tier 2 item 29): file a clip into the project he put the same shoot in last time, using
+  // `matchLedgerProjects`' content scoring and requiring its `related` flag. Every unit test passed,
+  // including one asserting a same-date clip with nothing in common is NOT pulled in.
   //
-  // ⚠ REQUIRES A CONTENT MATCH, NEVER A BARE DATE. `matchLedgerProjects` scores subject / people /
-  // location overlap and marks a result `related` only when something actually overlaps — because
-  // "unrelated footage shot the same day" is exactly what that scoring exists to reject. A date-only
-  // rung would file a birthday into a client job. `related` is the whole safety of this rung.
+  // **Then the real-data probe filed his 309 clips twice.** Run 2 moved 30 of them, and the moves were
+  // catastrophic in kind, not just in count:
   //
-  // Sits BELOW his explicit placement and his standing rules, and ABOVE the subject/date fallback:
-  // what he just did > what he told us to do > what he did last time > what the filename says.
-  const day = String(m.date || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-    let hit = null;
-    try {
-      const matches = matchLedgerProjects({
-        dates: [day],
-        subjects: [m.subject || ''].filter(Boolean),
-        people: Array.isArray(m.people) ? m.people : [],
-        locations: [m.location || ''].filter(Boolean),
-      }) || [];
-      hit = matches.find((x) => x && x.related && x.rel);
-    } catch { hit = null; }
-    if (hit) {
-      const past = String(hit.rel).replace(/\\/g, '/').split('/').map((x) => safeFolderName(x)).filter(Boolean);
-      if (past.length) return past;
-    }
-  }
-
+  //     2026-06-01_vlog_josiah-talking-head_v1.mp4
+  //         run 1 → vlog/2026-06-01
+  //         run 2 → 2026/2026 - Client Work/Gourgess Lawns
+  //
+  // On 2026-06-01 he shot BOTH a lawn job and a vlog of Josiah. Run 1 filed the lawn clips into
+  // Gourgess Lawns, so the ledger learned that date belongs to that project — and on run 2 the vlog
+  // shared the date and enough token overlap to read as `related`, so a personal vlog was filed into a
+  // client job. **`related` is far too weak on a day with two shoots**, which is a normal day for him.
+  //
+  // It also broke IDEMPOTENCY, which had held at 309/309: filing writes the ledger, and the ledger
+  // then changes where the next run puts things — a feedback loop where re-running keeps moving
+  // footage.
+  //
+  // My unit test could not catch this because its fixture had ZERO overlap ("birthday" vs
+  // "lawnmowing"). Real days overlap partially. Any future attempt needs: a subject-level match rather
+  // than any-token, a real score threshold, a same-day-two-shoots fixture, AND the two-run probe.
   const subj = safeFolderName(String(m.subject || '').trim());
   if (subj) {
     const dayPart = await dayFrom();

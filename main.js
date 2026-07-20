@@ -510,6 +510,25 @@ function allowedRoots() {
   push(config.intakeFolder); push(config.projectsRoot); push(config.finalizeSource);
   push(config.photosTempFolder); push(config.phoneBackupFolder); push(config.phoneComputerFolder);
   push(config.phoneNasFolder); push(config.phoneBackupSource); push(config.organizeDest);
+  // ⚠⚠ THE PHONE **VIDEO** STAGING FOLDER. `photosTempFolder` is a real config key and was pushed
+  // above; its video twin is DERIVED in the renderer (phoneStagingDests: `<intake parent>/_Phone
+  // Video Temp`) and never stored, so it was never an allowed root. Every poster/thumbnail request
+  // for a staged phone video was refused.
+  //
+  // This was not theoretical. His app.log holds **3,648** consecutive
+  //   "[guard] poster:get refused a path outside every allowed root:
+  //    L:\Videos\02 - Projects\Compression\_Phone Video Temp\..."
+  // lines, still arriving today. He has been naming phone footage with NO thumbnails — which makes
+  // naming it far harder, and 7% of his 4,594 clips are named.
+  //
+  // Derived here with the same rule the renderer uses, so the two cannot disagree: both hang off the
+  // intake folder's parent. Photos worked and videos did not purely because one had a config key.
+  const _intake = String(config.intakeFolder || '').trim();
+  if (_intake) {
+    const _base = path.dirname(path.resolve(_intake));
+    push(path.join(_base, '_Phone Video Temp'));
+    push(path.join(_base, '04 - Photos Temp'));   // the photos twin, for a config that never set it
+  }
   push(config.nasBackup && config.nasBackup.path);
   push(STORE_DIR);
   try { push(app.getPath('userData')); } catch { /* stubbed in tests */ }

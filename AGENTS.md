@@ -322,6 +322,38 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20o — a latch set by a RENDER is not a fact, it is a race. His shoot memory reads 0.
+
+Ran the "built but never fed" axis again over the 10 pinned-unused bridge methods. Most were fine —
+`aiRecallShoot` looked dead but `recallShoot` is used internally twice, so I left it alone. **The one
+that mattered was fully wired and still producing nothing.**
+
+He shoots in batches (20 of his 28 shoot days are a single subject), so one question settles a whole
+day and is remembered forever. It is the strongest predictive signal the app has — the shoot date
+predicts the subject ~88% of the time. **Measured on his real store: `shootMemory` holds 0 entries.**
+
+The gate was `if (!aiToolModelReady || !subjectsCache.length) return;`, and `aiToolModelReady` is
+latched inside **`renderAiHealth()`** — a render, fired un-awaited at boot, which then awaits
+`aiHealth()` and round-trips to Ollama. Seconds if the server is cold. Insert a card and analyse
+inside that window and the flag is still false, so the whole batch goes unasked, **silently** — there
+is no path where the app says "I skipped that".
+
+Now resolved on demand (`ensureToolModelKnown`): one health call is trivial beside an analyze run, it
+short-circuits once known, and health already auto-picks and persists a tool model if one exists — so
+asking is also what makes it true. A health failure leaves it false rather than throwing into the run,
+and the free `subjectsCache` check still runs first.
+
+`test/shoot-ask-not-gated-on-a-render.test.mjs` (6), five breaks proven — including "resolver always
+returns true", because the gate must keep gating: a vision model cannot call tools.
+
+**An existing test broke by pinning a SHAPE.** `ai-shoot-memory` asserted the literal
+`if (!aiToolModelReady || !subjectsCache.length) return;`, so a correct change to *how* the check is
+made read as a regression while both guards still held. Rewritten to assert each precondition
+returns. **Third time in this repo.** The pattern is now unmistakable: *if an assertion names an
+expression rather than an outcome, it will fail on the next improvement.*
+
+vm **1309/1166/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20n — the photo blind spot had two more, both in code that LEARNS from his library.
 
 Swept the axis behind `l` and `m` — *"counts videos, silently omits stills"* — across every

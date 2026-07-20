@@ -1420,6 +1420,24 @@ function noteClipObs(clip, obs) {
 // not try. The NAME matters too: the run loop has to name the model it wants resident in VRAM.
 let aiToolModelReady = false;
 let aiToolModelName = '';
+// …but a LATCH SET BY A RENDER IS NOT A FACT, it is a race. `renderAiHealth()` is fired
+// un-awaited at boot and immediately awaits `aiHealth()`, which round-trips to Ollama — seconds if
+// the server is cold. Anything that gates on this flag during that window sees `false` and silently
+// takes the no-AI path. That is how `askAboutShoots` can skip a whole batch: it opens with
+// `if (!aiToolModelReady) return;`, so inserting a card and analysing straight away means the shoot
+// question never appears, and his shoot memory stays empty (measured: 0 entries).
+//
+// Resolve it on demand instead. One `aiHealth()` call is trivial next to an analyze run, and health
+// already auto-picks and persists a tool model if one exists — so asking is also what makes it true.
+async function ensureToolModelKnown() {
+  if (aiToolModelReady) return true;
+  try {
+    const h = await window.api.aiHealth();
+    aiToolModelName = (h && h.toolModel) || '';
+    aiToolModelReady = !!aiToolModelName;
+  } catch { /* leave it false — the caller falls back to the no-tool path exactly as before */ }
+  return aiToolModelReady;
+}
 function newVersionId() { return `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`; }
 function countNamedClips() { return state.scannedFiles.filter((c) => c.subject || c.description).length; }
 function fmtAgo(ts) {
@@ -3848,7 +3866,11 @@ function runContext(clip) { return [aiRunDirection, clip && clip.context].map((s
 // Deliberately the same grid as the faces popup ("I love the popup for when it asks me who is who in
 // faces. That's really good.") — same classes, same yes/no, same feel.
 async function askAboutShoots(idxs) {
-  if (!aiToolModelReady || !subjectsCache.length) return;   // nothing to offer as an answer
+  // Resolve the tool model on demand rather than trusting a flag another screen's render may not
+  // have set yet — see ensureToolModelKnown. Without this, analysing right after launch skipped the
+  // shoot question entirely and left his shoot memory empty.
+  if (!subjectsCache.length) return;                          // nothing to offer as an answer
+  if (!(await ensureToolModelKnown())) return;                // no tool-capable model — health says so
 
   // Only the shoots we know NOTHING about. Main filters out any he has answered before or already
   // named clips from — re-asking a settled shoot is the app forgetting, which is the one thing he

@@ -122,9 +122,16 @@ test('the popup persists each answer AS IT IS GIVEN, not on close', () => {
 });
 
 test('it never asks when it has nothing to offer as an answer', () => {
+  // Assert the CONTRACT — both preconditions are checked and each returns — not the exact line they
+  // were once written on. This pinned `if (!aiToolModelReady || !subjectsCache.length) return;` and
+  // broke when the tool-model check became a call instead of a flag read (2026-07-20o), even though
+  // both guards still hold. Third time in this repo a test has failed for naming a shape rather than
+  // a behaviour.
   const src = read('src/mod/04-tasks-ai.js');
   const fn = src.slice(src.indexOf('async function askAboutShoots('));
-  assert.match(fn.slice(0, 400), /if \(!aiToolModelReady \|\| !subjectsCache\.length\) return;/);
+  const head = fn.slice(0, 900).replace(/\/\/.*$/gm, '');
+  assert.match(head, /subjectsCache\.length\) return;/, 'no remembered subjects → no question');
+  assert.match(head, /ensureToolModelKnown\(\)\)\) return;/, 'no tool-capable model → no question');
 });
 
 test('it reuses the faces grid he likes — same classes, not a new look', () => {

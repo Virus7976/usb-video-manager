@@ -1091,7 +1091,11 @@ function runContext(clip) { return [aiRunDirection, clip && clip.context].map((s
 // Deliberately the same grid as the faces popup ("I love the popup for when it asks me who is who in
 // faces. That's really good.") — same classes, same yes/no, same feel.
 async function askAboutShoots(idxs) {
-  if (!aiToolModelReady || !subjectsCache.length) return;   // nothing to offer as an answer
+  // Resolve the tool model on demand rather than trusting a flag another screen's render may not
+  // have set yet — see ensureToolModelKnown. Without this, analysing right after launch skipped the
+  // shoot question entirely and left his shoot memory empty.
+  if (!subjectsCache.length) return;                          // nothing to offer as an answer
+  if (!(await ensureToolModelKnown())) return;                // no tool-capable model — health says so
 
   // Only the shoots we know NOTHING about. Main filters out any he has answered before or already
   // named clips from — re-asking a settled shoot is the app forgetting, which is the one thing he

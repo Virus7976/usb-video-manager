@@ -322,6 +322,40 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20b — the blind-guard sweep, pointed at the delete gate. Two branches had NO test.
+
+Applied yesterday's lesson (*a guard on a rare return value needs a case that PRODUCES it*) to the
+highest-stakes function in the app. Audited which of `verifyCopyPair`'s refusal reasons any test
+actually reaches:
+
+    'the copy on record is the same file as the source (a link, not a copy)'   ← 0 tests
+    'source missing'                                                            ← 0 tests
+
+`verifyCopyPair` is the last check before the one irreversible act, and **it has already failed OPEN
+once** — `dest === source` passed identity, size and hash, so the gate reported success and deleted
+the only copy. Every branch it has grown since exists because some version of "that is not a copy"
+got through. Two of them were unverified.
+
+The link branch is the one that matters. `pathsEqual` compares path SPELLING, so it cannot see a
+hardlink, a symlink, a junction, a `subst`ed drive letter or a `\\?\` prefix — all of which reach one
+file by two names, and all of which then pass every content check *because it is the file*. **Not
+hypothetical here: his intake is a mapped drive (`L:`)**, and mapped/substituted paths are exactly how
+one volume acquires two spellings.
+
+`test/delete-gate-link-branches.test.mjs` (7) creates a real hardlink and a real symlink, asserts the
+fixture genuinely shares an inode before trusting the result, and deletes a source to produce the
+other branch. Four breaks proven, including the neighbour direction (the inode check must not
+short-circuit the hash for genuinely different files) and the opposite failure (a gate that refuses
+everything is a gate he routes around).
+
+**One sub-condition I could NOT exercise, stated rather than papered over:** `ss.dev === ds.dev`
+qualifies the inode match, because inode numbers are only unique within a volume. I cannot stage two
+devices sharing an inode in a temp dir, and breaking it left every test green. Pinned on the source
+with the reasoning recorded — and noted that its failure direction is the SAFE one (refuse a real
+copy, never accept a fake), which is why it is worth a pin rather than a second filesystem.
+
+vm **1229/1086/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20a — every number the run reports, checked against the disk.
 
 The last two real bugs were the same shape: **the summary said one thing and the disk said another.**

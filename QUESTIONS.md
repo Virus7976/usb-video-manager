@@ -52,6 +52,31 @@ delete a file I cannot fully account for.
 **What I did instead:** left it alone and reported the size. Fixing the exiftool crash means no new
 ones will appear.
 
+### Q4 — 203 photos stranded in the Uncompressed folder
+**The question:** `01 - Uncompressed` holds **203 app-named .jpg photos** (shoots from 2016 and
+2024). Organize scans `02 - Compressed`, and photos never get compressed, so they never move there —
+they are invisible from the default Organize view. Should the Organize screen offer the intake folder
+as a second source, or is a manual folder switch fine?
+
+**Why it needs him:** it changes what the main screen scans by default, and I do not know whether
+those photos are staged deliberately or are leftovers from an older version of the app.
+
+**What I verified in the meantime (nothing changed):** pointed a scan at that folder against copies of
+his real filenames — **203/203 matched by filename and filed cleanly into 10 dated folders**
+(`vlog/2024-08-03` and so on), 0 errors. So the workaround already works today: on the Organize step,
+change the source folder to `01 - Uncompressed` and tick "include photos". No code change needed to
+unblock him.
+
+### Q5 — which spelling wins when a subject has two
+**Not really a question, more a heads-up.** Filing now reuses a folder whose name differs only by
+separators (Q1), but on a tree where NEITHER spelling exists yet, the first clip filed creates the
+folder — so his 83 lawn-mowing clips will all land under whichever of `lawnmowing` / `lawn-mowing`
+gets filed first (alphabetically that is `lawnmowing`, the 15-clip spelling).
+
+**What I did:** left it. Renaming the folder afterwards is a one-second fix and the reuse logic then
+follows HIS name permanently. Pre-scanning the batch to pick the majority spelling is more machinery
+than the cosmetic gain justifies.
+
 ---
 
 ## Answered

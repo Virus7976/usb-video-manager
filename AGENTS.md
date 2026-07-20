@@ -322,6 +322,33 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20k — validated the week's changes against his REAL data, and a false alarm I caught.
+
+Six iterations of coverage work; this one went back to measurement. Re-ran the full 310-filename probe
+(empty files in a temp dir — no footage touched, probes deleted after) against the current build:
+
+- **The subject/date layout, folder reuse and the camera-ID fix all hold at scale.** 309 filed, 0
+  errors, 39 folders, ledger 37. `lawn-mowing` + `lawnmowing` now build **one** tree (8 folders under a
+  single subject, previously 6 + 2 split), and `gx046724/` is gone — that clip falls to its dated pen.
+- **Idempotent at 309 clips**: second run moved 0, skipped 309, file count identical, ledger still 37.
+  Re-running cannot duplicate his archive.
+
+**⚠ A "bug" I nearly reported that was mine.** A probe showed his 203 photos listed as **0** even with
+`includePhotos: true`. The cause was my own harness call: `finalize:scan` takes ONE payload, and I
+passed `(dir, opts)` — so the options were dropped. The real app is fine; `preload.js` merges them
+(`opts ? { dir, ...opts } : dir`). **Reproduce through the same layer the app uses, or the bug you
+find may be in your reproduction.** Verified the app's real path before writing anything down.
+
+**The real finding underneath it, measured:** `01 - Uncompressed` holds **203 app-named photos** (2016
+and 2024 shoots). Organize scans `02 - Compressed`, and photos are never compressed, so they never
+arrive there — invisible from the default view. Pointed a scan at that folder: **203/203 matched and
+filed into 10 dated folders, 0 errors.** So the workaround works today (switch the source folder, tick
+include-photos) and needs no code. Logged as `QUESTIONS.md` **Q4** rather than changing what the main
+screen scans by default — that is his call. **Q5** notes which spelling wins on a fresh tree.
+
+vm **1281/1138/143/0** unchanged — this iteration wrote no code, which is the honest outcome when the
+measurement says the code is right.
+
 ### 2026-07-20j — the prune that already ate his AI work. `HARD_CAP`: zero tests.
 
 `finalMeta` is the ONLY carrier of everything the AI worked out — subject, description, people,

@@ -9107,6 +9107,26 @@ function showDestinationMapAuto() {
     // decision and dropped those clips into _Unsorted. Two call sites, one had the bug.
     showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ledgerRel: (f.meta && f.meta.ledgerRel) || '', _ref: f })), {
       editable: true,
+      // SAME EMBED CHOICE AS THE INLINE MAP. Without this, Apply's
+      // `typeof opts.embedMeta === 'function' ? … : false` made `embed` unconditionally false, so
+      // every move shipped `meta: null` and projects:move wrote NO XMP — no title, description,
+      // keywords, hierarchical tags, people or date into the filed file. Meanwhile openFinalize()
+      // ticks `finEmbed`, so the checkbox read ON while this route ignored it, and the confirm dialog
+      // quietly dropped its "with their metadata embedded" line.
+      //
+      // The clip payload above was already reconciled with the inline caller by an earlier sweep;
+      // this option was missed. Two entry points into one screen have to agree about what the screen
+      // is set to.
+      embedMeta: () => $('finEmbed').checked,
+      // And prune what just moved, as the inline map does — otherwise the list goes on offering
+      // clips that have left the folder.
+      onApplied: (r) => {
+        if (finScan && Array.isArray(finScan.files)) {
+          const moved = new Set(((r && r.results) || []).filter((x) => x.ok).map((x) => x.from));
+          finScan.files = finScan.files.filter((f) => !moved.has(f.sourcePath));
+        }
+        try { finRenderList(); } catch { /* the Organize list may not be mounted */ }
+      },
       // Edits made in the map stick to the compressed file's stored metadata so
       // the next Organize/Finalize embeds the corrected subject/location.
       onEditMeta: (f, patch) => {
@@ -10141,6 +10161,31 @@ function scanFacesSelected() {
 }
 
 async function scanFacesForClips(clipList, opts = {}) {
+  // THE CLIP CONTEXT THE REVIEW GRID GETS — a UNION, not a substitution.
+  //
+  // Both review calls below used to hand over `state.scannedFiles` alone. The intent is documented and
+  // right ("pass ALL scanned clips, not just this batch, so confirming a merged-in face from an
+  // earlier scan still tags its clips") — but that global is only ever filled by the card scan and
+  // the phone staging flow, and the Organize screen is reachable without either. Scanning faces from
+  // there passed `[]`, and the grid builds its whole `byKey` index from this argument: the group-shot
+  // sort collapses to raw key order (the "all the photos are out of order" complaint), the pop-out
+  // preview never fires, and in-memory tagging becomes a silent no-op.
+  //
+  // The batch we were handed is the one list guaranteed to be non-empty on every entry point, so
+  // include it and add whatever else has been scanned. Deduped by clipKeyV2: on the card path the
+  // batch IS a subset of the global, and indexing a clip twice would skew the "N clips" counts a
+  // cluster shows.
+  const reviewClips = (() => {
+    const out = []; const seen = new Set();
+    for (const c of [...(clipList || []), ...(state.scannedFiles || [])]) {
+      if (!c) continue;
+      const k = clipKeyV2(c);
+      if (seen.has(k)) continue;
+      seen.add(k); out.push(c);
+    }
+    return out;
+  })();
+
   // ONE SCAN AT A TIME. This function is a load-modify-replace across minutes of GPU work:
   // `clusters = await loadPendingFaces()` snapshots the whole review, and the main handler
   // (faces:savePending) REPLACES the store wholesale. Two overlapping runs both snapshot and both
@@ -10178,7 +10223,7 @@ async function scanFacesForClips(clipList, opts = {}) {
     // Everything here was scanned before → don't re-scan. Reopen the SAVED review
     // (crops + all) so you can keep confirming exactly where you left off.
     const pending = await loadPendingFaces();
-    if (pending.length) { await showFaceReviewGrid(pending, state.scannedFiles, 0); return; }
+    if (pending.length) { await showFaceReviewGrid(pending, reviewClips, 0); return; }
     // No saved review yet (e.g. first run after this update) — offer a ONE-TIME
     // re-detect to build it. Once built it's remembered, so this won't ask again.
     const again = await confirmDialog(
@@ -10285,7 +10330,7 @@ async function scanFacesForClips(clipList, opts = {}) {
   if (!faceScanAborted) pcNotify('Face scan complete', `${toReview} face${toReview !== 1 ? 's' : ''} to review & confirm${skipped ? ` · skipped ${skipped} already-scanned` : ''}.`);
   // Pass ALL scanned clips (not just this batch) so confirming a merged-in face
   // from an earlier scan still tags its clips.
-  if (clusters.length) await showFaceReviewGrid(clusters, state.scannedFiles, 0);   // await so Analyze can name AFTER you confirm
+  if (clusters.length) await showFaceReviewGrid(clusters, reviewClips, 0);   // await so Analyze can name AFTER you confirm
   else { savePendingNow(clusters); saveFaceScenesNow(); if (!faceScanAborted) showToast(`No new faces found${skipped ? ` (skipped ${skipped} already scanned)` : ''}`); }
 }
 

@@ -1566,6 +1566,26 @@ function showDestinationMapAuto() {
     // decision and dropped those clips into _Unsorted. Two call sites, one had the bug.
     showDestinationMap(sel.map((f) => ({ name: f.name, sourcePath: f.sourcePath, subject: f.meta && f.meta.subject, description: f.meta && f.meta.description, location: f.meta && f.meta.location, date: f.meta && f.meta.date, people: (f.meta && f.meta.people) || [], shotType: f.meta && f.meta.shotType, tags: (f.meta && f.meta.tags) || [], _ledgerRel: (f.meta && f.meta.ledgerRel) || '', _ref: f })), {
       editable: true,
+      // SAME EMBED CHOICE AS THE INLINE MAP. Without this, Apply's
+      // `typeof opts.embedMeta === 'function' ? … : false` made `embed` unconditionally false, so
+      // every move shipped `meta: null` and projects:move wrote NO XMP — no title, description,
+      // keywords, hierarchical tags, people or date into the filed file. Meanwhile openFinalize()
+      // ticks `finEmbed`, so the checkbox read ON while this route ignored it, and the confirm dialog
+      // quietly dropped its "with their metadata embedded" line.
+      //
+      // The clip payload above was already reconciled with the inline caller by an earlier sweep;
+      // this option was missed. Two entry points into one screen have to agree about what the screen
+      // is set to.
+      embedMeta: () => $('finEmbed').checked,
+      // And prune what just moved, as the inline map does — otherwise the list goes on offering
+      // clips that have left the folder.
+      onApplied: (r) => {
+        if (finScan && Array.isArray(finScan.files)) {
+          const moved = new Set(((r && r.results) || []).filter((x) => x.ok).map((x) => x.from));
+          finScan.files = finScan.files.filter((f) => !moved.has(f.sourcePath));
+        }
+        try { finRenderList(); } catch { /* the Organize list may not be mounted */ }
+      },
       // Edits made in the map stick to the compressed file's stored metadata so
       // the next Organize/Finalize embeds the corrected subject/location.
       onEditMeta: (f, patch) => {

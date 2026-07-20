@@ -322,6 +322,42 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19by — the second-entry-point axis, swept deliberately. Two more, one silently losing metadata.
+
+Turned yesterday's mistake into an axis — *a screen with more than one entry point where the entries
+pass different context* — and it produced two real findings.
+
+**1. Filing from the POP-OUT map embedded NOTHING.** `showDestinationMap` is opened inline
+(`renderFinMap`) and as a pop-out (`showDestinationMapAuto`, reachable from two buttons, the Edit menu
+and the command palette). The inline caller passes `embedMeta: () => $('finEmbed').checked`; the
+pop-out omitted it. Apply reads
+`typeof opts.embedMeta === 'function' ? !!opts.embedMeta() : false`, so `embed` was unconditionally
+false and **every move shipped `meta: null`** — `projects:move` wrote no XMP at all: no title,
+description, keywords, hierarchical tags, people or date. Meanwhile `openFinalize()` ticks `finEmbed`,
+so the checkbox read ON while that route ignored it, and the confirm dialog quietly dropped its "with
+their metadata embedded" line. **The clip payloads were byte-identical — an earlier sweep had already
+reconciled `_ledgerRel` across this exact pair and missed the option object.** Also added the missing
+`onApplied`, so the pop-out prunes filed clips from the list like the inline one.
+
+**2. `scanFacesForClips` handed the grid `state.scannedFiles` — the same empty-list bug as `bx`, on
+the path I had not fixed.** The intent was documented and right ("pass ALL scanned clips, not just
+this batch, so confirming a merged-in face from an earlier scan still tags its clips") — but it was a
+SUBSTITUTION where a UNION was meant, and that global is only filled by the card scan and the phone
+flow. Scanning faces from Organize passed `[]`, collapsing the group-shot sort to raw key order,
+killing the preview mirror, and making in-memory tagging a no-op. Now a union of the batch and
+everything scanned, deduped by `clipKeyV2` — the batch is the one list guaranteed non-empty on every
+entry point, and on the card path it is a SUBSET of the global, so a naive concat would index clips
+twice and skew the "N clips" a cluster shows.
+
+`test/map-popout-embeds-too.test.mjs` (6) + `test/face-review-clip-context-union.test.mjs` (5).
+
+**Two loose assertions caught by breaking, again, and both instructive:** matching `/new Set/` stayed
+green with the dedupe guard deleted (the container survives without the check), and matching
+`/reviewClips/` stayed green with `clipList` dropped from the union (the variable is referenced at both
+call sites). **Name the CHECK, not the container; name the SPREAD, not the variable.**
+
+Both tiers green: vm **1157/1021/136/0**, e2e **136/135/1/0**.
+
 ### 2026-07-19bx — I recreated his own complaint. The resume path reviewed scenes in random order.
 
 Second finding from the built-but-never-fed sweep, and **it was mine, from this session**. The Home

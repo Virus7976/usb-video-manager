@@ -3930,6 +3930,7 @@ async function aiImproveSelected() {
   let done = 0; let ok = 0; let fail = 0; let lastErr = ''; let visionNote = '';
   for (const i of withObs) {
     if (aiAborted) break;
+    if (aiRunStale()) { showToast('Stopped improving — you switched to a different card.', 5000); break; }
     const c = state.scannedFiles[i];
     setTask('ai', aiModelLabel(), done + 1, withObs.length, 'improving', c.name);
     markClipAnalyzing(i, 'improving');
@@ -4090,15 +4091,31 @@ function scheduleReflectFromNaming(indices) {
 // Refusing the second run fixes all of it, and is what he would want anyway: these are long GPU jobs.
 let aiRunActive = '';   // '' | 'analyze' | 'improve' | 'enhance'
 const AI_RUN_LABEL = { analyze: 'Analyze', improve: 'Improve descriptions', enhance: 'Auto-name' };
+// ⚠⚠ THE ARRAY THE RUN STARTED ON. Every AI loop iterates INDEXES and does
+// `state.scannedFiles[i]` fresh each time — so if a new card replaces that array mid-run, card A's
+// AI results are written onto card B's clips, by position. Silent misnaming of his footage, with no
+// error anywhere.
+//
+// It is reachable: analyze is deliberately non-modal ("you can keep working"), and goHome gates only
+// on confirmLeaveTransfer(), which covers a COPY, not an analyze. So Home → scan another card during
+// a run is an ordinary sequence. `enterRenameWithPhoneFiles` documents exactly this hazard for the
+// AI QUESTION queue and re-binds them; the live loops never got the same treatment.
+//
+// Comparing array IDENTITY (not length, not contents) is what makes this exact: startFlow assigns a
+// brand-new array, so any replacement is caught, while ordinary in-place edits are not.
+let aiRunArray = null;
 function beginAiRun(kind) {
   if (aiRunActive) {
     showToast(`${AI_RUN_LABEL[aiRunActive] || 'An AI run'} is already running — let it finish, or cancel it first.`, 4500);
     return false;
   }
   aiRunActive = kind;
+  aiRunArray = state.scannedFiles;
   return true;
 }
-function endAiRun() { aiRunActive = ''; }
+// True once the clips this run was started for are no longer the clips on screen.
+function aiRunStale() { return !!aiRunArray && state.scannedFiles !== aiRunArray; }
+function endAiRun() { aiRunActive = ''; aiRunArray = null; }
 let autoEnhancing = false;
 async function aiAutoEnhance() {
   if (!requireAi()) return;
@@ -4124,6 +4141,8 @@ async function aiAutoEnhance() {
     setAiRunOrder(unnamed);   // drive the live AI processing stage
     for (const i of unnamed) {
       if (aiAborted) break;
+    // The card changed under us — stop rather than write this run's results onto another card's clips.
+    if (aiRunStale()) { showToast('Stopped analysing — you switched to a different card.', 5000); break; }
       setTask('ai', aiModelLabel(), done + 1, unnamed.length, 'naming', state.scannedFiles[i].name);
       markClipAnalyzing(i, 'naming');
       // eslint-disable-next-line no-await-in-loop
@@ -4701,6 +4720,8 @@ async function aiAnalyzeSelected(preset = null) {
     const observations = {};
     for (const i of idxs) {
       if (aiAborted) break;
+    // The card changed under us — stop rather than write this run's results onto another card's clips.
+    if (aiRunStale()) { showToast('Stopped analysing — you switched to a different card.', 5000); break; }
       const clip = state.scannedFiles[i];
       // Reuse a prior observation of this exact clip when the user opted in — no
       // need to look again, and it keeps results consistent run-to-run.
@@ -4748,6 +4769,8 @@ async function aiAnalyzeSelected(preset = null) {
     done = 0;
     for (const i of idxs) {
       if (aiAborted) break;
+    // The card changed under us — stop rather than write this run's results onto another card's clips.
+    if (aiRunStale()) { showToast('Stopped analysing — you switched to a different card.', 5000); break; }
       setTask('ai', aiModelLabel(), done + 1, idxs.length, 'naming', state.scannedFiles[i].name);
       markClipAnalyzing(i, 'naming');
       // noPerceive: the observation is already in hand. If it somehow isn't, fall back rather than
@@ -4777,6 +4800,8 @@ async function aiAnalyzeSelected(preset = null) {
   } else {
     for (const i of idxs) {
       if (aiAborted) break;
+    // The card changed under us — stop rather than write this run's results onto another card's clips.
+    if (aiRunStale()) { showToast('Stopped analysing — you switched to a different card.', 5000); break; }
       const clip = state.scannedFiles[i];
       // Feed back what we already saw in this clip, when the user ticked Reuse. `dlg.reuse`
       // used to be read in exactly ONE place — inside the multiPass branch — and multiPass is

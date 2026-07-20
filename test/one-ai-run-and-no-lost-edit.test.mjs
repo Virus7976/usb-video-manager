@@ -59,7 +59,13 @@ test('⚠⚠ all three AI naming runs claim the same slot', () => {
 test('⚠ and each releases it in a finally', () => {
   const releases = (tasks.match(/\} finally \{ endAiRun\(\); \}/g) || []).length;
   assert.ok(releases >= 2, `the wrapped runs release on every exit — found ${releases}`);
-  assert.match(tasks, /function endAiRun\(\) \{ aiRunActive = ''; \}/, 'and the release really clears it');
+  // endAiRun also clears the captured array now (the card-swap guard), so assert on the CLAIM being
+  // released rather than on the function's exact body — the property is "the slot is freed", not
+  // "the function has one statement".
+  assert.match(tasks, /function endAiRun\(\) \{[^}]*aiRunActive = '';[^}]*\}/,
+    'and the release really clears the claim');
+  assert.match(tasks, /function endAiRun\(\) \{[^}]*aiRunArray = null;[^}]*\}/,
+    'and drops the captured clip array, so a later run is not judged stale against a dead reference');
   // auto-enhance releases inline at its existing exit rather than via a wrapper.
   assert.match(tasks, /autoEnhancing = false;\s*\n\s*endAiRun\(\);/, 'auto-enhance releases too');
 });
@@ -119,4 +125,32 @@ test('the copyLink fix uses a bridge that exists', () => {
   assert.match(body, /window\.api\.clipboardWrite\(p\.arg\)/, 'it copies the link');
   assert.match(read('preload.js'), /clipboardWrite: \(text\) => ipcRenderer\.invoke\('clipboard:write', text\)/,
     'and that bridge is really exposed');
+});
+
+test('⚠⚠ an AI run stops if a NEW CARD replaces the clips underneath it', () => {
+  // Every AI loop iterates INDEXES and does `state.scannedFiles[i]` fresh each iteration. If a new
+  // card replaces that array mid-run, card A's results are written onto card B's clips BY POSITION —
+  // silent misnaming, no error anywhere. It is reachable by an ordinary sequence: analyze is
+  // deliberately non-modal, and goHome gates only on confirmLeaveTransfer(), which covers a COPY.
+  assert.match(tasks, /let aiRunArray = null;/, 'the run captures the array it started on');
+  assert.match(tasks, /aiRunArray = state\.scannedFiles;/, 'at claim time');
+  assert.match(tasks, /function aiRunStale\(\) \{ return !!aiRunArray && state\.scannedFiles !== aiRunArray; \}/,
+    '⚠ compared by IDENTITY — startFlow assigns a brand-new array, so any replacement is caught, ' +
+    'while ordinary in-place edits are not');
+});
+
+test('⚠⚠ EVERY loop that indexes into the clip array checks it', () => {
+  // The twin problem this repo produces most: guarding one loop and missing its siblings. Each
+  // `if (aiAborted) break;` sits at the head of a loop that then does state.scannedFiles[i].
+  const aborts = (tasks.match(/if \(aiAborted\) break;/g) || []).length;
+  const stales = (tasks.match(/if \(aiRunStale\(\)\)/g) || []).length;
+  assert.ok(stales >= 5, `every indexed loop is guarded — found ${stales} stale checks for ${aborts} abort checks`);
+  assert.equal(stales, aborts, `⚠ one stale check per abort check — ${aborts} vs ${stales} means a loop was missed`);
+});
+
+test('⚠ stopping for a card swap SAYS so, rather than looking like it finished', () => {
+  // A run that silently stops mid-way reads as "it finished" — the same success-over-nothing-happened
+  // failure fixed repeatedly elsewhere in this app.
+  assert.match(tasks, /Stopped analysing — you switched to a different card\./, 'analyze says why');
+  assert.match(tasks, /Stopped improving — you switched to a different card\./, 'and improve uses its own verb');
 });

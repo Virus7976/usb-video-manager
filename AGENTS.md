@@ -322,6 +322,30 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ah — Tier 2 item 31: a fresh card arrives ticked. Measured, not guessed.
+
+His interaction log contains **48 "Select all" presses.** The card screen started with nothing ticked,
+so "back up this card" was a click he re-made on every import — on a screen whose entire purpose is
+backing the card up. Ticking by default is what he was already doing by hand, minus the click.
+
+**Why this direction is safe, and the reasoning matters more than the change:** the selection drives
+the COPY, and the copy is additive — it never removes anything from the card, it preflights free
+space, and clearing the card stays a separate gated act. *Defaulting a destructive action to
+"everything" would be indefensible; defaulting a backup to "everything" is the point of the screen.*
+
+**The exception that keeps it honest:** a clip he has ALREADY imported starts unticked. Re-plugging
+the same card is common, and re-offering finished work would just be noise he has to undo — the mirror
+image of the problem being fixed. The tick and the "already imported" badge share one expression, so
+they cannot disagree.
+
+**⚠ A test of mine failed and the CODE was right.** I asserted the copy handler contains no `unlink`
+at all; it contains exactly one — of its own partial DESTINATION file, which is required, because a
+cancelled copy must leave no truncated clip in the intake folder. The assertion was too broad, not the
+code wrong. Narrowed to the property that actually matters: **every removal target must be `destPath`
+and never a source path on his card.** That is a stronger test than the one I set out to write.
+
+vm **1434/1291/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20ag — the bulk face-accept now states its scale. Item 24 logged rather than guessed.
 
 Audited Tier 2's face items against what is actually built: **21** (bulk-apply from one clip) exists

@@ -1094,7 +1094,17 @@ async function startFlow() {
       subject: '',
       description: '',
       version: 1,
-      selected: false,
+      // TICKED BY DEFAULT — except what he has already imported.
+      //
+      // Measured in his click log: **48 "Select all" presses.** Starting empty made "back up this
+      // card" a click he re-made on every single import, on a screen whose entire purpose is backing
+      // the card up. Defaulting to all is what he was doing by hand anyway.
+      //
+      // Safe direction: the selection drives the COPY, which is additive — it never deletes anything,
+      // it preflights free space, and clearing the card remains a separate gated step. And a clip
+      // already imported starts UNticked, so the common "I plugged the same card back in" case does
+      // not re-offer work he has finished.
+      selected: !importedSet.has(importKey(f)),
       isPhoto: f.kind === 'photo',
       _imported: importedSet.has(importKey(f))   // seen in a previous import?
     };

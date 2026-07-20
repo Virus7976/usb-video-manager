@@ -78,8 +78,14 @@ test('⚠⚠ BOTH scan paths refuse to mark a clip scanned when the ENGINE faile
 test('⚠ descriptor samples are capped on BOTH the save and the load path', () => {
   // Capping only on save would leave his existing 318-sample cluster fully resident in memory until
   // the next write; capping only on load would let a long review session grow unbounded again.
-  const caps = (src.match(/\(c\.descriptors \|\| \[\]\)\.slice\(0, 80\)/g) || []).length;
-  assert.equal(caps, 2, `save and load both cap — found ${caps}`);
+  // The SAVE path caps inside packDescriptors() since the 5dp precision change; the LOAD path still
+  // caps inline (it deliberately does not re-round, so existing records are not rewritten on read).
+  // Assert the property — both paths cap — rather than one literal expression.
+  const loadCap = (src.match(/\(c\.descriptors \|\| \[\]\)\.slice\(0, 80\)/g) || []).length;
+  assert.equal(loadCap, 1, `the load path caps inline — found ${loadCap}`);
+  const packFn = src.slice(src.indexOf('function packDescriptors'), src.indexOf('function _serializePending'));
+  assert.match(packFn, /\.slice\(0, 80\)/, 'and the save path caps inside packDescriptors');
+  assert.match(src, /descriptors: packDescriptors\(c\.descriptors\)/, 'which is what save uses');
   assert.doesNotMatch(src, /descriptors: c\.descriptors \|\| \[\],/, 'no uncapped copy is left');
 });
 
@@ -98,5 +104,9 @@ test('⚠ the cluster\'s own descriptor is never capped away', () => {
   // because identity does not live in them.
   const at = src.indexOf('function _serializePending');
   const body = src.slice(at, src.indexOf('\n}', at));
-  assert.match(body, /descriptor: c\.descriptor,/, 'the identity descriptor is written whole');
+  // Written on every save — now rounded to 5dp (measured: shifts a distance by ~1/25,000th of the
+  // matching threshold), but never dropped or truncated. Capping the SAMPLES is safe precisely
+  // because identity does not live in them.
+  assert.match(body, /descriptor: packDescriptor\(c\.descriptor\)/, 'the identity descriptor is always written');
+  assert.doesNotMatch(body, /descriptor: packDescriptors\(c\.descriptor\)/, 'and not confused with the sample list');
 });

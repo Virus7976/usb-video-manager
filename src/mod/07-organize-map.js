@@ -894,6 +894,12 @@ async function showDestinationMap(rawClips, opts = {}) {
   async function analyzeDmapTargets(targets) {
     const pool = targets.filter((c) => c.sourcePath);
     if (!pool.length) { showToast('No source files to analyze'); return 0; }
+    // ⚠⚠ CLAIM THE FACE SCAN. This function snapshots the whole pending-face store with
+    // loadPendingFaces() and later REPLACES it via savePendingNow — so running concurrently with any
+    // other clustering path erases one of the two runs entirely, and the clips stay marked scanned so
+    // a re-scan skips them. See beginFaceScan in 08-people.js.
+    if (!beginFaceScan()) { showToast('A face scan is already running — let it finish first', 4000); return 0; }
+    try {
     aiAborted = false;
     const faceOk = (await ensureFaceModels()).ok;         // scan faces too if set up
     const subjKey = (c) => slug(c.subject || c.location || '') || 'x';
@@ -972,6 +978,9 @@ async function showDestinationMap(rawClips, opts = {}) {
     try { savePendingNow(faceClusters); saveFaceScenesNow(); } catch { /* best-effort */ }
     if (faceClusters.length) setTimeout(() => showFaceReviewGrid(faceClusters, pool, faceAuto), 350);
     return ok;
+    // Released in a finally: leaking the claim would disable every face scan until the app restarts,
+    // which is a worse failure than the double-run it prevents.
+    } finally { endFaceScan(); }
   }
   async function ensureAnalyzedFirst(targets) {
     if (!aiReady()) return 'proceed';

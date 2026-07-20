@@ -2032,6 +2032,11 @@ async function finAnalyzeSelected() {
   if (!requireAi()) return;
   const sel = finSelected();
   if (!sel.length) { showToast('Tick some clips first — Analyze enriches the ticked ones'); return; }
+  // ⚠⚠ CLAIM THE FACE SCAN — same reason as analyzeDmapTargets. This snapshots the whole
+  // pending-face store and later REPLACES it, so overlapping with any other clustering run erases one
+  // of them, and the clips stay marked scanned so a re-scan skips them. See beginFaceScan.
+  if (!beginFaceScan()) { showToast('A face scan is already running — let it finish first', 4000); return; }
+  try {
   aiAborted = false;
   const facesReady = (await ensureFaceModels()).ok;   // face rec is best-effort
   // RESUME: a clip is "done" once AI has analyzed it (flag persisted in finalMeta), so
@@ -2182,6 +2187,8 @@ async function finAnalyzeSelected() {
   aiStageClose();
   const photoN = pending.filter((f) => f.isPhoto).length;
   showToast(ok ? `Analyzed ${ok} item${ok !== 1 ? 's' : ''}${photoN ? ` (incl. ${photoN} photo${photoN !== 1 ? 's' : ''})` : ''} ✓` : `Analyze failed${lastErr ? `: ${lastErr}` : ''}`, 5000);
+  // Released in a finally — leaking the claim would disable every face scan until restart.
+  } finally { endFaceScan(); }
 }
 
 // Set each ticked clip's date back to its ORIGINAL recorded date (ffprobe

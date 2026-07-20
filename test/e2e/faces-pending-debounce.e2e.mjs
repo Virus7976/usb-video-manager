@@ -42,7 +42,12 @@ test('#67 the scan flushes on exit, so nothing is left unsaved', { skip: !RUN },
   // With an 8 s debounce a write can still be pending when the scan ends. The finally must flush,
   // or coarsening the interval would turn a performance fix into data loss.
   const src = await read(app.win, 'String(scanFacesForClips)');
-  assert.match(src, /faceScanActive = false;/, 'scan mode is left');
+  // 2026-07-20: the flag moved behind endFaceScan() so the two OTHER clustering paths could share it
+  // (they did the same load-modify-REPLACE and guarded neither). Same property, one indirection — so
+  // this now also checks the helper really clears the flag, rather than trusting the name.
+  assert.match(src, /endFaceScan\(\)/, 'scan mode is left');
+  assert.match(await read(app.win, 'String(endFaceScan)'), /faceScanActive = false/,
+    'and endFaceScan genuinely clears it');
   assert.match(src, /savePendingNow\(/, 'and the pending review is flushed on the way out');
 });
 

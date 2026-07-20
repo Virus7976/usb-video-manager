@@ -8818,6 +8818,12 @@ async function showDestinationMap(rawClips, opts = {}) {
   async function analyzeDmapTargets(targets) {
     const pool = targets.filter((c) => c.sourcePath);
     if (!pool.length) { showToast('No source files to analyze'); return 0; }
+    // ⚠⚠ CLAIM THE FACE SCAN. This function snapshots the whole pending-face store with
+    // loadPendingFaces() and later REPLACES it via savePendingNow — so running concurrently with any
+    // other clustering path erases one of the two runs entirely, and the clips stay marked scanned so
+    // a re-scan skips them. See beginFaceScan in 08-people.js.
+    if (!beginFaceScan()) { showToast('A face scan is already running — let it finish first', 4000); return 0; }
+    try {
     aiAborted = false;
     const faceOk = (await ensureFaceModels()).ok;         // scan faces too if set up
     const subjKey = (c) => slug(c.subject || c.location || '') || 'x';
@@ -8896,6 +8902,9 @@ async function showDestinationMap(rawClips, opts = {}) {
     try { savePendingNow(faceClusters); saveFaceScenesNow(); } catch { /* best-effort */ }
     if (faceClusters.length) setTimeout(() => showFaceReviewGrid(faceClusters, pool, faceAuto), 350);
     return ok;
+    // Released in a finally: leaking the claim would disable every face scan until the app restarts,
+    // which is a worse failure than the double-run it prevents.
+    } finally { endFaceScan(); }
   }
   async function ensureAnalyzedFirst(targets) {
     if (!aiReady()) return 'proceed';
@@ -10642,6 +10651,32 @@ function _serializePending(clusters) {
 // Drafts keep their tight debounce precisely because they are NOT derived. The scan's `finally`
 // always flushes, so ending a scan never leaves work unsaved.
 const PENDING_SAVE_MS = () => (faceScanActive ? 8000 : 700);
+
+// ⚠⚠ CLAIM/RELEASE FOR ANY FACE-CLUSTERING RUN. There are THREE of them and only one was guarded.
+//
+// Every clustering path is a load-modify-REPLACE across minutes of GPU work: it snapshots the whole
+// review with `await loadPendingFaces()`, works, then calls savePendingNow(), and the main handler
+// (faces:savePending) REPLACES the store wholesale rather than upserting. Two overlapping runs both
+// snapshot and both replace, so whichever finishes last erases everything the other clustered, named
+// or confirmed.
+//
+// `scanFacesForClips` documented that hazard and guarded itself. `analyzeDmapTargets` (Organize) and
+// `finAnalyzeSelected` (phone/finalize) do the identical thing and did neither — they never checked
+// the flag and never set it. Ordinary clicks reach it: start Analyze from Organize, then open People
+// and press Scan. Either ordering destroys a full run — and because the clips stay marked
+// `_facesScanned`, a re-scan SKIPS them, so those faces are gone permanently. That is his 458-cluster
+// pile with 226 confirmations in it.
+//
+// Setting the flag also widens the pending-save debounce to 8s for the duration (audit #67); the two
+// unguarded paths were doing multi-MB synchronous writes every 700ms through their long runs.
+function faceScanBusy() { return faceScanActive; }
+function beginFaceScan() {
+  if (faceScanActive) return false;
+  faceScanActive = true;
+  return true;
+}
+function endFaceScan() { faceScanActive = false; }
+
 let _pendingSaveTimer = null;
 // See loadPendingFaces: true once a read has failed, which makes the in-memory list a phantom.
 // faces:savePending REPLACES the whole store, so writing while this is set wipes the faces waiting
@@ -10746,7 +10781,7 @@ async function scanFacesForClips(clipList, opts = {}) {
   // work and cleared in the `finally` below, which is exactly what a re-entrancy guard needs — so
   // this promotes it rather than adding a second flag that could drift out of step. The refusal is
   // spoken, because a silent return on a button click reads as the app ignoring you.
-  if (faceScanActive) { showToast('A face scan is already running — let it finish first', 4000); return; }
+  if (faceScanBusy()) { showToast('A face scan is already running — let it finish first', 4000); return; }
   if (!clipList || !clipList.length) { showToast('Select some clips first'); return; }
   // Skip clips already scanned in a previous (or interrupted) run — face scanning is slow and the
   // result is remembered, so never redo a clip unless explicitly forced.
@@ -10783,7 +10818,7 @@ async function scanFacesForClips(clipList, opts = {}) {
   const probe = await ensureFaceModels();
   if (!probe.ok) { showFaceSetup(probe.error); return; }
   faceScanAborted = false;
-  faceScanActive = true;   // coalesce faces-pending writes hard while scanning (audit #67)
+  beginFaceScan();   // also coalesces faces-pending writes hard while scanning (audit #67)
   aiFollow = true; aiAborted = false; showFollowBtn(false);
   clearActivity();
   // Start from the saved review so a new scan MERGES into what's already waiting
@@ -10866,7 +10901,7 @@ async function scanFacesForClips(clipList, opts = {}) {
     clearAllAnalyzing(); clearTask('faces');
     // Leave scan mode and FLUSH: the coarse 8 s debounce above means a pending write can still be
     // in flight, and ending a scan must never leave the review unsaved (audit #67).
-    faceScanActive = false;
+    endFaceScan();
     try { savePendingNow(clusters); } catch { /* the grid below re-saves on any edit anyway */ }
     // saveFaceScenesNow() used to be called from exactly ONE place — render(), inside the review
     // grid. So a scan whose grid was never opened (closed early, aborted, or a scan that found faces
@@ -14415,6 +14450,11 @@ async function finAnalyzeSelected() {
   if (!requireAi()) return;
   const sel = finSelected();
   if (!sel.length) { showToast('Tick some clips first — Analyze enriches the ticked ones'); return; }
+  // ⚠⚠ CLAIM THE FACE SCAN — same reason as analyzeDmapTargets. This snapshots the whole
+  // pending-face store and later REPLACES it, so overlapping with any other clustering run erases one
+  // of them, and the clips stay marked scanned so a re-scan skips them. See beginFaceScan.
+  if (!beginFaceScan()) { showToast('A face scan is already running — let it finish first', 4000); return; }
+  try {
   aiAborted = false;
   const facesReady = (await ensureFaceModels()).ok;   // face rec is best-effort
   // RESUME: a clip is "done" once AI has analyzed it (flag persisted in finalMeta), so
@@ -14565,6 +14605,8 @@ async function finAnalyzeSelected() {
   aiStageClose();
   const photoN = pending.filter((f) => f.isPhoto).length;
   showToast(ok ? `Analyzed ${ok} item${ok !== 1 ? 's' : ''}${photoN ? ` (incl. ${photoN} photo${photoN !== 1 ? 's' : ''})` : ''} ✓` : `Analyze failed${lastErr ? `: ${lastErr}` : ''}`, 5000);
+  // Released in a finally — leaking the claim would disable every face scan until restart.
+  } finally { endFaceScan(); }
 }
 
 // Set each ticked clip's date back to its ORIGINAL recorded date (ffprobe

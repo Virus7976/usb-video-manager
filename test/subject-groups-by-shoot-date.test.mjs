@@ -126,11 +126,15 @@ test('a subject with NO date keeps the old flat behaviour', async () => {
     // on the source as well: the subject rung must not invent a bucket.
     for (const rel of relsOf(s)) assert.doesNotMatch(rel, /undated/, `no invented bucket — got ${rel}`);
     const { readFileSync } = await import('node:fs');
+    // The ladder now lives in `destinationParts` (2026-07-20aa), extracted so a preview can ask the
+    // same question without filing anything. Behaviour is unchanged; this assertion follows it there.
     const src = readFileSync(join(process.cwd(), 'main-mod', '09-ipc-boot.js'), 'utf8').replace(/\/\/.*$/gm, '');
-    const rung = src.slice(src.indexOf('const subj = safeFolderName'), src.indexOf('} else {', src.indexOf('const subj = safeFolderName')));
-    assert.ok(rung.length > 0, 'found the subject rung');
+    const at = src.indexOf('const subj = safeFolderName');
+    assert.ok(at > -1, 'found the subject rung');
+    const rung = src.slice(at, src.indexOf('const dayPart = await dayFrom();', at));
+    assert.ok(rung.length > 0, 'and sliced it');
     assert.doesNotMatch(rung, /undated/, 'the subject rung never falls back to a named bucket');
-    assert.match(rung, /parts = dayPart \? \[subj, dayPart\] : \[subj\];/, 'no date means the plain subject folder');
+    assert.match(src.slice(at), /return dayPart \? \[subj, dayPart\] : \[subj\];/, 'no date means the plain subject folder');
   } finally { box.cleanup(); }
 });
 

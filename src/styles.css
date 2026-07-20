@@ -2530,6 +2530,10 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .fin-src-badge.saved { color: var(--accent-fg, #fff); background: color-mix(in srgb, var(--accent) 80%, transparent); border-color: transparent; }
 .fin-src-badge.name { background: color-mix(in srgb, var(--text-3) 12%, transparent); }
 .fin-src-badge.skip { background: transparent; color: var(--text-3); }
+/* "→ vlog/2026-03-14" — where this clip WILL file when he presses Run. Quiet on purpose: it is a
+   prediction sitting beside facts, and it appears on every row, so it must read as an annotation
+   rather than compete with the filename. */
+.fin-src-badge.dest { background: transparent; color: var(--text-3); border-color: color-mix(in srgb, var(--text-3) 30%, transparent); font-variant-numeric: tabular-nums; }
 .fin-meta-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .fin-chip {
   display: inline-flex; align-items: center; gap: 4px; max-width: 100%;

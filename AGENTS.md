@@ -322,6 +322,36 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20aa — Tier 1 item 8: show where each clip WILL go. The blocker was structural.
+
+*"Show, on the card screen, where each clip WILL go before he commits."* The reason it had not been
+built is not visual — the destination ladder lived **inline inside `finalize:run`**, so any screen
+wanting to predict a destination had to reimplement it. **A prediction computed by a different code
+path than the filing is worse than no prediction: it is a promise the app does not keep** — and a
+second copy of a fallback ladder is the "two entry points that disagree" shape that has produced a
+confirmed bug on four separate days here.
+
+Extracted to `destinationParts` and exposed as `organize:previewDest`. One implementation decides
+where a clip goes, whether or not anything is moved. Every existing destination test passes unchanged
+against it, which is what makes the extraction believable.
+
+The Organize rows now carry **`→ vlog/2026-03-14`**, asked of main after each scan.
+
+**⚠ THE REACHABILITY TEST EARNED ITS KEEP TWICE IN ONE ITERATION.** It failed first because the new
+handler had no preload binding, then failed AGAIN because the new bridge had no CALLER — refusing to
+let me ship exactly the "fully built but never fed" shape that left `backfillLedgerFromTree`
+unreachable for months while his ledger read 0. **It made me finish the feature instead of landing
+half of it.**
+
+Four breaks proven, the important one being *"preview uses a different rule than filing"* — which
+fails 4 tests, because that drift is the entire thing this design prevents.
+
+Also guarded: a rescan can replace `finScan.files` while the preview is in flight, so the answer is
+applied by re-reading the live list and matching by NAME, never by position — labelling row 3 with the
+old row 3's destination is a confident, wrong answer.
+
+vm **1380/1237/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20z — probed the Tdarr gap. It holds; locked it in.
 
 Round-tripped the single most important persistence path in his workflow: the AI's work crossing the

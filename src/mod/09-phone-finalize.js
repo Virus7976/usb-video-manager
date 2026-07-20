@@ -1723,6 +1723,10 @@ async function finRunScan() {
   finScan.photosHere = res.photosHere || 0;   // for the empty state's photo hint
 
   finRenderList();
+  // WHERE EACH CLIP WILL GO, before he commits (Tier 1 item 8). Asked of MAIN, using the very ladder
+  // finalize:run files with — not a second copy of it here, which is how two screens start
+  // disagreeing about the same clip. Rendered after the list so a slow answer never delays it.
+  previewDestinations();
 }
 
 // EVERY clip is fileable, not just the ones the AI has described. This used to return only
@@ -1793,7 +1797,7 @@ function finRenderList() {
     if (f.matched) {
       li.innerHTML = `<input type="checkbox" class="fin-check" ${f.selected ? 'checked' : ''} />
         <span class="fin-body">
-          <span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span>${finSrcBadge(f)}${finFiledBadge(f)}</span>
+          <span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span>${finSrcBadge(f)}${finFiledBadge(f)}${finWillFileBadge(f)}</span>
           ${finMetaChips(f.meta)}
         </span>
         <span class="file-size">${fmtBytes(f.size)}</span>`;
@@ -1804,7 +1808,7 @@ function finRenderList() {
       // says where it will GO rather than "no metadata", which read as an error state — a clip the AI
       // never reached is not broken, it just files by its date.
       li.innerHTML = `<input type="checkbox" class="fin-check" ${f.selected ? 'checked' : ''} />
-        <span class="fin-body"><span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span><span class="fin-src-badge skip" title="No name yet — files into a dated folder you can sort later">files by date → _unsorted</span>${finFiledBadge(f)}</span></span>
+        <span class="fin-body"><span class="fin-head-row"><span class="file-name">${finHighlight(f.name, q)}</span><span class="fin-src-badge skip" title="No name yet — files into a dated folder you can sort later">files by date → _unsorted</span>${finFiledBadge(f)}${finWillFileBadge(f)}</span></span>
         <span class="file-size">${fmtBytes(f.size)}</span>`;
       const cb2 = li.querySelector('.fin-check');
       cb2.addEventListener('change', () => { f.selected = cb2.checked; finUpdateSelectionUI(); });
@@ -1885,6 +1889,39 @@ async function fileOneClipNow(f) {
 // folder and still appears in this list — without this, finished work is indistinguishable from work
 // still to do, and the pile never appears to shrink. Names the project so the obvious follow-up
 // question ("filed where?") is already answered.
+// Ask main where every listed clip would file, and put the answer on its row.
+//
+// Deliberately advisory: a failure leaves the rows exactly as they were. And it re-reads `finScan.files`
+// when the answer arrives rather than closing over the array, because a rescan can replace it while
+// this is in flight — labelling row 3 with row 3's OLD destination is worse than no label.
+async function previewDestinations() {
+  const files = (finScan && finScan.files) || [];
+  if (!files.length) return;
+  let dests = [];
+  try {
+    const r = await window.api.organizePreviewDest({
+      items: files.map((f) => ({ name: f.name, sourcePath: f.sourcePath, meta: f.meta || {}, rel: (currentDestPlan() || { byPath: {} }).byPath[f.sourcePath] || '' })),
+      folderLevels: finLevels,
+    });
+    dests = (r && r.dests) || [];
+  } catch { return; }                       // advisory only — never break the list over it
+  const byName = {};
+  for (const d of dests) if (d && d.name) byName[d.name] = d.rel;
+  let changed = false;
+  for (const f of ((finScan && finScan.files) || [])) {
+    const rel = byName[f.name];
+    if (rel && f._willFile !== rel) { f._willFile = rel; changed = true; }
+  }
+  if (changed) finRenderList();
+}
+
+// "It will land here." The row already says whether a clip HAS metadata; this says what that means in
+// terms of his actual Projects tree, which is the only part he cares about before pressing Run.
+function finWillFileBadge(f) {
+  if (!f || !f._willFile || f.filed) return '';
+  return `<span class="fin-src-badge dest" title="Where this clip will file when you press Run">→ ${escapeHtml(f._willFile)}</span>`;
+}
+
 function finFiledBadge(f) {
   if (!f || !f.filed) return '';
   const where = f.filedIn ? ` → ${escapeHtml(f.filedIn)}` : '';

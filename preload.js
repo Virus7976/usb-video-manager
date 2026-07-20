@@ -191,6 +191,8 @@ contextBridge.exposeInMainWorld('api', {
   getProjectsTree: (root) => ipcRenderer.invoke('projects:tree', root),
   projectsInnerLayout: (rel) => ipcRenderer.invoke('projects:innerLayout', { rel }),
   projectsMove: (payload) => ipcRenderer.invoke('projects:move', payload),
+  // Ask where clips WOULD file, without filing them — same ladder finalize:run uses.
+  organizePreviewDest: (payload) => ipcRenderer.invoke('organize:previewDest', payload),
   organizeUndoInfo: () => ipcRenderer.invoke('organize:undoInfo'),
   organizeUndo: () => ipcRenderer.invoke('organize:undo'),
   ledgerGet: () => ipcRenderer.invoke('ledger:get'),

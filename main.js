@@ -8538,6 +8538,56 @@ async function readEmbeddedRecord(filePath) {
 // final archived copy that keeps it. The lossless record written by buildEmbedTags means that
 // file can be re-read perfectly by readEmbeddedRecord on any later pass or any other machine.
 
+// THE DESTINATION LADDER — the single place that decides which folder a clip lands in.
+//
+// Extracted from finalize:run so it can be asked WITHOUT filing anything (Tier 1 item 8: show him
+// where each clip will go before he commits). The rungs, in order:
+//   1. the destination map's explicit placement, if he made one;
+//   2. the configured folderLevels (category/project/…), when the record actually has those fields;
+//   3. the record's SUBJECT, then its shoot date beneath it — his real library is app-named, so this
+//      is the rung that fires for almost everything he owns;
+//   4. `<date>/_unsorted` — the honest holding pen for a clip with nothing to go on.
+// It never returns an empty array, because an empty path means the bare root of his Projects tree.
+async function destinationParts({ relRaw, levels, meta, sourcePath }) {
+  const m = meta || {};
+  let parts = relRaw
+    ? relRaw.split(/[\\/]+/).map((x) => safeFolderName(x)).filter(Boolean)
+    : subdirParts(levels, m);
+  if (relRaw || parts.length) return parts;
+
+  const dayFrom = async () => {
+    let day = String(m.date || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      try { day = new Date((await fsp.stat(sourcePath)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
+    }
+    return /^\d{4}-\d{2}-\d{2}$/.test(day) ? safeFolderName(day) : '';
+  };
+
+  const subj = safeFolderName(String(m.subject || '').trim());
+  if (subj) {
+    const dayPart = await dayFrom();
+    return dayPart ? [subj, dayPart] : [subj];
+  }
+  const dayPart = await dayFrom();
+  return [dayPart || 'undated', '_unsorted'].filter(Boolean);
+}
+
+// Ask where a clip WOULD go, without touching it. Same ladder, same answer, no side effects.
+ipcMain.handle('organize:previewDest', async (_e, payload) => {
+  const items = (payload && Array.isArray(payload.items)) ? payload.items : [];
+  const levels = (payload && payload.folderLevels) || config.folderLevels || [];
+  const out = [];
+  for (const it of items) {
+    if (!it) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const parts = await destinationParts({
+      relRaw: String(it.rel || ''), levels, meta: it.meta || {}, sourcePath: it.sourcePath || it.path,
+    });
+    out.push({ name: it.name || '', rel: parts.join('/') });
+  }
+  return { ok: true, dests: out };
+});
+
 ipcMain.handle('finalize:run', async (evt, payload) => {
   const sender = evt.sender;
   const { items, options, dir } = payload || {};
@@ -8635,54 +8685,12 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     // thing it does have: its DATE. His shoots are batches and the date predicts the subject 88% of
     // the time, so `<date>/_unsorted` is a folder he can actually use, and the `_unsorted` level says
     // plainly that this one is unfinished.
-    let parts = relRaw
-      ? relRaw.split(/[\\/]+/).map((x) => safeFolderName(x)).filter(Boolean)
-      : subdirParts(levels, meta);
-    // NEVER THE BARE ROOT. The condition is "we computed no folder", NOT "this clip has no metadata"
-    // — and the difference is his entire library. His clips are already app-named
-    // (`2024-11-29_vlog_josiah-bedroom-timelapse_v1.mp4`), so parseNamedClip matches them and returns
-    // {date, subject, description} with category and project EMPTY. His folderLevels are
-    // [category, project], so subdirParts returns nothing and the destination resolves to the root.
-    // That was a harmless no-op while the default destination was the folder the clips were already
-    // in; once it became his real Projects tree it meant 310 clips dumped loose in C:\...\2026\.
-    //
-    // Prefer the date the RECORD carries (the real shoot date) and fall back to the file's mtime.
-    if (!relRaw && !parts.length) {
-      // FALL BACK TO A FIELD THE RECORD ACTUALLY HAS, before falling back to a bucket.
-      //
-      // His clips are app-named `date_subject_description_v#`, so parseNamedClip fills in a real
-      // SUBJECT ("vlog") and leaves category/project empty — and his folderLevels are
-      // [category, project], fields his workflow never populates. Without this, 310 clips carrying a
-      // perfectly good grouping of his own choosing would all land in `<date>/_unsorted`.
-      //
-      // `_unsorted` is for clips with nothing to go on — not for clips whose useful field simply
-      // isn't the one the config happens to name.
-      const subj = safeFolderName(String((meta && meta.subject) || '').trim());
-      if (subj) {
-        // SUBJECT, THEN SHOOT DATE. Measured on his real library: all 310 clips in the Compressed
-        // folder carry `vlog` in the subject slot, so `[subject]` alone collapsed the entire backlog
-        // into ONE flat directory beside his real project folders — 310 clips in one folder is not
-        // filed, it is a second holding pen with a nicer name, and it taught the ledger exactly one
-        // entry. Grouping by the shoot date underneath splits it into ~40 real shoots, which is the
-        // unit he actually works in (usb-app-shoots-in-batches: the date predicts the subject 88% of
-        // the time). Jake picked this layout when shown the measurement.
-        //
-        // The date is only appended when we HAVE one — a subject with no date keeps the old flat
-        // behaviour rather than inventing a folder called `undated` inside it.
-        let day = String((meta && meta.date) || '').trim();
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-          try { day = new Date((await fsp.stat(it.sourcePath || it.path)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
-        }
-        const dayPart = /^\d{4}-\d{2}-\d{2}$/.test(day) ? safeFolderName(day) : '';
-        parts = dayPart ? [subj, dayPart] : [subj];
-      } else {
-        let day = String((meta && meta.date) || '').trim();
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-          try { day = new Date((await fsp.stat(it.sourcePath || it.path)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
-        }
-        parts = [safeFolderName(day || 'undated'), '_unsorted'].filter(Boolean);
-      }
-    }
+    // ONE ladder, in one place. It used to live inline here, which meant any screen wanting to SHOW
+    // him where a clip will go before he commits (Tier 1 item 8) had to reimplement it — and a second
+    // copy of a fallback ladder is the "two entry points that disagree" shape that has produced a
+    // confirmed bug on four separate days in this repo. Extracted verbatim; `destinationParts` is the
+    // only thing that decides a destination now, and a preview IPC can call it too.
+    const parts = await destinationParts({ relRaw, levels, meta, sourcePath: it.sourcePath || it.path });
     // Under a plan, a clip the user never placed has NO destination. Falling through to
     // subdirParts here would hand it an empty path — i.e. dump it in the ROOT of the Projects
     // tree, which is worse than leaving it alone. Skip its move; it still gets embed/CSV/NAS.

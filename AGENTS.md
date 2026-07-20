@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20y — Tier 1 item 17: resume lands on the CLIP he left, not the top of the list.
+
+The session already reopened the right screen; it never remembered where in it he was. A relaunch
+mid-card dropped him at the top of a 400-clip list to find his place again — paid on every return, in
+a workflow whose defining property is that he always walks away mid-batch. That friction is how "I'll
+finish later" becomes 4263 unnamed clips.
+
+The machinery already existed: `renameEnsureRendered(clipIdx)` renders chunks until a target clip's
+card exists. Nothing drove it from resume.
+
+**Two decisions where the wrong version looks fine:**
+- **Keyed by `clipKeyV2`, never by index.** A re-scan reorders the list, and an index would then
+  scroll him to *somebody else's clip* — worse than the top, because it looks deliberate.
+- **Best-effort restore.** The clip may be copied away, filtered out, or from a different card.
+  Landing at the top is today's behaviour, so a miss is a no-op, never an error.
+
+**The subtle one, and its own test:** the list is WINDOWED. Scrolling without rendering ahead finds no
+card for anything past the first screenful and silently does nothing — the exact bug it exists to fix,
+hidden inside a function that looks like it works. The test asserts `renameEnsureRendered` is called
+**and that it comes before** the `querySelector`.
+
+Recorded on field FOCUS rather than input: moving through the list to read is also "where he is", and
+it costs nothing now that session saves are debounced and flushed on exit (`s`). Only writes when the
+position actually changed, so tabbing a row does not queue a save per field.
+
+`test/resume-lands-on-the-clip-he-left.test.mjs` (8), six breaks proven.
+
+vm **1371/1228/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20x — probed the four lazy stores across a relaunch. All correct; locked it in.
 
 Applied technique #7 (follow the data to where it is CONSUMED) to `ai.clipObs` — 1084 observations on

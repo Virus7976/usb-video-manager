@@ -578,6 +578,18 @@ function selectBetweenSelected() {
 }
 
 function wireRowEditing(listEl) {
+  // WHERE HE IS. Recorded on focus of any field in a row, so a relaunch can put him back on the clip
+  // he was working on rather than the top of a 400-clip list. Focus rather than input: moving through
+  // the list to read is also "where he is", and it costs nothing (saveSession is debounced, and one
+  // write per row-change is noise next to typing).
+  listEl.querySelectorAll('input, textarea').forEach((el) => {
+    const idxAttr = el.dataset.subject ?? el.dataset.desc ?? el.dataset.location;
+    if (idxAttr === undefined) return;
+    el.addEventListener('focus', () => {
+      const c = state.scannedFiles[Number(idxAttr)];
+      if (typeof noteClipPosition === 'function') noteClipPosition(c);
+    });
+  });
   listEl.querySelectorAll('[data-date]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();

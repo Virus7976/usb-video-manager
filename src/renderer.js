@@ -604,7 +604,20 @@ function setStep(n) {
 // to config via prefs:set; view 'home' clears it. Saves are debounced so rapid step
 // changes don't spam the disk.
 // ---------------------------------------------------------------------------
-let sessionState = { view: 'home', step: null, sourcePath: '', sourceDesc: '', sourceKind: '' };
+// `lastClipKey` is where he actually WAS. The rest of this object reopens the right screen; without
+// it a relaunch lands at the top of a 400-clip list and he has to find his place again — every time,
+// and he always walks away mid-card. Stored by clipKeyV2 (name__size__mtime), not by index, because
+// a re-scan can reorder the list and an index would then point at somebody else's clip.
+let sessionState = { view: 'home', step: null, sourcePath: '', sourceDesc: '', sourceKind: '', lastClipKey: '' };
+// Remember the clip he last touched. Cheap and debounced by saveSession's own 250 ms timer, so typing
+// does not spam the disk.
+function noteClipPosition(clip) {
+  if (!clip) return;
+  try {
+    const k = clipKeyV2(clip);
+    if (k && k !== sessionState.lastClipKey) saveSession({ lastClipKey: k });
+  } catch { /* never let bookkeeping break an edit */ }
+}
 let _sessionSaveT = null;
 // Write the session state now, skipping the debounce. Called by the exit safety net: closing the
 // window HIDES to tray, so a 250 ms debounce can still be outstanding — and losing it means the next
@@ -655,10 +668,27 @@ async function maybeResumeSession() {
       };
       onDrive(state.drive);
       await startFlow();   // re-scans + restores your naming drafts → right where you left off
+      // …and put him back on the CLIP he left, not just the screen. The list is windowed, so this
+      // has to render ahead to the target before it can be scrolled to (renameEnsureRendered).
+      restoreClipPosition(s.lastClipKey);
       return true;
     }
   } catch { /* stay on Home */ }
   return false;
+}
+
+// Scroll the clip he left back into view. Best-effort by design: the card may be gone (copied,
+// filtered out, or the card re-scanned differently), and in that case landing at the top is exactly
+// what happens today — no worse, never an error.
+function restoreClipPosition(key) {
+  if (!key) return;
+  try {
+    const idx = (state.scannedFiles || []).findIndex((c) => c && clipKeyV2(c) === key);
+    if (idx < 0) return;
+    if (typeof renameEnsureRendered === 'function') renameEnsureRendered(idx);
+    const card = document.querySelector(`.rename-card[data-i="${idx}"]`);
+    if (card) card.scrollIntoView({ block: 'center' });
+  } catch { /* a failed scroll must never break the resume */ }
 }
 
 function showDone(summary) {
@@ -2642,6 +2672,18 @@ function selectBetweenSelected() {
 }
 
 function wireRowEditing(listEl) {
+  // WHERE HE IS. Recorded on focus of any field in a row, so a relaunch can put him back on the clip
+  // he was working on rather than the top of a 400-clip list. Focus rather than input: moving through
+  // the list to read is also "where he is", and it costs nothing (saveSession is debounced, and one
+  // write per row-change is noise next to typing).
+  listEl.querySelectorAll('input, textarea').forEach((el) => {
+    const idxAttr = el.dataset.subject ?? el.dataset.desc ?? el.dataset.location;
+    if (idxAttr === undefined) return;
+    el.addEventListener('focus', () => {
+      const c = state.scannedFiles[Number(idxAttr)];
+      if (typeof noteClipPosition === 'function') noteClipPosition(c);
+    });
+  });
   listEl.querySelectorAll('[data-date]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();

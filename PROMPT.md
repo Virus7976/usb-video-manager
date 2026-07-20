@@ -655,6 +655,51 @@ default. Same for the face guards and the caps: **the twin is where the bug is.*
 anything here, grep for the sibling before writing the test — five of this loop's eight fixes were
 "one path fixed, its twin missed".
 
+
+## 8e. ERROR-PATH AUDIT — 2026-07-20. Findings 1-5 CLOSED (commit 745f596); 6-10 open.
+
+The technique that produced these: audit the branches that only run when something goes WRONG. They
+are the least-exercised code in the app, and the sibling-sweep works there too — the guard present on
+one error path and absent on its twin.
+
+**Closed:** undo destroying its own record on failure · finalize:run never writing an undo record if
+it threw partway (+ its unguarded progress emitter) · undo orphaning the XMP sidecar and thereby
+disarming the empty-folder cleanup · `projects:move` and `compress:run` both reporting ok:true when
+every item failed.
+
+**Still open, ranked:**
+6. `finalize:run` assigns `sidecar = ${curPath}.xmp` BEFORE the write. On the failure path it stays
+   truthy, so step 2 tries to move a file that was never created and pushes a second, misleading
+   error (`Sidecar for X stayed at the source: ENOENT`). Nothing is lost — `metaLanded` correctly
+   stays false — but one failure reports as two, one describing a file that does not exist. Assign
+   only after the write succeeds. (`main-mod/09-ipc-boot.js:876-889`)
+7. `phone:pull` returns a literal `ok: true` regardless of how much it dropped, and `incomplete`
+   under-reports: it counts only TRUNCATED pulls. A file the device never produced falls into
+   `catch { /* couldn't verify — skip */ }` (`05-windows-phone.js:334`) and into the sim branch's
+   `catch { /* skip */ }` (`:296`) without incrementing anything. So a pull that got 40 of 60 photos
+   returns ok:true with incomplete:0 — and the phone-clear step downstream reads that as clean.
+   **This is the one with footage at stake; do it next.**
+8. `phonevid_<ts>` temp dir (`05-windows-phone.js:1041`) is never removed — grep finds exactly one
+   hit. Its sibling `stageDir` in `phone:distribute` IS cleaned (`:1195`), though not in a `finally`,
+   so an early throw there leaks a full copy of the card's stills too. Tens of GB of invisible growth
+   on a videographer's machine.
+9. `compress:run` has no re-entrancy guard while `copy:start` does (`if (copyTask && copyTask.active)
+   return …`). Two concurrent runs into the same outDir would have run A's unconditional
+   `fsp.rm(join(out, '.partial'))` delete run B's in-flight staged encode. The renderer's
+   `cmpState.running` makes it hard to reach, which is why it is not urgent — but it is the same
+   guard the copy path decided it needed, on a handler that spawns processes and deletes a directory.
+10. `phoneAbort` is a cross-flow module global set by the CARD flow's `copy:cancel`
+    (`06-copy-transfer.js:389`) and reset on entry by only two of its three consumers.
+    **Currently benign — the agent could not construct a failing sequence, and it is listed only so a
+    future session does not re-derive it.** If a fourth consumer is added, reset-on-entry must be
+    added with it.
+
+**Checked and genuinely clean, do not re-audit:** retry logic is bounded and idempotent throughout
+(`copyFileVerified` fixed-count, `readJsonRetry` capped at 6, ffmpeg/PowerShell have idle watchdogs
+plus absolute ceilings, `nearestExistingDir` caps at 8 hops); process/handle cleanup is consistently
+in `finally`; `copy:start` does NOT leave a truncated file in the watch folder — `copyFileWithProgress`
+stages to `.part`, full-fingerprints, renames, and unlinks the part in its own catch.
+
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
 - **A STRUCTURAL ASSERTION MUST NAME THE THING THAT WOULD GO MISSING — and you must break each part

@@ -322,6 +322,37 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20j — the prune that already ate his AI work. `HARD_CAP`: zero tests.
+
+`finalMeta` is the ONLY carrier of everything the AI worked out — subject, description, people,
+observation, the filing route — across the gap between "copy to intake" and "organize the compressed
+output", and that gap is deliberately long (let Tdarr compress, come back later).
+
+**This is not a hypothetical guard. The bug already happened to him and I measured the damage:**
+`final-meta.json` holds **1 entry** against 310 compressed clips and 4594 drafts (2026-07-19cd). The
+old unconditional prune — 180 days, 5000 most recent — ate the rest before the exemption existed.
+Everything the AI concluded about his archive is gone; the only reason his backlog is still fileable
+is the filename fallback. The code's own comment names the complaint it produced: *"it forgets to
+remember things."*
+
+The rule now: evictable ONLY once `finalize:run` has actually FILED the clip (`done: true`). Pending
+work is kept regardless of age, and the cap sheds filed entries first.
+
+`test/finalmeta-prune-keeps-pending.test.mjs` (7), both directions — ancient-but-unfiled survives;
+ancient-and-filed is still shed; a MISSING `done` counts as pending (legacy entries predate the flag,
+and reading it as "filed" would evict the oldest work first); and `markFinalMetaDone` is the only
+thing that makes a record disposable.
+
+**⚠ A blind cap fixture, and the mechanism is worth naming.** I stamped every entry with `recent()`,
+which calls `Date.now()` per entry — so the last-seeded records (the pending ones) came out NEWEST and
+survived on timestamp alone. Deleting the done-first sort left the test green. Pending work now gets
+the OLDEST timestamps, so **only** the rule under test can save it. Sixth blind fixture this session;
+the lesson generalises: *when testing a tie-break, make every other ordering point the wrong way.*
+
+Five breaks proven.
+
+vm **1281/1138/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20i — the exemption protecting every name he has ever typed had no behavioural test.
 
 `writeDrafts` prunes on **every** save — shed >60 days, then cap at 10000 — and both steps are gated

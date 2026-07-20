@@ -322,6 +322,38 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bo — ⚠ I nearly dumped 310 clips loose in his Projects root. Caught by reading his real folders.
+
+**A risk I introduced in `bm` and shipped.** Checking whether any of today's work was reachable for
+him, I looked at his actual folders: **310 files in Compressed, 203 in Uncompressed, 0 filed.** Then I
+looked at the filenames — and they are already app-named:
+`2024-11-29_vlog_josiah-bedroom-timelapse_v1.mp4`.
+
+`parseNamedClip` matches those and returns `{date, subject, description}` with **category and project
+EMPTY**. His `folderLevels` are `['category','project']`, so `subdirParts` returns nothing and the
+destination resolves to the **bare root**.
+
+That was harmless while the default destination was the Compressed folder the clips were already in —
+an in-place no-op. **The moment `bm` made the destination his real Projects tree, it meant 310 clips
+dumped loose into `C:\Users\jakeg\Videos\02 - Projects\2026\`.**
+
+**My own end-to-end test missed it** because its clip had NO metadata at all and took the `_noMeta`
+path. The condition was wrong: it keyed off *"this clip has no metadata"* when the property that
+matters is *"we computed no folder"*. Fixed to the latter, preferring the date the RECORD carries over
+the file mtime.
+
+**And an existing test was locking the old bug in as documentation** — `'this is the exact shape that
+used to move nothing'`, asserting `moved: 0, skipped: 1`. That no-op WAS the bug; the assertion is now
+inverted, with the reasoning kept. **A test that documents a known-bad behaviour must be rewritten
+when the behaviour is fixed, not worked around.**
+
+Both tiers green: vm **1088/976/112/0**, e2e **112/111/1/0**.
+
+**The lesson, and it is the session's most important one:** `bm` was correct in isolation, tested, and
+dangerous in combination with data I had not looked at. **Checking his REAL folders is what caught
+it** — the same move that found the 4263 unfileable clips and the 458 abandoned faces. *Read his data
+before and after every behaviour change.*
+
 ### 2026-07-19bn — ⭐ PROOF: a clip now goes card→FILED end to end. Plus a harness fix for every future e2e.
 
 Rather than reason about whether a THIRD filing blocker existed, I drove the real screen against real

@@ -12,7 +12,7 @@
 // There is now ONE plan: the map is the source of truth and Run executes it.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -143,10 +143,20 @@ test('with no plan at all, the old [category, project] behaviour still works', a
   assert.equal(existsSync(join(dest, 'work', 'acme', 'legacy.mp4')), true);
 });
 
-test('this is the exact shape that used to move nothing', async () => {
-  // Empty category/project (the normal case) + no plan → subdirParts is [], the file is already
-  // in `dest`, organizeMove says in-place, and Run reports skipped. Locking the old behaviour in
-  // so it's unmistakable WHY the plan is now the source of truth.
+test('the shape that used to move nothing now files by date', async () => {
+  // THIS TEST USED TO LOCK IN A BUG AS DOCUMENTATION. Empty category/project (the normal case) + no
+  // plan → subdirParts is [], the file is already in `dest`, organizeMove says in-place, and Run
+  // reported "skipped" — which looked like a no-op because it was one. It was captured deliberately,
+  // to show why the destination map became the source of truth.
+  //
+  // That no-op is now fixed (2026-07-19bo): a clip we cannot place goes to `<date>/_unsorted` rather
+  // than nowhere. It matters far beyond tidiness — once the destination defaults to his real Projects
+  // tree, "no computed folder" means "loose in the root of C:\...\2026", and on his machine that is
+  // 310 clips. So the assertion is inverted on purpose: the shape that moved nothing now moves,
+  // predictably, somewhere he can find it.
+  //
+  // In "organize in place" mode (dest === src, as here) that means dated subfolders INSIDE the
+  // Compressed folder — which is exactly what that mode's own label promises.
   const src = join(dir, 'inplace');
   mkdirSync(src, { recursive: true });
   const sourcePath = join(src, 'nowhere.mp4');
@@ -160,9 +170,13 @@ test('this is the exact shape that used to move nothing', async () => {
     items: [{ name: 'nowhere.mp4', sourcePath, meta: { subject: 'x', description: 'y' } }],   // no category/project
   });
 
-  assert.equal(summary.moved, 0, 'THIS is what the user saw: nothing moved');
-  assert.equal(summary.skipped, 1, 'reported as "skipped" — which looked like a no-op, because it was');
-  assert.equal(existsSync(sourcePath), true);
+  assert.equal(summary.moved, 1, 'it is filed now, instead of silently going nowhere');
+  assert.equal(summary.skipped, 0, 'and no longer reported as a no-op');
+  // Filing COPIES by default, so the original stays put — his standing rule.
+  assert.equal(existsSync(sourcePath), true, 'the source is untouched');
+  const filed = readdirSync(src, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  assert.ok(filed.some((d) => /^\d{4}-\d{2}-\d{2}$|^undated$/.test(d)),
+    `it landed in a dated folder — found ${JSON.stringify(filed)}`);
 });
 
 // --- the wiring that makes Run see the plan ---------------------------------------------

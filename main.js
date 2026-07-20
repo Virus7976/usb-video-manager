@@ -8476,9 +8476,20 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     let parts = relRaw
       ? relRaw.split(/[\\/]+/).map((x) => safeFolderName(x)).filter(Boolean)
       : subdirParts(levels, meta);
-    if (!relRaw && it._noMeta && !parts.length) {
-      let day = '';
-      try { day = new Date((await fsp.stat(it.sourcePath || it.path)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
+    // NEVER THE BARE ROOT. The condition is "we computed no folder", NOT "this clip has no metadata"
+    // — and the difference is his entire library. His clips are already app-named
+    // (`2024-11-29_vlog_josiah-bedroom-timelapse_v1.mp4`), so parseNamedClip matches them and returns
+    // {date, subject, description} with category and project EMPTY. His folderLevels are
+    // [category, project], so subdirParts returns nothing and the destination resolves to the root.
+    // That was a harmless no-op while the default destination was the folder the clips were already
+    // in; once it became his real Projects tree it meant 310 clips dumped loose in C:\...\2026\.
+    //
+    // Prefer the date the RECORD carries (the real shoot date) and fall back to the file's mtime.
+    if (!relRaw && !parts.length) {
+      let day = String((meta && meta.date) || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+        try { day = new Date((await fsp.stat(it.sourcePath || it.path)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
+      }
       parts = [safeFolderName(day || 'undated'), '_unsorted'].filter(Boolean);
     }
     // Under a plan, a clip the user never placed has NO destination. Falling through to

@@ -150,3 +150,43 @@ test('the Organize screen offers unmatched clips instead of hiding them', async 
   assert.doesNotMatch(fn, /files\.filter\(\(f\) => f\.matched\)\s*;/,
     'it no longer hides every clip the AI has not described');
 });
+
+test('a clip with meta but NO folder fields still never lands in the root', async () => {
+  // THE CASE MY OWN END-TO-END TEST MISSED, found by looking at his real Compressed folder.
+  //
+  // His 310 clips are already app-named — `2024-11-29_vlog_josiah-bedroom-timelapse_v1.mp4` — so
+  // `parseNamedClip` matches them and produces `{date, subject, description}` with **category and
+  // project empty**. His folderLevels are ['category','project'], so `subdirParts` returns NOTHING,
+  // and the destination resolves to the bare root.
+  //
+  // That was harmless while the default destination was the Compressed folder the clips were already
+  // in (an in-place no-op). The moment the destination became his real Projects tree (2026-07-19bm),
+  // it meant **310 clips dumped loose into C:\...\2026\**. The date fallback must therefore key off
+  // "we computed no folder", not off "this clip has no metadata at all".
+  const s = stage();
+  try {
+    const r = await runWith(s, [{
+      name: 'GX010099.MP4',
+      sourcePath: s.clip,
+      meta: { date: '2026-03-14', subject: 'vlog', description: 'josiah-bedroom', category: '', project: '' },
+    }]);
+    assert.equal(r.moved, 1, 'it was filed');
+    assert.ok(!existsSync(join(s.dest, 'GX010099.MP4')), 'and NOT loose in the Projects root');
+    assert.ok(existsSync(join(s.dest, '2026-03-14', '_unsorted', 'GX010099.MP4')),
+      'it fell back to its own date, like any other clip we cannot place');
+  } finally { s.cleanup(); }
+});
+
+test('the date fallback prefers the clip\'s OWN recorded date over the file mtime', async () => {
+  // A parsed record carries the real shoot date; the mtime is only a last resort.
+  const s = stage();
+  try {
+    await runWith(s, [{
+      name: 'GX010099.MP4',
+      sourcePath: s.clip,
+      meta: { date: '2025-12-25', subject: 'vlog', description: '', category: '', project: '' },
+    }]);
+    assert.ok(existsSync(join(s.dest, '2025-12-25', '_unsorted', 'GX010099.MP4')),
+      'filed under the date the record says, not the file timestamp');
+  } finally { s.cleanup(); }
+});

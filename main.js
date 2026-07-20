@@ -4776,10 +4776,28 @@ ipcMain.on('log:interaction', (_e, entry) => {
 });
 
 // Copy the given files to the intake folder, reporting progress events.
+let copyStarting = false;   // claimed synchronously; see the note in copy:start
 ipcMain.handle('copy:start', async (evt, payload) => {
   // Refuse a second copy while one is running — a concurrent copy would overwrite the
   // shared copyTask, breaking cancel/status/progress for the first one.
-  if (copyTask && copyTask.active) return { ok: false, error: 'A copy is already running' };
+  //
+  // ⚠ THE GUARD WAS REAL BUT CLAIMED TOO LATE. `copyTask` is not assigned until ~70 lines below, and
+  // between here and there are FOUR awaits — two ensureDir calls, one for the NAS root, and a
+  // `fsp.statfs` per destination. On a network path that is not instant. So two calls could both pass
+  // this line, both grind through the preflight, and both reach the assignment, where the second
+  // overwrites the first's task: run A then reads B's abort flag, `copy:cancel` cancels only B, both
+  // write currentIndex/copiedBytes and emit on one channel, and whichever finishes first sets
+  // `copyTask = null` so the other throws a TypeError mid-copy — surfacing as "Copy failed" over a
+  // card that is partly imported.
+  //
+  // It does not need a millisecond window either: auto-mode fires `setTimeout(..., 800)` and the
+  // RENDERER's own `copyInProgress` latch is not set until after its own per-target free-space IPCs,
+  // so an impatient click at ~790ms gets both through. This handler moves multi-GB of his only copy.
+  //
+  // `copyStarting` is claimed SYNCHRONOUSLY, before any await, and released in the finally below.
+  if ((copyTask && copyTask.active) || copyStarting) return { ok: false, error: 'A copy is already running' };
+  copyStarting = true;
+  try {
   const { files, intakeFolder } = payload;
   const dest = intakeFolder || config.intakeFolder;
   const sender = evt.sender;
@@ -4939,6 +4957,10 @@ ipcMain.handle('copy:start', async (evt, payload) => {
   if (quitAfterCopy) { quitAfterCopy = false; isQuitting = true; app.quit(); }
 
   return { ok: !aborted, cancelled: aborted, copied, nas: { ...nasSummary, enabled: !!nasRoot } };
+  // Released on EVERY exit — including the early "cannot create intake folder" and "not enough room"
+  // returns, and any throw. Leaking it would refuse every future copy until the app restarts, which
+  // is a worse failure than the double-run it prevents.
+  } finally { copyStarting = false; }
 });
 
 // #95 — these three take a path from the renderer and read the disk with it: a file:// URL the
@@ -8879,7 +8901,23 @@ ipcMain.handle('organize:previewDest', async (_e, payload) => {
   return { ok: true, dests: out };
 });
 
+let finalizeRunning = false;
 ipcMain.handle('finalize:run', async (evt, payload) => {
+  // ⚠ ONE FILING RUN AT A TIME — because `config.lastOrganize` is a SINGLE slot holding THE undo
+  // record. Two concurrent runs both relocate footage and both stamp it; last write wins, and one
+  // run's clips end up in his Projects tree with no undo path at all. That is exactly the outcome
+  // the ⚠⚠ note further down was added to prevent, arrived at by a different route.
+  //
+  // Reachable without any timing trick: the batch Run button disables itself, but `fileOneClipNow`
+  // (09-phone-finalize.js) calls this same handler with NO disable and no guard — and it is
+  // deliberately the low-friction "file this one clip right now" action, i.e. the one clicked
+  // repeatedly. Two of those in succession, or one during a batch Run, is enough.
+  //
+  // Secondary hazard the guard also closes: the Resolve CSV merge is a read-modify-write across two
+  // awaits on one shared file, so concurrent runs drop each other's rows.
+  if (finalizeRunning) return { ok: false, error: 'A filing run is already going', errors: ['A filing run is already going'] };
+  finalizeRunning = true;
+  try {
   const sender = evt.sender;
   const { items, options, dir } = payload || {};
   const opts = options || {};
@@ -9270,6 +9308,8 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     summary.error = summary.errors[0];
   }
   return summary;
+  // Released on every exit path. Leaking it would refuse all filing until the app restarts.
+  } finally { finalizeRunning = false; }
 });
 
 // Intake folder (compression destination) — view / pick / set.

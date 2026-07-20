@@ -752,7 +752,23 @@ ipcMain.handle('organize:previewDest', async (_e, payload) => {
   return { ok: true, dests: out };
 });
 
+let finalizeRunning = false;
 ipcMain.handle('finalize:run', async (evt, payload) => {
+  // ⚠ ONE FILING RUN AT A TIME — because `config.lastOrganize` is a SINGLE slot holding THE undo
+  // record. Two concurrent runs both relocate footage and both stamp it; last write wins, and one
+  // run's clips end up in his Projects tree with no undo path at all. That is exactly the outcome
+  // the ⚠⚠ note further down was added to prevent, arrived at by a different route.
+  //
+  // Reachable without any timing trick: the batch Run button disables itself, but `fileOneClipNow`
+  // (09-phone-finalize.js) calls this same handler with NO disable and no guard — and it is
+  // deliberately the low-friction "file this one clip right now" action, i.e. the one clicked
+  // repeatedly. Two of those in succession, or one during a batch Run, is enough.
+  //
+  // Secondary hazard the guard also closes: the Resolve CSV merge is a read-modify-write across two
+  // awaits on one shared file, so concurrent runs drop each other's rows.
+  if (finalizeRunning) return { ok: false, error: 'A filing run is already going', errors: ['A filing run is already going'] };
+  finalizeRunning = true;
+  try {
   const sender = evt.sender;
   const { items, options, dir } = payload || {};
   const opts = options || {};
@@ -1143,6 +1159,8 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     summary.error = summary.errors[0];
   }
   return summary;
+  // Released on every exit path. Leaking it would refuse all filing until the app restarts.
+  } finally { finalizeRunning = false; }
 });
 
 // Intake folder (compression destination) — view / pick / set.

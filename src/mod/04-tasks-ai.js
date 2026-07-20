@@ -579,7 +579,16 @@ function showFollowBtn(show) {
       aiFollowBtn.className = 'ai-follow-btn';
       aiFollowBtn.textContent = 'Follow AI ↓';
       aiFollowBtn.addEventListener('click', () => {
-        aiFollow = true; aiAborted = false; showFollowBtn(false);
+        // ⚠ SCROLL-FOLLOW ONLY. This used to also do `aiAborted = false`, which has no business in a
+        // scroll button and silently RESUMED a cancelled run. The button is visible only DURING a run
+        // and only once he has scrolled away — exactly the state someone is in when they cancel. So:
+        // press Cancel, the loop is still inside a vision call for up to 180s, click the still-visible
+        // "Follow AI ↓" to see what it is doing, and the next `if (aiAborted) break` passes and the
+        // run carries on overwriting the names he cancelled to protect.
+        //
+        // It also un-did reportCardGone(), which sets aiAborted when the card is yanked — so one
+        // click resumed analysis against a card that is no longer plugged in.
+        aiFollow = true; showFollowBtn(false);
         if (currentAnalyzingI >= 0) { lastAutoScrollTs = Date.now(); const card = document.querySelector(`.rename-card[data-i="${currentAnalyzingI}"]`); if (card) card.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
       });
       document.body.appendChild(aiFollowBtn);

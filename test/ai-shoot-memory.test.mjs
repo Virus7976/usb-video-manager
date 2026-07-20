@@ -102,7 +102,10 @@ test('it asks ONCE per shoot at the phase boundary — while the GPU is empty', 
   // human thinking is the one moment we can afford to hold no model at all. And his answer lands
   // before any clip from that shoot is named, rather than too late to matter.
   const src = read('src/mod/04-tasks-ai.js');
-  const at = src.indexOf('await askAboutShoots(idxs)');
+  // Match the CALL, not its argument list. This pinned `askAboutShoots(idxs)` and broke when the
+  // function was changed to take clips so a second screen could share it (2026-07-20p) — the
+  // placement this test actually cares about never moved. Fourth shape-pinned assertion this session.
+  const at = src.indexOf('await askAboutShoots(');
   assert.ok(at > 0, 'the run actually asks');
   const evict = src.indexOf('await window.api.aiUseOnly(aiToolModelReady', at);
   assert.ok(evict > at, 'and it asks BEFORE the reasoning model is loaded');

@@ -2000,6 +2000,22 @@ async function finAnalyzeSelected() {
     }
   }
 
+  // ASK ABOUT ANY SHOOT WE STILL DON'T UNDERSTAND — the card flow does this at exactly this phase
+  // boundary and this screen never did. `askAboutShoots` had ONE call site, in the card run loop, so
+  // analysing from Organize — the path his ALREADY-COPIED footage goes through, which is most of his
+  // library — never asked. His shoot memory reads 0 entries, and this is half the reason.
+  //
+  // The same boundary for the same reason: phase 1 is done and the naming model is not loaded yet, so
+  // the GPU is empty while he thinks — the one moment a 6 GB card can afford to hold nothing. And his
+  // answer lands BEFORE any clip from that shoot is named, rather than too late to matter.
+  //
+  // Safe to add here: `ai:shootsToAsk` filters out every day he has already answered or already named
+  // clips from, so this cannot re-ask a settled shoot no matter how many times he analyses.
+  if (!aiAborted) {
+    try { await askAboutShoots(pending); }
+    catch { /* never block a naming run on the question */ }
+  }
+
   // ===== PHASE 2 — NAME: now that people are known, describe + name every clip, and
   // IMPROVE an existing name/description instead of starting from scratch. =====
   setAiRunClips(pending);

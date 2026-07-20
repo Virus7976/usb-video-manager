@@ -322,6 +322,37 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20p — the shoot question had ONE call site, on the path his old footage never takes.
+
+Second half of why `shootMemory` reads 0. `askAboutShoots` was called only from the **card-flow** run
+loop, so analysing from the **Organize** screen — the path his already-copied footage goes through,
+which after Tdarr is most of his library — **never asked at all.**
+
+**It could not simply be called from the new place.** It took INDICES into `state.scannedFiles`:
+
+    const dates = idxs.map((i) => (state.scannedFiles[i] || {}).date)
+
+The Organize screen builds from `finScan.files` and has no such indices — passing its own numbers
+would have read *unrelated clips*, which is exactly the wrong-context wiring that collapsed the
+group-shot sort twice this week. **I nearly did it**: the first edit passed `pending.map(f => f._idx)`,
+a field that does not exist. Now it takes CLIPS and the card flow maps at its call site. *A shared
+function must not know which screen is asking.*
+
+Placed on the same phase boundary and for the same two reasons: his answer lands before any clip from
+that shoot is named, and the GPU is empty between phases — on a 6 GB card a human pause is only free
+there. Safe to add because `ai:shootsToAsk` filters every day he has answered or already named clips
+from, so no amount of re-analysing can re-ask a settled shoot.
+
+`test/shoot-ask-on-both-analyze-paths.test.mjs` (8), four breaks proven — including "asked AFTER
+naming", which is the version that would look fine and be useless.
+
+**⚠ FOURTH shape-pinned test this session.** `ai-shoot-memory` pinned the literal
+`await askAboutShoots(idxs)`; the placement it actually cares about never moved. And one of my OWN new
+assertions failed the same way in miniature: it searched for the `PHASE 2 — NAME` marker in a
+comment-stripped copy of the source — **failing on my own preprocessing, not on the code.**
+
+vm **1317/1174/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20o — a latch set by a RENDER is not a fact, it is a race. His shoot memory reads 0.
 
 Ran the "built but never fed" axis again over the 10 pinned-unused bridge methods. Most were fine —

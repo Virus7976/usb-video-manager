@@ -1090,7 +1090,16 @@ function runContext(clip) { return [aiRunDirection, clip && clip.context].map((s
 //
 // Deliberately the same grid as the faces popup ("I love the popup for when it asks me who is who in
 // faces. That's really good.") — same classes, same yes/no, same feel.
-async function askAboutShoots(idxs) {
+// Takes CLIPS, not indices.
+//
+// It used to take indices into `state.scannedFiles`, which silently bound it to the card flow — the
+// Organize screen builds its list from `finScan.files` and has no such indices, so it could not call
+// this at all without passing numbers that mean something else entirely. That is the same
+// wrong-context wiring that has produced a confirmed bug three times in this repo (an empty clip
+// list collapsing the group-shot sort, twice). Passing the clips themselves makes the function
+// independent of which screen is asking, which is the only way a second entry point can share it
+// safely.
+async function askAboutShoots(clips) {
   // Resolve the tool model on demand rather than trusting a flag another screen's render may not
   // have set yet — see ensureToolModelKnown. Without this, analysing right after launch skipped the
   // shoot question entirely and left his shoot memory empty.
@@ -1100,7 +1109,8 @@ async function askAboutShoots(idxs) {
   // Only the shoots we know NOTHING about. Main filters out any he has answered before or already
   // named clips from — re-asking a settled shoot is the app forgetting, which is the one thing he
   // told us never to do.
-  const dates = idxs.map((i) => (state.scannedFiles[i] || {}).date).filter(Boolean);
+  const list = (clips || []).filter(Boolean);
+  const dates = list.map((c) => c && c.date).filter(Boolean);
   let shoots = [];
   try {
     const r = await window.api.aiShootsToAsk(dates);
@@ -1110,7 +1120,7 @@ async function askAboutShoots(idxs) {
 
   // One card per shoot, carrying its clips so we can show a real thumbnail and a real count.
   const groups = shoots.map((date) => {
-    const clips = idxs.map((i) => state.scannedFiles[i]).filter((c) => c && c.date === date);
+    const clips = list.filter((c) => c && c.date === date);
     return { date, clips, chosen: '' };
   }).filter((g) => g.clips.length);
   if (!groups.length) return;
@@ -1548,7 +1558,7 @@ async function aiAnalyzeSelected(preset = null) {
     // model is not loaded yet, so the GPU is EMPTY while he answers: on a 6 GB card, a human thinking
     // is the one moment we can afford to hold nothing at all. It also means his answer is in hand
     // before a single clip from that shoot gets named, rather than arriving too late to matter.
-    if (!aiAborted) await askAboutShoots(idxs);
+    if (!aiAborted) await askAboutShoots(idxs.map((i) => state.scannedFiles[i]));
 
     // Evicting the vision model here is the load-bearing line. Ollama holds a model for 5 minutes
     // after its last request, so without this the vision model is STILL in VRAM when the reasoning

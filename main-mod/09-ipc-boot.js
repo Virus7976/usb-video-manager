@@ -274,8 +274,15 @@ ipcMain.handle('compress:run', async (evt, payload) => {
   // Point Finalize at where we just wrote, so "Organize" continues seamlessly.
   if (out && out !== config.finalizeSource) { config.finalizeSource = out; saveConfig(); }
   const okCount = results.filter((r) => r.ok && !r.skipped).length;
-  if (!compressAborted) notify('Compression complete', `Compressed ${okCount} clip${okCount !== 1 ? 's' : ''} into your Compressed folder.`);
-  return { ok: !compressAborted, cancelled: compressAborted, results, outDir: out };
+  // Only claim completion when something actually encoded. `ok: !compressAborted` meant a run in
+  // which every single clip failed still returned ok:true, and the renderer's headline then read
+  // "Compressed 0 clips · 12 failed ✓" — tick included. This is the third instance of that pattern
+  // (after "AI auto-enhance complete ✓" and "Filed N …✓"); the per-file errors do reach logIssue, so
+  // the information existed and only the headline contradicted it.
+  const failedCount = results.filter((r) => r && !r.ok).length;
+  if (!compressAborted && okCount) notify('Compression complete', `Compressed ${okCount} clip${okCount !== 1 ? 's' : ''} into your Compressed folder.`);
+  else if (!compressAborted && failedCount) notify('Compression failed', `None of the ${failedCount} clip${failedCount !== 1 ? 's' : ''} could be compressed.`);
+  return { ok: !compressAborted && (okCount > 0 || failedCount === 0), cancelled: compressAborted, results, outDir: out, okCount, failedCount };
 });
 
 ipcMain.handle('finalize:getSource', () => config.finalizeSource || '');
@@ -806,7 +813,21 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
   // yes.) Under a plan we NEVER invent a folder for a clip the user didn't place.
   const usingPlan = list.some((it) => typeof it.rel === 'string' && it.rel.trim());
   const et = opts.embed ? getExifTool() : null;
-  const emit = (index, name, phase) => sender.send('finalize:progress', { index, total: list.length, name, phase });
+  // ONE timestamp for the whole run, taken before anything moves.
+  //
+  // It has to be stable because the undo record is now written per-clip (see below) and rewritten at
+  // the end — a fresh Date.now() each time would make the record's ts drift forward. It also has to
+  // be EARLY: organize:undo calls reverseLastLedger(lastOrganize.ts), which refuses to reverse a
+  // ledger delta whose own ts is earlier than the run's. Stamping at the start means every delta
+  // this run records is unambiguously at-or-after it, so undo can always take the memory back too.
+  const runTs = Date.now();
+  // Guarded, like every other progress emitter in this app (verify:copies :1309, phone:pull,
+  // phone:copyVideos, compress:run, drive:removed) — "best-effort; the sender may already be gone".
+  // finalize:run and copy:start were the only two without it, and they are the two that MOVE
+  // FOOTAGE: an unguarded throw here aborts a run mid-way, after clips are already relocated.
+  const emit = (index, name, phase) => {
+    try { sender.send('finalize:progress', { index, total: list.length, name, phase }); } catch { /* window gone */ }
+  };
 
   for (let i = 0; i < list.length; i += 1) {
     const it = list[i];
@@ -1034,6 +1055,18 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     // Marking a clip done whose metadata reached neither would let the finalMeta prune evict the
     // AI's work with nothing to show for it.
     if (!skipMove && metaLanded) filed.push(it.name);
+    // ⚠⚠ STAMP THE UNDO RECORD AS WE GO, not only at the end.
+    //
+    // All of this run's bookkeeping used to happen AFTER the loop, so any throw between the first
+    // organizeMove and the end meant: clips physically relocated, `config.lastOrganize` never
+    // written, ledger never updated — i.e. footage moved into his Projects tree with NO undo record
+    // at all. The renderer catches the rejection and shows "Failed: <msg>", which reads as "the run
+    // didn't happen" while N clips have in fact moved and cannot be moved back.
+    //
+    // 10-boot.js:370 explicitly anticipates this rejection ("a locked file on Windows throws
+    // EBUSY"), so the renderer was defended and main was not. Writing per-clip is cheap next to the
+    // file I/O already happening, and it means the undo record can never be behind the filesystem.
+    if (undoable.length) { config.lastOrganize = { ts: runTs, moves: undoable }; saveConfig(); }
   }
   markFinalMetaDone(filed);
 
@@ -1064,8 +1097,11 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     } catch (err) { summary.errors.push(`CSV: ${err.message}`); }
   }
 
-  // Record this run's relocations so "Undo last organize" can move them back.
-  if (undoable.length) { config.lastOrganize = { ts: Date.now(), moves: undoable }; saveConfig(); }
+  // Record this run's relocations so "Undo last organize" can move them back. Already stamped
+  // per-clip inside the loop (see the note there); this is the final, complete write. It MUST reuse
+  // `runTs` rather than Date.now(), or the record's timestamp would jump forward past the ledger
+  // entries recorded below and reverseLastLedger would refuse to take them back.
+  if (undoable.length) { config.lastOrganize = { ts: runTs, moves: undoable }; saveConfig(); }
 
   // Record what Run filed into the project ledger — AFTER lastOrganize is stamped, because
   // organize:undo only reverses a ledger delta whose ts is >= the run's (see reverseLastLedger).

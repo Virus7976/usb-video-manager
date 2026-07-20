@@ -188,7 +188,16 @@ async function openCompress() {
     // untouched, and a failed one left clips that may succeed on a retry. After a clean sweep it
     // stays hidden, so the natural next step is Organize rather than a pointless re-run.
     if ((res && res.cancelled) || failed.length) $$('#cmpRun').classList.remove('hidden');
-    showToast(res && res.cancelled ? `Stopped — ${ok.length} compressed` : `Compressed ${ok.length} clip${ok.length !== 1 ? 's' : ''}${saved ? ` · saved ${fmtBytes(saved)}` : ''}${failed.length ? ` · ${failed.length} failed` : ''} ✓`, 6000);
+    // The ✓ used to be unconditional on the non-cancelled branch, so a run in which every clip
+    // failed read "Compressed 0 clips · 12 failed ✓". Third instance of that pattern in this app
+    // (after "AI auto-enhance complete ✓" and "Filed N …✓") — the per-file errors already reach
+    // logIssue below, so only the headline was lying.
+    const cmpMsg = (res && res.cancelled)
+      ? `Stopped — ${ok.length} compressed`
+      : (ok.length
+        ? `Compressed ${ok.length} clip${ok.length !== 1 ? 's' : ''}${saved ? ` · saved ${fmtBytes(saved)}` : ''}${failed.length ? ` · ${failed.length} failed` : ''} ✓`
+        : `Nothing was compressed${failed.length ? ` — ${failed.length} failed` : ''}`);
+    showToast(cmpMsg, 6000);
     if (failed.length) failed.forEach((r) => logIssue('Compress', `${r.name}: ${r.error || 'failed'}`));
   }
 }

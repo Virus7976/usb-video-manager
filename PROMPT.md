@@ -855,6 +855,22 @@ in it override any other prioritisation:
 Also in there: **11 capabilities that are built, shipped, and unreachable** — no preload caller, or
 no UI route. Several are small wiring jobs and each one is something he paid for and cannot use.
 
+
+### ⚠ AN UNIDENTIFIED E2E FLAKE — do not dismiss it if you see it
+
+On 2026-07-20 the e2e suite reported **153/1** once, immediately after a full vm run in the same
+command, and then passed 154/0 on three consecutive re-runs. The failing test name was NOT captured
+before it went away, so this is an honest open item rather than a fixed one.
+
+Two flakes in `test/e2e/phone-review-page.e2e.mjs` were found and fixed the same day, and a third
+cause is plausible: that file launches **Chromium** while the rest of the suite launches **Electron**,
+so a full run has several browsers competing, and its image-load waits are the most timing-sensitive
+assertions in the suite.
+
+**If you see a single e2e failure, capture the NAME before re-running.** `npm run test:e2e 2>&1 | grep
+"^not ok"` costs nothing and is the difference between fixing it and rediscovering it. A suite that
+"usually passes" trains you to ignore failures, which is worse than a red suite.
+
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
 - **A STRUCTURAL ASSERTION MUST NAME THE THING THAT WOULD GO MISSING — and you must break each part

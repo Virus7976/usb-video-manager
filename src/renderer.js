@@ -14616,8 +14616,17 @@ $('finRunBtn').addEventListener('click', async () => {
   }
   $('finBar').style.width = '100%';
   $('finPct').textContent = '100%';
-  $('finLabel').textContent = 'Done';
-  $('finLabel').classList.add('done');
+  // "DONE" OVER A RUN THAT FILED NOTHING IS THE DEAD-END.
+  //
+  // Filing is the point of this screen — his project ledger read 0 for months. A run with Organize
+  // unticked embeds metadata and reports a green "Done" with no `moved` chip at all, so nothing on
+  // screen mentions filing and the natural reading is "finished". Same for a run that was organizing
+  // but moved 0. He walks away believing the job is complete, and the pile has not moved.
+  //
+  // Say it plainly, and leave the Run button available so the fix is one click rather than a hunt.
+  const filedNothing = !summary.moved;
+  $('finLabel').textContent = filedNothing ? 'Nothing was filed' : 'Done';
+  $('finLabel').classList.toggle('done', !filedNothing);
   // Result stat chips.
   const stats = [];
   if (options.embed) stats.push(['embedded', summary.embedded, '']);
@@ -14639,7 +14648,23 @@ $('finRunBtn').addEventListener('click', async () => {
     console.warn('Finalize issues:', summary.errors);
   }
   finRan = true;
-  $('finRunBtn').classList.add('hidden');
+  // The one-click fix: if nothing was filed, tick Organize and keep Run on screen so the next click
+  // actually files. Hiding Run here is what turned "nothing happened" into a dead end.
+  if (filedNothing) {
+    const org = $('finOrganize');
+    const wasOff = org && !org.checked;
+    if (org) org.checked = true;
+    // Keep the CSV path if one was written — this line runs after the csvPath assignment above, so a
+    // bare overwrite would discard a real output the run produced.
+    const why = wasOff
+      ? 'Organize was unticked, so nothing moved into your Projects tree. It is ticked now — press Run to file them.'
+      : 'Nothing moved into your Projects tree. Check the destination folder above, then press Run again.';
+    $('finSub').textContent = summary.csvPath ? `${why}  ·  Resolve CSV: ${summary.csvPath}` : why;
+    $('finRunBtn').disabled = false;
+    $('finRunBtn').classList.remove('hidden');
+  } else {
+    $('finRunBtn').classList.add('hidden');
+  }
   $('finOpenDestBtn').classList.remove('hidden');
   $('finDoneHome').classList.remove('hidden');
   // Refresh the underlying scan so a re-entry to step 1 reflects the moved files.

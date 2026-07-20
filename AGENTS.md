@@ -322,6 +322,32 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20t — Tier 1 item 12: "Done" over a run that filed nothing.
+
+Filing is the entire point of the Organize screen, and his ledger read 0 for months. A run with
+**Organize unticked** embedded metadata and then reported a green **"Done"** — and because the stat
+chips are built per-option (`if (options.organize) stats.push(['moved', …])`), an unticked Organize
+means **nothing on screen mentions filing at all**. There is no zero to notice. Then it hid the Run
+button and offered "Open destination" and "Done → Home": the app congratulating him for a run that
+achieved the one thing it was supposed to avoid.
+
+Now: the label says **"Nothing was filed"** and drops the success styling, Organize is ticked for him,
+and **Run stays on screen** — the difference between a dead end and a next step is one visible button.
+The message distinguishes the two causes, because "you unticked Organize" and "Organize ran and moved
+nothing" need different next steps (a tick vs a destination problem).
+
+`test/run-that-filed-nothing-says-so.test.mjs` (8), six breaks proven — including the opposite
+direction (a successful run must still hide Run, or he is invited to re-file for no reason) and the
+CSV path, which this block runs after and would otherwise overwrite.
+
+**A break that slipped through, and the fix generalises.** Reordering `wasOff` to be read AFTER
+ticking the box makes it permanently false — so the message would always blame the destination, even
+when the cause was the unticked box. My assertion only checked the line EXISTED. **When the bug is an
+ordering, the assertion has to compare positions, not match text** — same family as the tie-break
+fixture in `j`.
+
+vm **1345/1202/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20s — swept the same axis and found a third omission, then made the rule enforceable.
 
 `r` fixed faces. Sweeping every deferred write in the renderer found the **session state** missing

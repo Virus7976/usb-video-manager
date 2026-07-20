@@ -42,13 +42,14 @@ const preloadMethods = [...preloadSrc.matchAll(/^\s{2}([A-Za-z0-9_]+):\s*\(/gm)]
 // codebase's own lessons warn about. Trimming them is a good deliberate follow-up — each one removed
 // is one less thing an injected script can call in a webSecurity:false renderer.
 const KNOWN_UNUSED = [
-  'aiLoaded', 'aiRecallShoot', 'aiVisionAdvice', 'applyRename',
+  'aiRecallShoot', 'aiVisionAdvice', 'applyRename',
   'facesImage', 'feedbackList', 'getIntake',
 ];
-// Three came OFF this list on 2026-07-20 because they now have real UI: `adbDisable` (a "Turn off
+// FOUR came OFF this list on 2026-07-20 because they now have real UI: `adbDisable` (a "Turn off
 // fast transfer" button — there was previously no route back to MTP except hand-editing config),
-// `clearPhoneBackupFolder` (File → "Stop using the wireless backup folder"), and
-// `removeFieldHistory` (the × on a suggestion row, so a typo is no longer offered forever).
+// `clearPhoneBackupFolder` (File → "Stop using the wireless backup folder"), `removeFieldHistory`
+// (the × on a suggestion row, so a typo is no longer offered forever), and `aiLoaded` (the Model
+// store now says which model is resident in VRAM — the fact his 6 GB card makes load-bearing).
 //
 // ⚠ Note the trap that shaped one of them. `used()` matches `.${m}(`, so a RENDERER-LOCAL function
 // with the same name as the bridge method satisfies this check on its own — the first draft of the

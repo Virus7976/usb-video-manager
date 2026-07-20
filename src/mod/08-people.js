@@ -1718,12 +1718,36 @@ function showModelStore(opts = {}) {
       pulling = false;
     }
   }
+  // Which models are RESIDENT IN VRAM right now (FEATURES.md item 55 — `ai:loaded` had a handler,
+  // a bridge method and no caller). This belongs here because this is the screen where the question
+  // has consequences: his card is 6 GB, which fits ONE 7-8B model. Two resident at once is the
+  // difference between an analyze run that takes minutes and one that swaps to disk and crawls, and
+  // until now nothing in the app could tell him which it was.
+  let loadedByBase = new Map();
+  async function readVram() {
+    let r; try { r = await window.api.aiLoaded(); } catch { r = null; }
+    const models = (r && r.models) || [];
+    loadedByBase = new Map(models.map((m) => [String(m.name).split(':')[0], m]));
+    return models;
+  }
+  const gb = (bytes) => `${(Number(bytes || 0) / 1e9).toFixed(1)} GB`;
+  function vramLine(models) {
+    if (!models.length) return 'nothing loaded in VRAM';
+    const total = models.reduce((a, m) => a + Number(m.vram || 0), 0);
+    const names = models.map((m) => m.name).join(' + ');
+    // Two resident models is the state worth flagging, not just reporting.
+    return models.length > 1
+      ? `⚠ ${models.length} models in VRAM (${names}, ${gb(total)}) — they are competing for your card`
+      : `${names} in VRAM (${gb(total)})`;
+  }
   async function load() {
     q('.ms-status').textContent = 'Loading…';
     let res; try { res = await window.api.aiCatalog(); } catch { res = null; }
     if (!res || !res.ok) { q('.ms-status').innerHTML = 'Ollama isn’t running. Install it from <code>ollama.com</code> — it’s a small free app that runs in the background — then reopen this. (AI is optional; everything else works without it.)'; return; }
+    // Read VRAM BEFORE rendering, so the badges and the summary line can never disagree.
+    const loaded = await readVram();
     const inst = res.catalog.filter((m) => m.installed).length;
-    q('.ms-status').textContent = `${res.catalog.length} vision models · ${inst} installed${res.live ? '' : ' · built-in list'}`;
+    q('.ms-status').textContent = `${res.catalog.length} vision models · ${inst} installed${res.live ? '' : ' · built-in list'} · ${vramLine(loaded)}`;
     renderRows(q('.ms-list'), res.catalog, 'vision');
     const installed = res.installed || [];
     const instBase = new Set(installed.map((n) => n.split(':')[0]));
@@ -1735,7 +1759,9 @@ function showModelStore(opts = {}) {
     for (const m of items) {
       const row = document.createElement('div'); row.className = 'ai-store-item' + (m.rec ? ' rec' : '');
       const meta = [m.params, m.size].filter(Boolean).join(' · ') || (kind === 'reason' ? 'text model' : 'vision model');
-      const badges = `${m.rec ? '<span class="ai-store-badge">Recommended</span>' : ''}${m.live ? '<span class="ai-store-badge live">New</span>' : ''}`;
+      const res = loadedByBase.get(String(m.name).split(':')[0]);
+      const vramBadge = res ? `<span class="ai-store-badge vram">In VRAM · ${escapeHtml(gb(res.vram))}</span>` : '';
+      const badges = `${m.rec ? '<span class="ai-store-badge">Recommended</span>' : ''}${m.live ? '<span class="ai-store-badge live">New</span>' : ''}${vramBadge}`;
       row.innerHTML = `<div class="ai-store-info"><div class="ai-store-name">${escapeHtml(m.name)}${badges}</div><div class="ai-store-meta muted small">${escapeHtml(meta)}</div><div class="ai-store-desc muted small">${escapeHtml(m.desc || '')}</div></div><div class="ai-store-action"></div>`;
       const act = row.querySelector('.ai-store-action');
       const useFn = kind === 'reason' ? opts.onUseReasoning : opts.onUseVision;

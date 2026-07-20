@@ -1373,6 +1373,9 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
   background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-text);
 }
 .ai-store-badge.live { background: color-mix(in srgb, var(--warn, #d98324) 20%, transparent); color: var(--warn, #d98324); }
+/* Resident in VRAM right now. Deliberately the same weight as the other badges — this is a fact
+   about the machine, not a warning; the warning (two models resident) is in the summary line. */
+.ai-store-badge.vram { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent-text); }
 .ai-store-meta { font-variant-numeric: tabular-nums; }
 .ai-store-desc { line-height: 1.4; }
 .ai-store-action { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 110px; }

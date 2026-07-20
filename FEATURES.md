@@ -170,7 +170,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 52 | Tell him when the AI setup is silently wrong | ✓ | ✓ | ✓ | partial — desktop only |
 | 53 | Run the AI on a DIFFERENT machine | ✓ | – | ✓ | partial — endpoint is configurable; 4 known gaps (timeouts, model-store writes, eviction, queue-and-retry) |
 | 54 | Queue AI work when the AI box is asleep | ✓ | – | ✓ | todo |
-| 55 | **Show which model is resident in VRAM** | ✓ | – | – | **dead** — `ai:loaded` has no caller |
+| 55 | **Show which model is resident in VRAM** | ✓ | – | – | done (D) — badged per row in the Model store, and two-at-once is called out (his card is 6 GB) |
 | 56 | **Backfill the ledger from his existing library** | ✓ | – | – | partial — real, but only reachable if the health check happens to flag it |
 
 ### E. Faces and people (57–70)
@@ -246,12 +246,12 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 
 ## What this list says
 
-**8 capabilities are built, shipped, and unreachable** (42, 55, 84, plus `faces:image`,
+**7 capabilities are built, shipped, and unreachable** (42, 84, plus `faces:image`,
 `feedback:list`, `intake:get`, `ai:visionAdvice`, `ai:recallShoot`). He paid for those and cannot use
 them. Several are small wiring jobs.
 
-Three came off that list on 2026-07-20 — **7, 10 and 28** — and they had a shape worth naming: each
-was the *off switch* for something the app could only turn ON. Fast transfer, the wireless backup
+Four came off that list on 2026-07-20 — **7, 10, 28 and 55**. The first three had a shape worth
+naming: each was the *off switch* for something the app could only turn ON. Fast transfer, the wireless backup
 folder, a remembered autocomplete value. A feature is not finished at the point it can be enabled,
 and a reachability test that only asks "does a handler exist" will never notice, because in all three
 cases the handler was there and correct.

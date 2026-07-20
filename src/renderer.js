@@ -10559,6 +10559,37 @@ function _clusterInAnyScene(c) {
   }
   return false;
 }
+// ⚠ STORED PRECISION FOR FACE DESCRIPTORS — a MEASURED change, not a tidy-up.
+//
+// A descriptor is 128 floats. Serialised at full JSON precision that is ~2,764 bytes each, and his
+// faces-pending.json holds 4,715 of them — the descriptors ARE the file (14.5 MB, of which only
+// 37 KB is thumbnails). It is rewritten on every debounced save while he works through the review,
+// which is exactly the workflow that currently gets abandoned at 458 unconfirmed faces.
+//
+// Measured on his real store before changing anything, because a descriptor is INPUT to the matcher
+// and this repo has already learned once that quietly altering measured input costs accuracy
+// ([[usb-app-tool-strings-are-input]]):
+//
+//     precision   bytes/vector   largest euclidean shift over 400 real pairs
+//     full         2764          —
+//     6 dp         1336          —
+//     5 dp         1210 (-56%)   0.000014      ← chosen
+//     4 dp         1079 (-61%)   0.000118
+//     3 dp          948 (-66%)   0.001383
+//
+// FACE_CLUSTER_DIST and FACE_SUGGEST_DIST are ~0.35-0.5, so 5 dp shifts a distance by roughly one
+// twenty-five-thousandth of the decision threshold. No comparison can change outcome.
+//
+// Applied on SAVE only: existing full-precision records are read back untouched and simply shrink
+// the next time they are written.
+const DESC_DP = 1e5;   // 5 decimal places
+function packDescriptor(d) {
+  if (!Array.isArray(d)) return d;
+  return d.map((x) => Math.round(x * DESC_DP) / DESC_DP);
+}
+function packDescriptors(list) {
+  return (Array.isArray(list) ? list : []).slice(0, 80).map(packDescriptor);
+}
 function _serializePending(clusters) {
   // ⚠ ONLY PRUNE WHEN THE SCENE LIST CAN BE TRUSTED.
   //
@@ -10576,7 +10607,7 @@ function _serializePending(clusters) {
     .filter((c) => c && c.descriptor && (!(c.done || c.skipped) || !scenesTrustworthy || _clusterInAnyScene(c)))
     .map((c) => ({
       thumb: c.thumb || '',
-      descriptor: c.descriptor,
+      descriptor: packDescriptor(c.descriptor),
       // Cap the descriptor samples PER CLUSTER. Measured on his real store (2026-07-20):
       // faces-pending.json is 14 MB holding 4715 descriptor vectors across 458 clusters, one cluster
       // alone holding 318 (~880 KB). Only 37 KB of that 14 MB is thumbnails — the descriptors ARE
@@ -10589,7 +10620,7 @@ function _serializePending(clusters) {
       //
       // Keeps the FIRST 80, not the last: the earliest samples are the ones the cluster's own
       // `descriptor` was formed from, so they are what its identity actually rests on.
-      descriptors: (c.descriptors || []).slice(0, 80),
+      descriptors: packDescriptors(c.descriptors),
       clipKeys: [...(c.clipKeys || [])],
       suggest: c.suggest || null,
       rejected: !!c.rejected,

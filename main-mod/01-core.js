@@ -369,14 +369,28 @@ function loadConfig() {
     ffmpegPath: 'ffmpeg',
     ffprobePath: 'ffprobe',
     hotkey: 'CommandOrControl+Alt+U',
-    launchAtLogin: true,
+    // ⚠ false. A brand-new user installs a video utility and it silently registered itself to run at
+  // every boot, before they had even finished setup — applied unconditionally at startup via
+  // applyLoginItem(config.launchAtLogin). That is the kind of default that gets an app uninstalled.
+  // It stays one click away in the tray menu. (His config sets this to true explicitly, so his
+  // machine is unaffected.)
+  launchAtLogin: false,
     autoPoll: false,
     pollIntervalMs: 2500,
     // How compression happens: 'external' = a watch-folder tool (e.g. Tdarr) compresses
     // the intake into the Compressed folder on its own resources (the app does NOT use
     // this machine's CPU); 'app' = the app transcodes locally with ffmpeg. Default keeps
     // the historical behavior (the app never compressed locally).
-    compressMode: 'external',
+    // ⚠ 'app', not 'external'. This defaulted to the WATCH-FOLDER mode — which is Jake's Tdarr rig,
+  // not a stock setup — and applyMode() HIDES the Run button entirely in that mode. So a brand-new
+  // user opened Compress and there was no compress button at all, just a paragraph telling them
+  // their external compressor would handle it. That is the direct contradiction of "ship stock
+  // working completely on 1 computer with it compressing everything". The wizard never asks about
+  // compression mode either, so nothing else surfaced the choice.
+  //
+  // His own config.json sets compressMode explicitly ("external"), so this default change does not
+  // touch his setup — a saved value always wins over a default.
+  compressMode: 'app',
     subjects: [],
     descriptions: {},
     categories: [],

@@ -177,8 +177,18 @@ test('the default Projects root finds his YEAR folder, not the level above it', 
   const fn = src.slice(src.indexOf('function defaultProjectsRoot()'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   assert.match(body, /String\(new Date\(\)\.getFullYear\(\)\)/, 'prefers the current year…');
-  assert.match(body, /statSync\(path\.join\(base, year\)\)\.isDirectory\(\)/, '…but only when it really exists');
-  assert.match(body, /return base;/, 'and falls back honestly when it does not');
+  assert.match(body, /if \(exists\(year\)\) return year;/, '…but only when it really exists');
+  assert.match(body, /if \(exists\(base\)\) return base;/, 'then his convention without the year folder');
+  // 2026-07-20: the LAST rung changed. It used to return `Videos/02 - Projects` unconditionally —
+  // his personal folder convention asserted on every machine. A fresh install got a path that did
+  // not exist and had never been chosen, and because config:get returns
+  // `projectsRoot || defaultProjectsRoot()` it was never empty, so the wizard prefilled it and
+  // accepting silently saved it. His two rungs above are untouched and still win when the folders
+  // are really there — which on his machine they are.
+  assert.match(body, /return path\.join\(os\.homedir\(\), 'Videos'\);/,
+    'and falls back to the OS video folder, which assumes nothing');
+  assert.doesNotMatch(body.slice(body.indexOf('if (exists(base))')), /return base;\s*\n\}/,
+    '⚠ the unconditional "02 - Projects" fallback must not come back');
 });
 
 test('a Projects folder that already EXISTS is offered in one click, not a file browser', async () => {

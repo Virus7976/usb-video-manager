@@ -545,11 +545,32 @@ async function readProjectTree(dir, depth) {
 // would drop every clip a level ABOVE his actual project folders — technically "organized", and
 // useless. Prefer the current year when that folder really exists, and this keeps working in 2027.
 function defaultProjectsRoot() {
+  // ⚠ HIS FOLDER CONVENTION IS NOT A DEFAULT. This used to return
+  // `<home>/Videos/02 - Projects`, descending into a year subfolder when one existed — which is
+  // Jake's personal tree shape (`02 - Projects/2026/2026 - Client Work`) baked in as the app-wide
+  // fallback. On anyone else's machine that folder does not exist, and because
+  // `config:get` returns `projectsRoot || defaultProjectsRoot()`, the value was never empty: the
+  // wizard PREFILLED a path they never chose and accepting it silently saved it. Skip the wizard and
+  // the UI displayed a destination that was not actually configured anywhere on disk.
+  //
+  // The fix is NOT to drop his convention — that would file his clips a level above his real project
+  // folders, which is the bug this function was written to avoid. It is to stop ASSERTING the
+  // convention on machines that do not have it. Each rung is now GUARDED by the folder existing:
+  //
+  //   <home>/Videos/02 - Projects/<year>   ← his actual tree, when it is really there
+  //   <home>/Videos/02 - Projects          ← his convention without the year folder
+  //   <home>/Videos                        ← the OS video location; assumes nothing
+  //
+  // The old version guarded the year rung but returned `02 - Projects` unconditionally, so a fresh
+  // install got a path that did not exist and had never been chosen — and since config:get returns
+  // `projectsRoot || defaultProjectsRoot()`, it was never empty, so the wizard PREFILLED it and
+  // accepting silently saved it.
+  const exists = (d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } };
   const base = path.join(os.homedir(), 'Videos', '02 - Projects');
-  const year = String(new Date().getFullYear());
-  try { if (fs.statSync(path.join(base, year)).isDirectory()) return path.join(base, year); }
-  catch { /* no year folder — the base is the honest default */ }
-  return base;
+  const year = path.join(base, String(new Date().getFullYear()));
+  if (exists(year)) return year;
+  if (exists(base)) return base;
+  return path.join(os.homedir(), 'Videos');
 }
 ipcMain.handle('projects:getRoot', () => config.projectsRoot || defaultProjectsRoot());
 ipcMain.handle('projects:setRoot', (_e, p) => { config.projectsRoot = String(p || ''); saveConfig(); return config.projectsRoot; });

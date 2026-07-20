@@ -395,7 +395,13 @@ function phoneUpdateBar() {
 // Temp" (the user's chosen spot) "before they go anywhere"; videos to a sibling temp,
 // to be renamed and then copied to the compression intake like GoPro clips.
 function phoneStagingDests() {
-  const intake = (cfg && cfg.intakeFolder) || 'L:\\Videos\\02 - Projects\\Compression\\01 - Uncompressed';
+  // ⚠ NO HARDCODED DRIVE LETTER. This fell back to `L:\Videos\02 - Projects\Compression\…` — Jake's
+  // drive, on anyone else's machine. It is currently unreachable (config:get always populates
+  // intakeFolder), but it is a landmine: any future path where `cfg` is null or partial during the
+  // phone flow would silently stage someone's media onto a drive letter that means nothing to them.
+  // Fail loudly instead — the caller shows the "choose your folder" empty state.
+  const intake = (cfg && cfg.intakeFolder) || '';
+  if (!intake) return { photo: '', video: '' };
   const base = intake.replace(/[\\/]+[^\\/]*$/, '');   // …\Compression
   const photo = (cfg && cfg.photosTempFolder) || `${base}\\04 - Photos Temp`;
   const video = `${base}\\_Phone Video Temp`;

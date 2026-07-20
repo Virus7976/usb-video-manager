@@ -119,12 +119,46 @@
     }
   }
 
+  // ⚠⚠ CROPS ARE FETCHED, NOT src'd. An <img src="/api/face-crop?..."> is a plain browser request
+  // and CANNOT carry a custom header — so every crop came back 401 and the review was a grid of
+  // broken images. Only rendering the page revealed it; the API itself was correct the whole time.
+  //
+  // The two obvious fixes were both worse. Allowing `?token=` puts the secret into history, proxy
+  // logs and screenshots — rejected deliberately when this was designed. A cookie would be sent
+  // automatically on every request, which is the property the token was chosen to avoid.
+  //
+  // So: fetch with the header, turn the bytes into a blob URL. Auth stays header-only, and the
+  // browser still caches the underlying request. `loading="lazy"` is preserved by only fetching when
+  // the image scrolls near the viewport — with 414 pending faces, eager fetching would stall a phone.
+  const cropObserver = ('IntersectionObserver' in window) ? new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      cropObserver.unobserve(e.target);
+      loadCrop(e.target);
+    }
+  }, { rootMargin: '300px' }) : null;
+
+  async function loadCrop(img) {
+    const name = img.dataset.crop;
+    if (!name || img.dataset.loaded) return;
+    img.dataset.loaded = '1';
+    try {
+      const r = await fetch(`/api/face-crop?name=${name}`, { headers: { 'X-Pair-Token': token } });
+      if (!r.ok) return;
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      // Released once decoded — 414 retained blobs would be a real memory problem on a phone.
+      img.onload = () => URL.revokeObjectURL(url);
+      img.src = url;
+    } catch { /* a crop that will not load is not worth failing the review over */ }
+  }
+
   function cardFor(item) {
     const el = document.createElement('div');
     el.className = 'card';
     const name = item.suggest && item.suggest.name;
     el.innerHTML = `
-      <img class="crop" loading="lazy" src="/api/face-crop?name=${encodeURIComponent(item.crop)}" alt="" />
+      <img class="crop" loading="lazy" data-crop="${encodeURIComponent(item.crop)}" alt="" />
       <div class="meta">
         <div class="who">${name ? `Is this ${esc(name)}?` : 'Who is this?'}</div>
         <div class="muted">${item.clips} clip${item.clips === 1 ? '' : 's'}${item.samples ? ` · ${item.samples} samples` : ''}</div>
@@ -160,6 +194,8 @@
       }
       if (chips.children.length) el.appendChild(chips);
     }
+    const img = el.querySelector('img.crop');
+    if (cropObserver) cropObserver.observe(img); else loadCrop(img);
     return el;
   }
 

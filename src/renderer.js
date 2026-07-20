@@ -10867,7 +10867,18 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     if (persist) { schedulePendingSave(clusters); saveFaceScenesNow(); }   // see the note on render()
     const anySuggested = suggested.length > 0 || scenes.some((s) => s.cis.some((ci) => unresolved(ci) && clusters[ci].suggest && !clusters[ci].rejected));
     const btn = ov.querySelector('.fg-confirm-all');
-    if (btn) btn.style.display = anySuggested ? '' : 'none';
+    if (btn) {
+      btn.style.display = anySuggested ? '' : 'none';
+      // SAY HOW MANY, before he clicks. This bulk-tags every suggested person across all their clips
+      // in one go — borderline suggestions included — so "Confirm all suggestions" asks him to accept
+      // an unknown quantity. On his store the pile is 458 clusters, and the difference between
+      // confirming 3 and confirming 90 is the difference between a glance and a decision.
+      //
+      // Counted exactly as the click handler counts, so the number cannot promise a different action
+      // than the one it performs.
+      const n = clusters.filter((c) => !c.done && !c.skipped && c.suggest && !c.rejected).length;
+      btn.textContent = n ? `Confirm all ${n} suggestion${n !== 1 ? 's' : ''}` : 'Confirm all suggestions';
+    }
   }
 
   // Clicking a face selects it; the SAME card he already uses (suggestion, chips, "Who is this?"

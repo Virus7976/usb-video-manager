@@ -77,6 +77,22 @@ gets filed first (alphabetically that is `lawnmowing`, the 15-clip spelling).
 follows HIS name permanently. Pre-scanning the batch to pick the majority spelling is more machinery
 than the cosmetic gain justifies.
 
+### Q6 — auto-confirming faces above a confidence you set
+**The question:** Tier 2 item 24 — *"auto-confirm faces above a confidence he sets, and only ask about
+the uncertain ones."* Your 458 pending clusters include many that already match one of your 48
+enrolled people; the app matches them, but saves every one as UNCONFIRMED, so they all still queue for
+review. What distance threshold should auto-confirm at — or would you rather it never auto-confirms?
+
+**Why it needs you:** this decides face IDENTITY without asking, and that identity gets embedded into
+your files. Too loose and the wrong name is written into footage and has to be found and undone; the
+threshold is the whole safety margin, which is why the item says "he sets" rather than "pick one".
+Related: a cosmetic 0.2-vs-0.35 threshold difference elsewhere in this code was measured as a real
+accuracy change, so this is not a number to guess.
+
+**What exists in the meantime (nothing changed):** the review already has **"Confirm all
+suggestions"** — one click accepts every suggested match in the current grid, and each is undoable
+individually. So the bulk path is there; only the *automatic* part is open.
+
 ---
 
 ## Answered

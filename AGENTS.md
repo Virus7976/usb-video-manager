@@ -322,6 +322,37 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ag — the bulk face-accept now states its scale. Item 24 logged rather than guessed.
+
+Audited Tier 2's face items against what is actually built: **21** (bulk-apply from one clip) exists
+as "Apply this name to selected"; **22** (type-ahead from his history) exists as the subject/
+description combos; **23** (one-key accept) exists as the keyboard-first review; **25**'s grouping is
+what the cluster grid already does. Only **24** is a genuine gap.
+
+**24 is deliberately NOT built** — *"auto-confirm above a confidence he sets"* decides face IDENTITY
+without asking, and that identity is embedded into his files. Too loose and a wrong name is written
+into footage and has to be found and undone. The threshold IS the safety margin, which is why the item
+says "he sets". A cosmetic 0.2-vs-0.35 threshold difference elsewhere in this code was already
+measured as a real accuracy change. Logged as `QUESTIONS.md` **Q6** with the numbers he needs.
+
+What needed no decision: **"Confirm all suggestions" asked him to accept an unknown quantity.** On his
+458-cluster pile the difference between confirming 3 and confirming 90 is the difference between a
+glance and a decision, and the button did not say which he was making. It now reads *"Confirm all 37
+suggestions"*.
+
+**Counted with the SAME filter the click handler uses** — a separately-derived number could promise a
+different action than the one performed, and here that means a different set of names written into his
+footage. The test asserts the filter expression appears **exactly twice**, so the label and the action
+cannot drift apart.
+
+Also pinned the two safeguards this button already had, since they are easy to lose in a refactor: the
+restore point before a bulk confirm, and every confirmation funnelling through `assign()` (which
+persists the tag, the enrolment and the undo receipt).
+
+Same principle as `ae`: **something that acts in bulk has to be legible before it acts.**
+
+vm **1428/1285/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20af — Tier 2 item 20: answering a shoot now names the whole day.
 
 The remaining Tier 1 items are low-value against his ACTUAL data (a delete-step card would never

@@ -622,6 +622,50 @@ function selectBetweenSelected() {
   showToast(`Selected ${hi - lo + 1} clips in between ✓`, 2200);
 }
 
+// GOPRO CHAPTERS ARE ONE RECORDING, not several clips.
+//
+// A GoPro splits a long take at ~4 GB and names the pieces `GX{chapter}{fileid}` — so `GX016817`,
+// `GX026817` … `GX066817` are SIX pieces of one continuous shot. Measured on his real card: recording
+// 6817 has 6 chapters, two others have 3, and several have 2 — about 13 of 37 raw clips are chapters
+// of a take he already named.
+//
+// Returns the OTHER pieces of the same recording. Deliberately strict: same camera prefix, same
+// 4-digit file id, different chapter. Two unrelated clips can share neither, so this cannot bind
+// clips that are not literally the same shot.
+function chapterSiblings(clip) {
+  const m = /^(G[XHP])(\d{2})(\d{4})$/i.exec(String((clip && clip.origBase) || '').trim());
+  if (!m) return [];
+  const [, prefix, chapter, fileId] = m;
+  return (state.scannedFiles || []).filter((c) => {
+    if (!c || c === clip) return false;
+    const n = /^(G[XHP])(\d{2})(\d{4})$/i.exec(String(c.origBase || '').trim());
+    return !!n && n[1].toUpperCase() === prefix.toUpperCase() && n[3] === fileId && n[2] !== chapter;
+  });
+}
+
+// Give the rest of a chaptered take the name he just typed — filling only what is still empty.
+//
+// Same rule as the shoot-day fill (2026-07-20af) at a tighter and less arguable scope: a shoot-day
+// shares a subject 88% of the time, but chapters of one recording ARE the same shot. Never an
+// overwrite: a chapter he has named differently on purpose stays as he left it.
+function fillChapterSiblings(clip) {
+  const sibs = chapterSiblings(clip);
+  if (!sibs.length) return 0;
+  let n = 0;
+  for (const c of sibs) {
+    let touched = false;
+    if ((clip.subject || '').trim() && !(c.subject || '').trim()) { c.subject = clip.subject; touched = true; }
+    if ((clip.description || '').trim() && !(c.description || '').trim()) { c.description = clip.description; touched = true; }
+    if (touched) n += 1;
+  }
+  if (n) {
+    try { refreshNames(); } catch { /* the field still holds what he typed */ }
+    try { scheduleDraftSave(); } catch { /* saved on the next edit */ }
+    showToast(`Also named ${n} more chapter${n !== 1 ? 's' : ''} of this recording — the camera split one take.`, 4500);
+  }
+  return n;
+}
+
 function wireRowEditing(listEl) {
   // WHERE HE IS. Recorded on focus of any field in a row, so a relaunch can put him back on the clip
   // he was working on rather than the top of a 400-clip list. Focus rather than input: moving through
@@ -658,7 +702,7 @@ function wireRowEditing(listEl) {
       state.scannedFiles[Number(inp.dataset.subject)].subject = inp.value;
       refreshNames();
     });
-    inp.addEventListener('change', () => { recordAiEdit(state.scannedFiles[Number(inp.dataset.subject)], 'subject', inp.value); rememberSubject(inp.value); });
+    inp.addEventListener('change', () => { const c0 = state.scannedFiles[Number(inp.dataset.subject)]; recordAiEdit(c0, 'subject', inp.value); rememberSubject(inp.value); fillChapterSiblings(c0); });
     wireEditPlay(inp, Number(inp.dataset.subject));
     attachSubjectCombo(inp);
   });
@@ -667,7 +711,7 @@ function wireRowEditing(listEl) {
       state.scannedFiles[Number(inp.dataset.desc)].description = inp.value;
       refreshNames();
     });
-    inp.addEventListener('change', () => { recordAiEdit(state.scannedFiles[Number(inp.dataset.desc)], 'description', inp.value); rememberDescription(inp.value); });
+    inp.addEventListener('change', () => { const c0 = state.scannedFiles[Number(inp.dataset.desc)]; recordAiEdit(c0, 'description', inp.value); rememberDescription(inp.value); fillChapterSiblings(c0); });
     wireEditPlay(inp, Number(inp.dataset.desc));
     attachDescriptionCombo(inp);
   });

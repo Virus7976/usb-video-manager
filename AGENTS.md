@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ai — Tier 2 item 28: a chaptered GoPro take now names as one.
+
+**Measured before building any of it**, because "does he actually have chaptered takes?" is a question,
+not an assumption. A GoPro splits a long take at ~4 GB into `GX{chapter}{fileid}`:
+
+    recording 6817 → 6 chapters · 6813, 6820 → 3 each · 6803/6816/6823/6824 → 2 each
+    ≈13 of his 37 raw clips are chapters of a take he has already named
+
+**Filling, not collapsing.** The item says "collapse into one row", but merging rows HIDES clips — and
+a clip he cannot see is a clip he cannot check, which is the app's whole problem. Naming one chapter
+now fills its siblings: the same saving, nothing hidden.
+
+Scope is *less* arguable than the shoot-day fill (`af`): a shoot day shares a subject 88% of the time,
+but chapters of one recording **are** the same shot. Still fills only what is EMPTY — a chapter he
+named differently on purpose stays as he left it — and it says why ("the camera split one take"),
+because fields filling themselves is alarming unless the reason is given.
+
+**⚠ TWO of my own assertions were too loose, and breaking found both:**
+1. *"an anchored regex appears"* — there are TWO regexes (the clip, and each candidate). Unanchoring
+   the first left the test green because the second still matched. **Count them**, don't match one.
+2. *"no `fillChapterSiblings` inside an `input` handler"* — written as `/addEventListener\('input'[^)]*fill…/`,
+   and `[^)]*` stops at the first `)`, so across a multi-line handler that negative match **could never
+   fire**. Adding a keystroke call site left it green. Replaced with an exact **call-site count**.
+
+Both are the same lesson in different clothes: *a negative or single-instance assertion over
+multi-line code is usually weaker than counting.*
+
+vm **1443/1300/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20ah — Tier 2 item 31: a fresh card arrives ticked. Measured, not guessed.
 
 His interaction log contains **48 "Select all" presses.** The card screen started with nothing ticked,

@@ -8538,6 +8538,22 @@ async function readEmbeddedRecord(filePath) {
 // final archived copy that keeps it. The lossless record written by buildEmbedTags means that
 // file can be re-read perfectly by readEmbeddedRecord on any later pass or any other machine.
 
+// Which of his standing filing rules, if any, claims this clip? Mirrors the destination map's
+// `rulesFor` deliberately — same haystack, same project-beats-descriptor precedence — so the folder
+// he is shown on the map and the folder a direct file lands in cannot disagree.
+function matchRoute(meta) {
+  const list = (config.ai && Array.isArray(config.ai.routes)) ? config.ai.routes : [];
+  if (!list.length) return null;
+  const hay = `${meta.subject || ''} ${meta.location || ''} ${meta.description || ''}`.toLowerCase();
+  let route = null; let desc = null;
+  for (const r of list) {
+    if (!r || !Array.isArray(r.match)) continue;
+    if (!r.match.some((k) => k && hay.includes(String(k).toLowerCase()))) continue;
+    if (r.kind === 'descriptor') { if (!desc) desc = r; } else if (!route) route = r;
+  }
+  return route || desc || null;
+}
+
 // THE DESTINATION LADDER — the single place that decides which folder a clip lands in.
 //
 // Extracted from finalize:run so it can be asked WITHOUT filing anything (Tier 1 item 8: show him
@@ -8554,6 +8570,28 @@ async function destinationParts({ relRaw, levels, meta, sourcePath }) {
     ? relRaw.split(/[\\/]+/).map((x) => safeFolderName(x)).filter(Boolean)
     : subdirParts(levels, m);
   if (relRaw || parts.length) return parts;
+
+  // HIS OWN FILING RULES, which until now only applied if he opened the destination map.
+  //
+  // He has two real ones ("Calisthenics", "Lawn care (Gourgess Lawns)") with keywords and a
+  // destination — and every path that filed WITHOUT the map ignored them completely, so the rules he
+  // configured did nothing on his most common route. That is the "fully built but never fed" shape,
+  // on a feature he explicitly set up. Because every screen now goes through this one ladder, adding
+  // it here fixes the one-clip path, Run-without-a-map and the previews at the same time.
+  //
+  // Same semantics as the map: match on subject + location + description; a real PROJECT route beats
+  // a DESCRIPTOR (vlog, timelapse…), which only groups when no project matched. `byDay` appends the
+  // shoot date, exactly as `phoneRouteFor` does for photos.
+  const routed = matchRoute(m);
+  if (routed) {
+    const dest = String(routed.dest || '').replace(/\\/g, '/').split('/').map((x) => safeFolderName(x)).filter(Boolean);
+    if (dest.length) {
+      if (!routed.byDay) return dest;
+      const day = String(m.date || '').trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(day)) return [...dest, safeFolderName(day)];
+      return dest;
+    }
+  }
 
   const dayFrom = async () => {
     let day = String(m.date || '').trim();

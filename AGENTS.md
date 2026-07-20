@@ -322,6 +322,38 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ad — Tier 1 item 2: his own filing rules did nothing unless he opened the map.
+
+Took stock of Tier 1 first (12 of 18 done; `memory/usb-app-toolness-100.md` now records which, and
+what remains). Item 2 — "auto-file on a rule with no ceremony" — turned out to need **no new
+feature**. The rules exist, he has configured two real ones, and **the ladder that decides where a
+clip goes had never heard of them:**
+
+    { name: "Calisthenics",               match: ["calisthenics","calisthetics"], byDay: true, dest: … }
+    { name: "Lawn care (Gourgess Lawns)", match: ["lawn","lawn-mowing","lawnmowing","lawn-care"], … }
+
+Route matching lived only in `07-organize-map.js`, so a rule applied when — and only when — he opened
+the map and let it place his clips. Every other path fell through to `subject/date`. **He has 83
+lawn-mowing clips and a rule naming exactly where they belong; without the map they were landing in
+`lawnmowing/<date>`.** "Fully built but never fed", on a feature he explicitly set up.
+
+**This is the extraction paying off.** One change to `destinationParts` reaches the one-clip path, the
+batch Run, and both previews at once — a week ago it would have been four edits and a near-certain
+divergence.
+
+Semantics mirror the map deliberately: same haystack (subject + location + description), same
+**project-beats-descriptor** precedence — "vlog" is how he shoots, not what the project is, so a clip
+matching both files under the client job. `byDay` appends the shoot date, and never invents one when
+the date is missing.
+
+The ladder's ORDER is unchanged and tested: an explicit placement he just made still outranks a
+standing rule.
+
+`test/filing-rules-apply-without-the-map.test.mjs` (9), five breaks proven, including the one that
+matters most — *filing agrees with the preview*, so the badge he now sees is what actually happens.
+
+vm **1405/1262/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20ac — Tier 1 item 7: Home now shows what he FINISHED, not only what is owed.
 
 Every card on that screen was a demand — footage waiting, faces waiting, clips to organize. Nothing

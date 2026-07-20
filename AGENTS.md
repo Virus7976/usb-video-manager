@@ -322,6 +322,39 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20h — the face GC's most important guard existed only as a comment and a branch.
+
+`gcFaceCrops` is reference-counted: build a keep-set from the stores, **delete every file in `faces/`
+that nothing points at**. Right design — it cannot leak, and it cannot delete a live crop *provided
+the keep-set is complete*. So every failure mode is the same one: an incomplete keep-set deletes real
+work.
+
+Two guards exist against that, and the code records what each cost. The second had **no test** —
+`storeReadFailed` appears in the face tests only inside a comment:
+
+> *"saveStore already refuses to write those … but the GC had no matching guard, so the JSON was
+> protected while the crops it references were deleted."*
+
+So the exact scenario it was written for was unverified: `people.json` unreadable this launch (crash
+mid-write, antivirus lock) → config falls back to `{}` → keep-set empty → **the GC unlinks all 48
+enrolled people's crops.** The JSON survives, still pointing at files that no longer exist, so the
+dashboard shows broken images and the enrolment work is gone. That is his most laborious data — 226
+"✓ Yes" confirmations in his click log — and **none of it is regenerable by re-scanning.**
+
+`test/face-gc-aborts-on-unreadable-store.test.mjs` (6) produces the corruption for real (a truncated
+`people.json`) rather than setting the flag, and **asserts the fixture actually latched** before
+trusting the result. Covers all three reference stores, plus the ignored-faces bin and a missing
+`faces/` directory (the GC runs on every save path and is wrapped in a silent best-effort catch, so a
+crash there would be invisible).
+
+**Both directions, deliberately:** a GC that never deletes is a slow disk leak on a store where face
+thumbnails are ~70% of the bytes. The guard must abort on FAILURE, not always — so "a genuinely
+orphaned crop IS removed" is its own test, and breaking the unlink fails it.
+
+Five breaks proven.
+
+vm **1267/1124/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20g — the other half of the corrupt-store chain: getting BACK from it.
 
 `f` covered detection and the block. This covers what happens next, none of which had a test —

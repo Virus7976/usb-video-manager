@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19cf — a camera counter was becoming a folder in his Projects tree.
+
+Acting on one of yesterday's measured leftovers. Dry-filing his real backlog put a clip into a folder
+called **`gx046724/`**: `2026-05-06_gx046724_v1.mp4` leads with a date and carries `_v#`, so
+`parseNamedClip` correctly calls it app-named and then takes the next token as the subject — a raw
+GoPro counter.
+
+That is worse than an obviously-broken folder, because it looks like a real grouping: a directory
+beside `vlog/` and `lawn-mowing/` that will never gain a second clip and that nothing flags. Dropping
+the subject lets it fall to `<date>/_unsorted` — the honest answer for "we know when, not what".
+
+**Deliberately strict: prefix + digits ONLY.** The camera-junk filter used for fuzzy token matching
+is `/^(gx|gopro|hero|dji|img|dsc|mvi|…)\w*$/i`, and reusing it here would have eaten a genuine
+subject like `dji-crash-compilation` — quietly UNFILING real work to fix a cosmetic problem. That
+direction has its own test.
+
+**The test caught a gap in my first version.** Canon/Sony/DJI write `MVI_4410.MP4` with an underscore
+between prefix and counter, so after the date is shifted off the stem splits into subject `mvi` +
+description `4410` — invisible to a single-token check. Added a second branch for the split shape,
+gated on the description being ENTIRELY digits so `dsc_kitchen-build` survives. Both damaging
+directions are broken separately.
+
+`test/camera-id-is-not-a-subject.test.mjs` (8), six breaks proven.
+
+Still NOT acted on, from the same measurement: `lawn-mowing`/`lawnmowing` (changes his data), and
+`delete` as a description (his own intent marker — filing those may be wrong, but that is his call).
+
+vm **1206/1063/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-19ce — the whole backlog, dry-filed. And the exiftool diagnosis was wrong AGAIN.
 
 **⚠ THIRD CORRECTION on the same bug. "Dead since 0.4.15" is false, and here is the evidence that

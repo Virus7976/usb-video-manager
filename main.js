@@ -1544,7 +1544,27 @@ function parseNamedClip(name) {
   const parts = stem.split('_');
   let date = '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(parts[0])) { date = parts.shift(); }
-  const subject = parts.shift() || '';
+  let subject = parts.shift() || '';
+  // A RAW CAMERA ID IS NOT A SUBJECT. `2026-05-06_gx046724_v1.mp4` parses to subject `gx046724`,
+  // which then becomes a FOLDER named after a camera counter — measured in his real backlog, one
+  // clip filed into `gx046724/`. That is noise in a Projects tree, and worse, it looks like a real
+  // grouping so nothing ever flags it. Dropping it lets the clip fall to the dated holding pen, which
+  // is the honest answer for "we know when, not what".
+  //
+  // Deliberately strict — camera prefix followed by digits ONLY. A real subject that merely starts
+  // with these letters (`dji-crash-compilation`, `imgur-review`) keeps its name; the existing
+  // camera-junk filter elsewhere uses `\w*` and would eat those.
+  if (/^(gx|gh|gp|go|dji|img|dsc|mvi|mah|pict)\d+$/i.test(subject)) subject = '';
+  // The SPLIT shape, which the single-token check above cannot see. Canon/Sony/DJI write
+  // `MVI_4410.MP4`, `DSC_0912.MP4`, `DJI_0043.MP4` — an underscore between the prefix and the
+  // counter — so after the date is shifted off, the stem splits into subject `mvi` and description
+  // `4410`. Both halves are camera junk; keeping either would file the clip under a two-letter
+  // folder or describe it as a number. Only when the description is ENTIRELY digits, so
+  // `dsc_kitchen-build` (a real subject that happens to be a prefix) survives untouched.
+  else if (/^(gx|gh|gp|go|dji|img|dsc|mvi|mah|pict|gopr)$/i.test(subject) && /^\d+$/.test(parts[0] || '')) {
+    subject = '';
+    parts.shift();
+  }
   const description = parts.join('_');
   // Only treat it as app-named if it leads with a date or carried a _v# tag —
   // otherwise random filenames would spuriously "match".

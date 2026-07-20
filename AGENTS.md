@@ -322,6 +322,31 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20u — item 14, the counter that never lies. It lied about WHERE, and I caused it.
+
+Probed the round trip (file → rescan) for Tier 1 item 14. The counts were honest — 2 of 3 filed, the
+right one left. **The location was fiction.**
+
+Filing reuses a folder whose name differs only in case or separators, so a `lawnmowing` clip lands in
+his existing `lawn-mowing/` (cg). I then fixed `summary.filedRels` to report the folder
+`resolveFolderPath` actually chose — **and left the ledger one line below on the requested spelling.**
+`finalize:scan` builds its "filed → <folder>" badge from the ledger's `clipNames`, so after a rescan
+every reused-folder clip was labelled with a directory **that does not exist on disk.**
+
+Worse than a missing label: a confidently wrong folder is precisely the "I have to re-check its work"
+failure this whole effort exists to remove. And the ledger is also what offers "same shoot → same
+project" later, so it would have started proposing a destination he does not have.
+
+**Only a round-trip probe could find it.** Each writer is correct in isolation; they simply disagreed.
+Reading either one would have shown nothing wrong — which is why "file it, then scan again and look"
+keeps outperforming inspection.
+
+`test/filed-badge-names-a-real-folder.test.mjs` (5) binds them: the badge must name a folder that
+**exists**, the badge and the run summary must **agree**, and the ledger must record the folder on
+disk. Reverting either writer fails it.
+
+vm **1350/1207/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20t — Tier 1 item 12: "Done" over a run that filed nothing.
 
 Filing is the entire point of the Organize screen, and his ledger read 0 for months. A run with

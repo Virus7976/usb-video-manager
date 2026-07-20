@@ -880,7 +880,16 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
             // and the shoot date is the strongest signal this app has. Recording the real folder is
             // what finally starts that loop. `_unsorted`/`misc` are still skipped by
             // recordLedgerEntries' own holding-pen rule — a dated holding pen is not a project.
-            rel: relRaw || parts.join('/'),
+            // THE SAME RESOLVED FOLDER the summary reports. `parts` is what we ASKED for;
+            // `resolveFolderPath` may have chosen a folder he already has whose name differs in case
+            // or separators (`lawnmowing` → his existing `lawn-mowing/`). Recording the request meant
+            // the ledger named a directory that DOES NOT EXIST — and since `finalize:scan` builds its
+            // "filed → <folder>" badge from these `clipNames`, every rescan then told him his clip was
+            // somewhere it is not.
+            //
+            // I introduced exactly this by fixing `summary.filedRels` to use the resolved path and
+            // leaving the ledger one line below on the old value. Both now read `landedRel`.
+            rel: landedRel || relRaw || parts.join('/'),
             name: path.basename(r.path),
             date: meta.date || '',
             subject: meta.subject || '',

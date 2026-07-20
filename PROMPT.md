@@ -721,6 +721,65 @@ plus absolute ceilings, `nearestExistingDir` caps at 8 hops); process/handle cle
 in `finally`; `copy:start` does NOT leave a truncated file in the watch folder — `copyFileWithProgress`
 stages to `.part`, full-fingerprints, renames, and unlinks the part in its own catch.
 
+
+## 8f. CONCURRENCY AUDIT — 2026-07-20. Finding 1 CLOSED (3c3a4bc); 2-8 open, ranked.
+
+Nobody had audited what happens when two things run at once. The highest-yield technique was again the
+sibling sweep, applied to GUARDS: one path guarded, its twins not.
+
+**Closed:** two of the three face-clustering paths could erase each other's entire run (and the clips
+stayed marked scanned, so a re-scan skipped them — permanent loss).
+
+**Open, ranked. Note the shape they share: a guard that exists on one handler and not its twin.**
+
+2. ⚠ **"Follow AI ↓" silently UN-CANCELS a run.** `src/mod/04-tasks-ai.js:582` does
+   `aiFollow = true; aiAborted = false;`. That button is only visible DURING a run and only after he
+   has scrolled away — exactly the state someone is in when they cancel. Cancel → the loop is inside a
+   vision call for up to 180s → he clicks the still-visible "Follow AI ↓" to see what it is doing →
+   `aiAborted` goes false → the next `if (aiAborted) break` passes and the run RESUMES, overwriting
+   names he cancelled to protect. The same line un-does `reportCardGone()`, so one click resumes
+   analysis against a card that has been pulled out. **Do this next — it is one line and it is real.**
+3. ⚠ **`copy:start` has no re-entrancy guard**, the twin of the one just added to `compress:run`.
+   Two invocations share `copyTask`: run A reads B's abort flag, `copy:cancel` cancels only B, both
+   write `copyTask.currentIndex/copiedBytes` and emit on one channel, and whichever finishes first
+   sets `copyTask = null` so the other throws a TypeError mid-copy and the renderer shows "Copy
+   failed" over a partly-imported card. **Reachable without a millisecond window:** auto-mode fires
+   `setTimeout(..., 800)` (09-phone-finalize.js:676) and the renderer's own `copyInProgress` latch is
+   not set until AFTER `await freeSpace(...)` per target — so clicking Copy at ~790ms means both
+   proceed. This handler moves multi-GB of his only copy.
+4. ⚠ **`finalize:run` has no re-entrancy guard either, and two runs fight over the single undo slot.**
+   `config.lastOrganize` holds ONE record. The batch Run disables its button, but `fileOneClipNow`
+   (09-phone-finalize.js:1909) calls the same handler with no disable and no guard — and it is
+   deliberately the low-friction "file one clip right now" action, i.e. the one clicked repeatedly.
+   Two runs both relocate footage, both stamp lastOrganize, last write wins, and one run's clips have
+   NO undo path — the outcome the ⚠⚠ comment at 09-ipc-boot.js:1083 was added to prevent, reached by
+   another route. Secondary: the CSV merge at :1105-1117 is a read-modify-write across two awaits on
+   a shared file, so concurrent runs drop each other's rows.
+5. `aiAnalyzeSelected` / `aiImproveSelected` have no run guard while `aiAutoEnhance` does, and both
+   start with `aiAborted = false` — so starting Improve un-cancels a running Analyze. Both call
+   `setAiRunOrder(...)`, which replaces `aiStageClips` wholesale, so the conveyor describes one run
+   while two are writing.
+6. An in-flight AI run writes into a `state.scannedFiles` that a NEW CARD has already replaced.
+   `goHome` gates only on `confirmLeaveTransfer()` (copy), and analyze is deliberately non-modal — so
+   leaving mid-analyze and scanning another card means card A's results are applied by INDEX to card
+   B's clips. `enterRenameWithPhoneFiles` documents exactly this hazard for `aiQuestions` and re-binds
+   them; the live AI loops never got the same treatment.
+7. The debounced draft save is DISCARDED when a new scan empties `state.scannedFiles`. The
+   `if (state.scannedFiles.length)` guard is evaluated at FIRE time, and `startFlow` empties the array
+   seconds before refilling it — so a name typed within 600ms of swapping cards is silently lost, with
+   a ✓-looking UI. `flushDraftSave` has the identical guard, so the blur/pagehide net does not catch
+   it either.
+8. Cancel is not honoured during the NAS mirror: the intake copy takes the cancel token, the mirror
+   immediately after it calls `copyFileVerified` which accepts no token and has a retry. Cancel during
+   a large network mirror sits at "Cancelling…" for the full transfer plus a verify plus a retry.
+
+**Checked and genuinely clean, do not re-audit:** main-side store read-modify-write (every mutator
+reads via `currentX()`/`freshStore` and writes with NO await in between — there is no
+`const x = currentDrafts(); await …; saveStore(…)` anywhere in main-mod/); progress-subscription
+lifecycle (subscribeProgress is idempotent, every per-run handle is torn down in a finally — no
+double-subscribe, no leak); compress (the new `compressRunning` + finally is correct and
+`compressAborted` is checked at both the loop head and after the encode).
+
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
 - **A STRUCTURAL ASSERTION MUST NAME THE THING THAT WOULD GO MISSING — and you must break each part

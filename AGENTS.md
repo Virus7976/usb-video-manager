@@ -322,6 +322,40 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19ca — Tier 1 item 3: one clip, end to end, in ten seconds.
+
+First of the toolness items rather than a bug sweep. His project ledger is 0 after months of use, and
+the measured reason is NOT that filing is broken — the last few days proved that thread works. It is
+that filing is only reachable at the END of a chain (scan → tick → map → options → Run), so **he has
+never once watched it succeed.** A capability nobody has seen work is indistinguishable from one that
+does not exist.
+
+Right-click any row on the Organize list → **"File this clip now"**. One clip, immediately, and the
+toast names the folder it landed in.
+
+Routed through the SAME `finalize:run` the Run button uses — same fallback ladder, same ledger write,
+same sidecar handling, same copy-not-move default — and it READS `finEmbed` and `finKeepSource`
+rather than assuming what they say. A second filing implementation is exactly the shape that has
+produced a confirmed bug on three separate days, most recently the pop-out map guessing `embed` and
+shipping `meta: null` for months.
+
+It needed one thing from main that did not exist: `finalize:run` counted moves but never said WHERE,
+so "filed where?" could only be answered by going to look in the Projects tree — the re-check-its-work
+loop this whole effort exists to remove. It now returns `filedRels`. Reporting the requested `rel`
+would have been the easy wrong answer: an unnamed clip sends none, and the ladder's
+`<date>/_unsorted` is the only honest thing to show.
+
+`test/file-one-clip-now.test.mjs` (10) — five real end-to-end runs through `finalize:run` against a
+temp tree, five renderer-shape. All seven parts broken separately and re-proved.
+
+**⚠ A GAP IN THE BREAK PROCEDURE, and it silently passed two breaks:** `loadMain()` loads
+`main.js`, the BUNDLE. Editing `main-mod/*.js` and re-running the test proves nothing — the harness
+never sees the change. Both main-side breaks reported "# fail 0" and looked like loose assertions
+until I re-ran them with `npm run bundle` in the loop, where both failed correctly. **Any break test
+against main MUST re-bundle first.**
+
+vm **1175/1039/136/0**.
+
 ### 2026-07-19bz — the same axis, a THIRD entry point. A stills-only card was never analysed.
 
 `runCopy()` returns early for a card with photos and no video. The bottom of that same function

@@ -1800,9 +1800,76 @@ function finRenderList() {
       const cb2 = li.querySelector('.fin-check');
       cb2.addEventListener('change', () => { f.selected = cb2.checked; finUpdateSelectionUI(); });
     }
+    li.addEventListener('contextmenu', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      showContextMenu(e.clientX, e.clientY, [
+        { label: f.filed ? 'File this clip again' : 'File this clip now', action: () => fileOneClipNow(f) },
+        { sep: true },
+        { label: f.selected ? 'Untick this clip' : 'Tick this clip', action: () => { f.selected = !f.selected; finRenderList(); } },
+        { label: 'Open the folder it is in', action: () => window.api.openFolder(finScan.dir) }
+      ]);
+    });
     listEl.appendChild(li);
   }
   finUpdateSelectionUI();
+}
+
+// ONE CLIP, END TO END, IN TEN SECONDS.
+//
+// His project ledger is 0 after months of use. The measured reason is not that filing is broken —
+// it is that filing is only reachable at the END of a chain (scan → tick → map → options → Run), so
+// he has never once seen it work. A capability nobody has watched succeed is indistinguishable from
+// one that doesn't exist, and the fix for that is not another safeguard on the batch path: it is a
+// way to file ONE clip, right now, and see where it landed.
+//
+// Deliberately routed through the SAME finalize:run the Run button uses — same fallback ladder, same
+// ledger write, same sidecar handling, same copy-not-move default. A second filing implementation is
+// exactly the "second entry point inherits none of the first's fixes" shape that has produced a
+// confirmed bug on three separate days, so this reads the real checkboxes rather than hardcoding
+// what it thinks they say.
+async function fileOneClipNow(f) {
+  if (!f) return;
+  const dest = finEffectiveDest();
+  if (!dest) { showToast('Pick a destination folder first — the Organize step has one at the top.'); return; }
+  // The map's placement if it has one; otherwise send no `rel` and let finalize:run's ladder pick
+  // (subject → date/_unsorted). Never a bare root.
+  const plan = currentDestPlan();
+  const rel = (plan && plan.byPath && plan.byPath[f.sourcePath]) || '';
+  const root = (plan && plan.root) || dest;
+  const item = rel ? { ...f, rel } : { ...f };
+  showToast(`Filing ${f.name}…`, 2000);
+  let summary = null; let err = null;
+  try {
+    summary = await window.api.finalizeRun({
+      dir: finScan.dir,
+      items: [item],
+      // Embed and file. Read from the same controls the Run button reads so the two can never
+      // disagree about what "file" means — the pop-out map shipped meta: null for months because it
+      // guessed instead of asking.
+      options: { embed: $('finEmbed').checked, csv: false, organize: true, nas: false, copy: $('finKeepSource').checked },
+      organizeDest: root, folderLevels: finLevels, nasPath: ''
+    });
+  } catch (e) { err = (e && e.message) || String(e); }
+  if (err || !summary || !summary.ok) {
+    const why = err || (summary && summary.error) || 'unknown error';
+    showToast(`Couldn’t file ${f.name} — ${why}`, 7000);
+    logIssue('Organize', `File-one failed for ${f.name}: ${why}`);
+    return;
+  }
+  // A run that reports ok but moved NOTHING is the failure this whole path exists to make visible.
+  // Saying "Filed ✓" over a clip that did not move is how he learned not to trust the batch button.
+  if (!summary.moved) {
+    showToast(`${f.name} was not filed — nothing moved. ${summary.unplanned ? 'It has no place on the map yet.' : 'Check the destination folder.'}`, 8000);
+    return;
+  }
+  f.filed = true;
+  // The folder finalize:run ACTUALLY chose, which for an unnamed clip is the ladder's `<date>/_unsorted`
+  // and not the empty `rel` we sent it. Reporting the request instead of the result is how a fallback
+  // ladder stays invisible.
+  const landed = (summary.filedRels || []).find((x) => x && x.name === f.name);
+  f.filedIn = (landed && landed.rel) || rel || f.filedIn || '';
+  finRenderList();
+  showToast(`${f.name} → ${f.filedIn || dest} ✓`, 6000);
 }
 
 // "You already did this one." Filing copies, so a filed clip is still sitting in the Compressed

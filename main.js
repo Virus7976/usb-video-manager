@@ -8505,7 +8505,7 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     } catch { /* if we genuinely cannot read the volume, don't block the run over it */ }
   }
 
-  const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, unplanned: 0, backedUp: 0, errors: [], total: list.length, csvPath: '' };
+  const summary = { ok: true, embedded: 0, moved: 0, skipped: 0, unplanned: 0, backedUp: 0, errors: [], total: list.length, csvPath: '', filedRels: [] };
   const undoable = [];   // {from,to} per relocated clip → enables "Undo last organize"
   const ledgerEntries = [];   // audit #29 — what this Run filed, for the project ledger
   const csvRows = [];
@@ -8639,6 +8639,12 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
         const r = await organizeMove(curPath, targetDir, it.name, { copy: copyMode });
         if (r.action === 'moved' || r.action === 'copied') {
           summary.moved += 1;
+          // WHERE IT LANDED, per clip. The summary counted moves but never said where, so the only
+          // way to answer "filed where?" was to go and look in the Projects tree — the exact
+          // re-check-its-work loop this app exists to remove. `parts` is the folder the ladder or
+          // the map actually chose, which is not always the `rel` the caller sent (it sends none for
+          // an unnamed clip).
+          summary.filedRels.push({ name: it.name, rel: parts.join('/') });
           undoable.push({ from: before, to: r.path, copied: r.action === 'copied' });
           // BRING THE SIDECAR WITH IT. It was written beside the SOURCE in step 1 and then abandoned
           // there: organizeMove doesn't carry an adjacent .xmp, and nothing else looked at it. So the

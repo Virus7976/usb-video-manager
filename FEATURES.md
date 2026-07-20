@@ -141,7 +141,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 28 | **Prune a bad autocomplete entry** | ✓ | – | – | done (D) — a × on the suggestion row, with an inline Undo |
 | 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — snap onto known subjects, add deliberately | ✓ | ✓ | ✓ | partial — engine + AI snapping + ask-on-type done (D); phone/backend todo |
 | 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | done (D) — Edit → “Tidy up subjects…”: 21 merges over 46 clips on his data, save point first, nothing pre-ticked |
-| 31 | ⚠ Flag a subject that describes the SHOT not the JOB | ✓ | ✓ | – | partial — detection done and returned; not yet surfaced in the UI |
+| 31 | ⚠ Flag a subject that describes the SHOT not the JOB | ✓ | ✓ | – | partial — done (D): an inline, advisory note the moment he types one; phone todo |
 | 32 | Batch-name a selection | ✓ | ✓ | – | partial — desktop only |
 | 33 | Find &amp; replace across names | ✓ | – | – | done |
 | 34 | Apply one clip's name to everything selected | ✓ | ✓ | – | partial — desktop only |

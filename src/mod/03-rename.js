@@ -107,6 +107,13 @@ function buildRenameStep() {
           <button class="btn ghost apply-row" data-apply="${i}"
                   title="Apply this name to all ticked clips (versions auto-number)">⤓</button>
         </div>
+        <!-- FEATURES.md item 31 — the SHOT-vs-JOB flag, surfaced at the moment he types the name.
+             classifySubject already detected these ("talking-head", "person-sitting-couch") and the
+             handler already returned shotLike + why; it was just never shown here. It is ADVISORY:
+             46% of his named clips are shot descriptions, so this is common and he may mean it — the
+             note explains WHY filing can't group them and gets out of the way. Filled by
+             updateSubjectShotHint on a deliberate change, never on a programmatic write. -->
+        <div class="subject-hint" data-shot="${i}" hidden></div>
         <div class="meta-row">${organizeFields.map((fld) => `<input type="text" class="f-meta" data-field="${escapeAttr(fld.id)}" data-i="${i}" value="${escapeAttr(clip[fld.id] || '')}" placeholder="${escapeAttr(fld.label.toLowerCase())}" autocomplete="off" />`).join('')}</div>
         <div class="final-row">
           <div class="final-pill" data-final="${i}">${escapeHtml(finalName(clip))}</div>
@@ -712,6 +719,9 @@ function wireRowEditing(listEl) {
       const chosen = await offerCanonicalSubject(inp.value);
       if (chosen !== inp.value) { inp.value = chosen; if (c0) c0.subject = chosen; }
       recordAiEdit(c0, 'subject', inp.value); rememberSubject(inp.value); fillChapterSiblings(c0);
+      // Then flag it if it describes the shot rather than the job (item 31). After the offer, so the
+      // hint reflects whatever name actually ended up in the field.
+      updateSubjectShotHint(Number(inp.dataset.subject));
     });
     wireEditPlay(inp, Number(inp.dataset.subject));
     attachSubjectCombo(inp);

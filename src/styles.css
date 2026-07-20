@@ -2562,6 +2562,23 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .final-dest[hidden] { display: none; }
+/* Item 31 — the shot-vs-job note. A warning tint would be wrong: nearly half his names are shot
+   descriptions, so this must read as a helpful aside he can dismiss, not an error to fix. */
+.subject-hint {
+  display: flex; align-items: flex-start; gap: 7px; margin-top: 5px;
+  padding: 6px 9px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  font-size: 11.5px; line-height: 1.45; color: var(--text-2);
+}
+.subject-hint[hidden] { display: none; }
+.subject-hint .shot-ic { color: var(--accent); flex: 0 0 auto; line-height: 1.4; }
+.subject-hint .shot-tx { flex: 1; }
+.subject-hint .shot-x {
+  flex: 0 0 auto; background: transparent; border: 0; color: var(--text-3);
+  font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px; border-radius: 4px;
+}
+.subject-hint .shot-x:hover { color: var(--text); background: var(--subtle-hover); }
 .fin-src-badge.dest { background: transparent; color: var(--text-3); border-color: color-mix(in srgb, var(--text-3) 30%, transparent); font-variant-numeric: tabular-nums; }
 .fin-meta-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .fin-chip {

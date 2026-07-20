@@ -2370,6 +2370,13 @@ function buildRenameStep() {
           <button class="btn ghost apply-row" data-apply="${i}"
                   title="Apply this name to all ticked clips (versions auto-number)">⤓</button>
         </div>
+        <!-- FEATURES.md item 31 — the SHOT-vs-JOB flag, surfaced at the moment he types the name.
+             classifySubject already detected these ("talking-head", "person-sitting-couch") and the
+             handler already returned shotLike + why; it was just never shown here. It is ADVISORY:
+             46% of his named clips are shot descriptions, so this is common and he may mean it — the
+             note explains WHY filing can't group them and gets out of the way. Filled by
+             updateSubjectShotHint on a deliberate change, never on a programmatic write. -->
+        <div class="subject-hint" data-shot="${i}" hidden></div>
         <div class="meta-row">${organizeFields.map((fld) => `<input type="text" class="f-meta" data-field="${escapeAttr(fld.id)}" data-i="${i}" value="${escapeAttr(clip[fld.id] || '')}" placeholder="${escapeAttr(fld.label.toLowerCase())}" autocomplete="off" />`).join('')}</div>
         <div class="final-row">
           <div class="final-pill" data-final="${i}">${escapeHtml(finalName(clip))}</div>
@@ -2975,6 +2982,9 @@ function wireRowEditing(listEl) {
       const chosen = await offerCanonicalSubject(inp.value);
       if (chosen !== inp.value) { inp.value = chosen; if (c0) c0.subject = chosen; }
       recordAiEdit(c0, 'subject', inp.value); rememberSubject(inp.value); fillChapterSiblings(c0);
+      // Then flag it if it describes the shot rather than the job (item 31). After the offer, so the
+      // hint reflects whatever name actually ended up in the field.
+      updateSubjectShotHint(Number(inp.dataset.subject));
     });
     wireEditPlay(inp, Number(inp.dataset.subject));
     attachSubjectCombo(inp);
@@ -3994,6 +4004,45 @@ async function offerCanonicalSubject(typed) {
   return ok ? c.canonical : raw;
 }
 function normSubj(s) { return String(s || '').trim().toLowerCase(); }
+
+// FEATURES.md item 31 — flag a subject that describes the SHOT, not the JOB, the moment he types it.
+//
+// The engine (core/subjects.js classifySubject) has flagged these all along and canonicalizeSubject
+// returns { shotLike, why }; nothing surfaced it. So a shot description ("talking-head",
+// "person-sitting-couch") was accepted in silence, and 46% of his named clips became exactly that —
+// names filing can never group, because the subject IS the group and "talking-head" is fifty
+// different jobs.
+//
+// ⚠ It is ADVISORY, and stays advisory on purpose. This is COMMON — nearly half his names — so a
+// blocking dialog would be a wall he learns to click through. It explains why filing can't use the
+// name and then gets out of the way; "Keep mine" is not even a button because there is nothing to
+// decide, only something to know. Dismissal is per (clip, spelling): dismiss "talking-head" on this
+// clip and it stays quiet, but a genuinely new shot name later still speaks up once.
+const dismissedShotHints = new Set();
+async function updateSubjectShotHint(i) {
+  const host = document.querySelector(`[data-shot="${i}"]`);
+  if (!host) return;
+  const clip = (state.scannedFiles || [])[i];
+  const val = String((clip && clip.subject) || '').trim();
+  const hide = () => { host.hidden = true; host.innerHTML = ''; };
+  if (!val || dismissedShotHints.has(`${i}:${normSubj(val)}`)) { hide(); return; }
+  let c = null;
+  try { c = await window.api.canonicalizeSubject(val); } catch { hide(); return; }
+  // ⚠ Re-read after the await: he may have kept typing, or the row may have been recycled by the
+  // windowed renderer onto a different clip. Only show the hint if the field still holds this value.
+  const now = String(((state.scannedFiles || [])[i] || {}).subject || '').trim();
+  if (now !== val) return;
+  if (!c || !c.ok || !c.shotLike) { hide(); return; }
+  host.innerHTML = `<span class="shot-ic" aria-hidden="true">◎</span>`
+    + `<span class="shot-tx">“${escapeHtml(val)}” describes what’s <b>on screen</b>, not what the footage is <b>for</b>. `
+    + `Filing groups clips by subject, so a shot name never forms a group — the job is what to name it after (the shoot, the client, the place).</span>`
+    + `<button type="button" class="shot-x" title="Got it">×</button>`;
+  host.hidden = false;
+  host.querySelector('.shot-x').addEventListener('click', () => {
+    dismissedShotHints.add(`${i}:${normSubj(val)}`);
+    hide();
+  });
+}
 
 async function canonicalSubject(proposed) {
   const raw = String(proposed || '').trim();

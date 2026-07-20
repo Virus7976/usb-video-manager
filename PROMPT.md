@@ -219,8 +219,24 @@ sweep it recommended is now closed (7 confirmed / 5 fixed). Current real weak po
    tested and *still unshipped*, several of them fixing ways footage or typed work could be lost. The
    longer it grows the more a single deploy can surprise him, and none of it helps until it lands.
    **Deploying (when he is not mid-scan) is worth more than the next fix.**
-3. **#92 — the auto-update feed is UNSIGNED.** The highest-severity thing still unfixed. Needs a
-   packaged Windows build, so it is not doable from WSL.
+3. **#92 — the auto-update feed is unsigned.** ⚠ **RE-ASSESSED 2026-07-20 — this entry was wrong in
+   two ways, and the correction matters because the old wording invited a panic fix.**
+
+   *"Not doable from WSL" is false.* Packaged Windows installers build fine from here via
+   `powershell.exe npx electron-builder --win`; that has been done repeatedly this session.
+
+   *"Highest-severity" overstates it.* The integrity chain is NOT absent. `latest.yml` (verified on a
+   real build) carries a sha512 for the installer, electron-updater checks the download against it,
+   and the manifest itself comes over HTTPS from GitHub. So tampering **in transit** is already
+   covered. What is genuinely missing is **code signing**, and its two real consequences are:
+   - anyone who can publish to the `Virus7976/usb-video-manager` releases can push an update that
+     **auto-installs** on his machine (`autoDownload = true`, `autoInstallOnAppQuit = true`), so the
+     security of the whole update path reduces to the security of that GitHub account; and
+   - Windows SmartScreen warns on every install, and there is no cryptographic proof a build is his.
+
+   **This is not a code fix.** A certificate costs money and is his call; 2FA on that account is his
+   action. The one thing that IS a code decision — whether updates should auto-install at all, or
+   wait for an explicit click — is recorded as **Q8** in QUESTIONS.md. Do not "fix" this unprompted.
 4. **Store invariants applied to one store but not its siblings.** This axis is now proven, not
    speculative: it found `renameDrafts` capped in TWO places with OPPOSITE rules, silently deleting
    hand-typed names on every launch (fixed `2b73e2d`). When you find a cap, prune, age filter or

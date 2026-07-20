@@ -122,6 +122,34 @@ on.
 
 ---
 
+## Q8 — should updates install themselves, given the app isn't code-signed?
+
+**The question:** the app auto-updates from your GitHub releases. Downloads *are* integrity-checked
+(the feed carries a sha512 and electron-updater verifies it over HTTPS), so nobody can tamper with an
+update in transit. But the app isn't code-signed, and it's configured to download **and install**
+updates on its own (`autoDownload = true`, `autoInstallOnAppQuit = true`).
+
+That means the security of your video tool reduces to the security of the `Virus7976/usb-video-manager`
+GitHub account: anyone who can publish a release there can push something that installs itself on your
+machine the next time you quit the app.
+
+**Why it needs you:** the fix isn't code. Options:
+1. **Leave it.** Realistically fine if that GitHub account has 2FA on — which is worth confirming
+   either way. Zero effort, and updates keep being effortless.
+2. **Make updates explicit** — still download in the background, but never install until you click.
+   A one-line change; costs you one click per update, removes the auto-install path entirely.
+3. **Buy a code-signing certificate** (~$100–400/yr). Gets you real provenance and kills the Windows
+   SmartScreen warning on every install. The only option that actually proves a build is yours.
+
+**What I'd suggest:** confirm 2FA, and take option 2 — it removes the auto-install path for almost
+nothing. A certificate is only worth it if the SmartScreen warning is bothering you.
+
+**Correction worth noting:** PROMPT.md described this as "the highest-severity thing still unfixed"
+and said it couldn't be worked on from WSL. Both were wrong — I've corrected them. The integrity
+checking already exists, and packaged Windows builds work fine from here.
+
+---
+
 ## Answered
 
 _(nothing yet)_

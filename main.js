@@ -8153,6 +8153,7 @@ ipcMain.handle('clips:retagPerson', (_evt, payload) => {
 // why core/ exists, and for the two rules that make it safe (it must be in package.json build.files,
 // and its modules must be stateless).
 const { clipKeyStem, clipKeyHasMtime, clipKeyMatches, clipKeyFileName, finalMetaKeyMatches } = require('./core/clip-key');
+const { searchLibrary } = require('./core/library-search');
 
 ipcMain.handle('clips:tagPerson', (_evt, payload) => {
   const name = String((payload && payload.name) || '').trim();
@@ -8215,6 +8216,28 @@ ipcMain.handle('clips:untagPerson', (_evt, payload) => {
 });
 
 ipcMain.handle('finalMeta:get', () => currentFinalMeta());
+
+// Search the WHOLE library (FEATURES.md item 91) — 4,594 records, not the few hundred on screen.
+//
+// The ranking lives in core/library-search.js so a phone client gets identical answers; this handler
+// is only the store plumbing. Two things it owns that the pure function cannot:
+//
+//  ⚠⚠ IT MUST NEVER SAY "NO MATCHES" WHEN IT COULD NOT READ THE LIBRARY. An unreadable store leaves
+//     an empty default in memory, so the search would return zero results with total confidence —
+//     the single most misleading thing a search can do. It reports which store is missing instead.
+ipcMain.handle('library:search', (_evt, payload) => {
+  const query = String((payload && payload.query) || '');
+  const limit = Number((payload && payload.limit) || 40);
+  const unavailable = [];
+  if (storeReadFailed.renameDrafts) unavailable.push('your named clips');
+  if (storeReadFailed.finalMeta) unavailable.push('your filed clips');
+  try {
+    const r = searchLibrary({ drafts: currentDrafts(), finalMeta: currentFinalMeta() }, query, { limit });
+    return unavailable.length ? { ...r, partial: true, unavailable } : r;
+  } catch (err) {
+    return { ok: false, error: err.message, query, total: 0, results: [], searched: 0 };
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Finalize / Organize — point at the Compressed folder, match files to their

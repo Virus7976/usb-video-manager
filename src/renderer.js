@@ -7342,11 +7342,40 @@ function showCommandPalette() {
   const clips = (state.scannedFiles || []).map((c, i) => ({ label: `${c.subject ? `${c.subject} — ` : ''}${c.name}`, hint: 'clip', run: () => jumpToClip(i) }));
   const all = [...commands, ...clips];
   let filtered = all.slice(0, 60); let active = 0;
-  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); cmdPaletteOpen = false; };
+  // FEATURES.md item 91. Everything above searches what is LOADED — `state.scannedFiles`, i.e. the
+  // current screen. On his machine that is a few hundred clips out of 4,594, and the box said
+  // "Type a command or clip name…" without ever hinting at the difference. A search that silently
+  // covers 4% of the library answers "not found" with total confidence, which is worse than having
+  // no search at all.
+  //
+  // So the library is searched too, in main, and its results land in their own labelled group with
+  // the true total beside them.
+  let libResults = [];      // rows from the library, already excluding anything on screen
+  let libNote = '';         // "312 in your library" / "could not read…" — shown above them
+  let libSeq = 0;           // ⚠ only the newest query may write; see the guard in runLibrarySearch
+  let libTimer = null;
+  const close = () => {
+    clearTimeout(libTimer);   // an in-flight search must not render into a closed palette
+    libSeq += 1;
+    ov.remove(); document.removeEventListener('keydown', onKey, true); cmdPaletteOpen = false;
+  };
   function render() {
     // scroll-reset-ok: this list is the RESULT OF A QUERY. Typing a new filter should land you on
     // match #1, not at whatever offset the previous result set happened to leave behind.
-    listEl.innerHTML = filtered.length ? filtered.map((c, i) => `<button type="button" class="cmdp-item${i === active ? ' active' : ''}" data-i="${i}"><span class="cmdp-label">${escapeHtml(typeof c.label === 'function' ? c.label() : c.label)}</span>${c.hint ? `<span class="cmdp-hint">${escapeHtml(c.hint)}</span>` : ''}</button>`).join('') : '<div class="cmdp-empty muted small">No matches</div>';
+    const rows = filtered.map((c, i) => {
+      // The library group gets one header, immediately before its first row, so the boundary between
+      // "on this screen" and "everywhere else" is visible rather than implied by ordering.
+      const head = (c.hint === 'library' && (i === 0 || filtered[i - 1].hint !== 'library'))
+        ? `<div class="cmdp-group muted small">${escapeHtml(libNote)}</div>` : '';
+      const sub = c.sub ? `<span class="cmdp-sub muted small">${escapeHtml(c.sub)}</span>` : '';
+      return `${head}<button type="button" class="cmdp-item${i === active ? ' active' : ''}" data-i="${i}"><span class="cmdp-label">${escapeHtml(typeof c.label === 'function' ? c.label() : c.label)}${sub}</span>${c.hint ? `<span class="cmdp-hint">${escapeHtml(c.hint)}</span>` : ''}</button>`;
+    }).join('');
+    // ⚠ "No matches" must not appear while the library is still being asked. Saying "nothing" and
+    // then quietly filling the list a moment later trains him to stop reading it.
+    const empty = libNote
+      ? `<div class="cmdp-empty muted small">${escapeHtml(libNote)}</div>`
+      : '<div class="cmdp-empty muted small">No matches</div>';
+    listEl.innerHTML = filtered.length ? rows : empty;
     listEl.querySelectorAll('.cmdp-item').forEach((b) => {
       b.addEventListener('click', () => run(Number(b.dataset.i)));
       b.addEventListener('mousemove', () => { const n = Number(b.dataset.i); if (n !== active) { active = n; highlight(); } });
@@ -7354,12 +7383,52 @@ function showCommandPalette() {
   }
   function highlight() { listEl.querySelectorAll('.cmdp-item').forEach((b, i) => b.classList.toggle('active', i === active)); const a = listEl.querySelector('.cmdp-item.active'); if (a) a.scrollIntoView({ block: 'nearest' }); }
   function run(i) { const c = filtered[i]; if (!c) return; if (c.hint !== 'clip') lastCommandLabel = typeof c.label === 'function' ? c.label() : c.label; close(); setTimeout(() => { try { c.run(); } catch (err) { showToast(`Couldn't run: ${err.message || err}`); } }, 0); }
+  function localMatches(q) {
+    if (!q) return all.slice(0, 60);
+    return all.map((c) => ({ c, s: fuzzyScore(typeof c.label === 'function' ? c.label() : c.label, q) }))
+      .filter((x) => x.s !== null).sort((a, b) => a.s - b.s).slice(0, 60).map((x) => x.c);
+  }
   function doFilter() {
     const q = input.value.trim().toLowerCase();
-    if (!q) { filtered = all.slice(0, 60); active = 0; render(); return; }
-    filtered = all.map((c) => ({ c, s: fuzzyScore(typeof c.label === 'function' ? c.label() : c.label, q) }))
-      .filter((x) => x.s !== null).sort((a, b) => a.s - b.s).slice(0, 60).map((x) => x.c);
+    filtered = [...localMatches(q), ...libResults];
     active = 0; render();
+    clearTimeout(libTimer);
+    if (!q || q.length < 2) { libResults = []; libNote = ''; filtered = localMatches(q); render(); return; }
+    // Debounced: 4,594 records is a cheap scan but not one worth doing on every keystroke, and the
+    // round trip is what would make typing feel heavy.
+    libTimer = setTimeout(() => runLibrarySearch(q), 180);
+  }
+  // ⚠ ONLY THE NEWEST QUERY MAY WRITE. Type "lawn" quickly and four searches are in flight; without
+  // the sequence guard the slowest one wins and the list shows results for a prefix he has already
+  // stopped typing. Same class of bug as previewDestinations labelling row 3 with row 3's OLD
+  // destination — this codebase has had it before.
+  async function runLibrarySearch(q) {
+    const seq = (libSeq += 1);
+    let r = null;
+    try { r = await window.api.searchLibrary(q, 25); } catch { r = null; }
+    if (seq !== libSeq || !cmdPaletteOpen) return;
+    if (input.value.trim().toLowerCase() !== q) return;
+    if (!r || !r.ok) { libResults = []; libNote = 'Could not search your library.'; render(); return; }
+    // Anything already listed from the current screen is dropped: the same clip twice, once labelled
+    // "clip" and once "library", reads as two clips.
+    const onScreen = new Set((state.scannedFiles || []).map((c) => String(c.name || '').toLowerCase()));
+    const fresh = (r.results || []).filter((h) => !onScreen.has(String(h.name || '').toLowerCase()));
+    libResults = fresh.map((h) => ({
+      label: h.name,
+      sub: h.summary || '',
+      hint: 'library',
+      run: () => openLibraryHit(h),
+    }));
+    const shown = fresh.length;
+    libNote = r.partial
+      ? `⚠ ${shown} found, but ${r.unavailable.join(' and ')} could not be read this launch — this is not the whole library`
+      : (r.total > shown
+        ? `In your library — showing ${shown} of ${r.total} (searched ${r.searched} clips)`
+        : `In your library — ${shown} of ${r.searched} clips`);
+    if (!shown && !r.partial) libNote = `Nothing in your library matches “${q}” (searched ${r.searched} clips)`;
+    filtered = [...localMatches(q), ...libResults];
+    active = 0;
+    render();
   }
   function onKey(e) {
     if (e.key === 'Escape') { e.preventDefault(); close(); }
@@ -7373,6 +7442,37 @@ function showCommandPalette() {
   render();
   setTimeout(() => input.focus(), 30);
 }
+// What happens when he picks a clip that is NOT on screen.
+//
+// ⚠ This is the honest-limits part of item 91. The library stores hold what a clip IS — its subject,
+// its people, where it was filed — and NOT where the file sits, because a draft record is keyed by
+// name+size and carries no path. So the app cannot always "open" a library hit, and pretending
+// otherwise would produce a menu item that fails.
+//
+// The tiers, best first, each stated to him rather than silently attempted:
+//   1. it is on the current screen after all → jump to it;
+//   2. it was FILED and its category/project are known → open that folder in Explorer;
+//   3. otherwise → put the name on the clipboard and say what we know about the clip.
+async function openLibraryHit(hit) {
+  if (!hit) return;
+  const i = (state.scannedFiles || []).findIndex((c) => String(c.name || '').toLowerCase() === String(hit.name || '').toLowerCase());
+  if (i >= 0) { jumpToClip(i); return; }
+  if (hit.filed && hit.where && hit.where !== 'filed') {
+    try {
+      const root = await window.api.getProjectsRoot();
+      if (root) {
+        // `where` is "category / project" — the same two levels organize files into.
+        const rel = String(hit.where).split(' / ').filter(Boolean).join('/');
+        await window.api.openFolder(rel ? `${root}/${rel}` : root);
+        showToast(`Opened ${hit.where} — ${hit.name} is filed there`, 5000);
+        return;
+      }
+    } catch { /* fall through to the clipboard tier rather than failing */ }
+  }
+  try { await window.api.clipboardWrite(hit.name); } catch { /* clipboard denied */ }
+  showToast(`${hit.name}${hit.summary ? ` — ${hit.summary}` : ''} · name copied (it is not on this screen)`, 8000);
+}
+
 // Ctrl/Cmd+K (and Ctrl+Shift+P) opens the palette from anywhere.
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K' || ((e.key === 'p' || e.key === 'P') && e.shiftKey))) {

@@ -2084,6 +2084,11 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .cmdp-label { flex: 1; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cmdp-hint { font-size: 10.5px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; flex: 0 0 auto; }
 .cmdp-empty { padding: 18px; text-align: center; }
+/* The library group: a header that names the boundary between "on this screen" and "everywhere
+   else", and a second line per row for what the clip actually is. */
+.cmdp-group { padding: 10px 12px 4px; border-top: 1px solid var(--divider); margin-top: 4px; }
+.cmdp-label { display: flex; flex-direction: column; gap: 1px; align-items: flex-start; }
+.cmdp-sub { font-size: 11px; line-height: 1.3; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* ---- Clip people chips ---- */
 .clip-people:empty { display: none; }
 .clip-people { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }

@@ -226,7 +226,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | # | Capability | D | P | B | Status |
 |---|---|---|---|---|---|
 | 90 | Search clips by name/subject on the current screen | ✓ | ✓ | ✓ | partial — desktop only |
-| 91 | ⚠ Search the whole LIBRARY, not just the loaded screen | ✓ | ✓ | ✓ | todo — the single biggest gap for a phone client |
+| 91 | ⚠ Search the whole LIBRARY, not just the loaded screen | ✓ | ✓ | ✓ | partial — done (D) via Ctrl+K over all 4,594 records (`core/library-search.js`, shared with the backend); phone client still todo |
 | 92 | Browse the projects index with AI summaries | ✓ | ✓ | ✓ | partial — desktop only |
 | 93 | Find clips by who is in them | ✓ | ✓ | ✓ | partial — backend query exists; no search box |
 | 94 | Thumbnails and inline playback | ✓ | ✓ | ✓ | partial — desktop; phone shows face crops only |

@@ -183,6 +183,7 @@ contextBridge.exposeInMainWorld('api', {
   // Metadata-by-final-filename (persisted when a copy completes, matched at Finalize)
   saveFinalMeta: (map) => ipcRenderer.invoke('finalMeta:save', map),
   getFinalMeta: () => ipcRenderer.invoke('finalMeta:get'),
+  searchLibrary: (query, limit) => ipcRenderer.invoke('library:search', { query, limit }),
 
   // Destination map — real Projects folder tree + AI placement + move
   getProjectsRoot: () => ipcRenderer.invoke('projects:getRoot'),

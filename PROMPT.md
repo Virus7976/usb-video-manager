@@ -874,6 +874,17 @@ while invoking nothing. It is `stopWirelessBackupFolder` for that reason. Name t
 from the bridge method, always.
 
 
+### ⚠⚠ A BREAK-VERIFICATION HARNESS CAN ITSELF BE BROKEN — check that it ever reports a failure
+
+On 2026-07-20 a shell loop that broke five guards in turn reported **`fails=0` for every one of
+them**. Every guard was in fact caught; the harness was faulty. Five clean passes in a row is not a
+result, it is a smell — a real set of breaks produces a mix.
+
+**If a break harness reports no failure for EVERY break, verify one by hand before believing any of
+them.** This is the "assertions that don't assert" trap (§8c) applied one level up, to the tooling
+that is supposed to detect it. Prefer running the breaks as separate commands whose output you can
+read over a loop that prints only a count.
+
 ### ⚠ AN UNIDENTIFIED E2E FLAKE — do not dismiss it if you see it
 
 On 2026-07-20 the e2e suite reported **153/1** once, immediately after a full vm run in the same

@@ -18,8 +18,15 @@
 // real time naming, the fuzzy/filename ladder below quietly took over, and the rich record —
 // people, observation, location, the route that decides WHERE it files — was never applied.
 //
-// Found while writing an end-to-end embed test: the seeded record would not match, which looked like
-// a bug in my fixture until I read how the index was keyed.
+// ⚠ SCOPE, corrected after the fact: `finalMeta:save` writes `store[name.toLowerCase()]`, and every
+// other reader and writer normalises the same way — his real store confirms it (1 entry, lowercase).
+// So this was NOT reaching his data, and the paragraph above describes a latent inconsistency rather
+// than an observed failure. It is still worth closing: an index that is looked up lowercased should
+// be built lowercased, and a store written by an older version, edited by hand, or restored from a
+// backup is not bound by today's write path. Keeping the test, downgrading the claim.
+//
+// Found while writing an end-to-end embed test, where I hand-seeded a key in a case the app itself
+// never produces — which is exactly why it looked like a live bug for longer than it should have.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';

@@ -344,13 +344,23 @@ and was not:
     const lc = f.name.toLowerCase();
     let rec = byName[lc] || byStem[stemOf(lc)] || null;
 
-**The index is built from the RAW store key and looked up LOWERCASED**, so it could only ever match a
-record whose filename was already entirely lowercase. Records are written under `finalName(clip)` —
-the real filename — and his are GoPro clips that keep their capitals (`GX010042.MP4`). Every one
-missed. And the failure mimics a legitimate state: `matched: false` is exactly what a clip the AI
-never described looks like, so the screen said "0 with metadata" over footage he had spent real time
-naming, and the rich record (people, observation, location, the route that decides WHERE it files)
-was silently replaced by the filename ladder.
+**The index is built from the RAW store key and looked up LOWERCASED**, so it can only match a record
+whose stored key is already lowercase.
+
+**⚠ CORRECTED, SAME DAY — I overstated this and then built a paragraph on the overstatement.** I said
+records are written under the real filename and "every one missed". They are not:
+`finalMeta:save` writes `store[String(name).toLowerCase()] = rec`, and every other reader and writer
+in the app normalises the same way. I checked his REAL store afterwards and confirmed it: 1 entry,
+lowercase, no capitals anywhere. **So this was never a production bug for his data.** It is correct
+hardening — an index looked up lowercased should be built lowercased, and the same latent
+inconsistency sits at `pending:work`'s `stems` set — but it explains nothing about his numbers, and I
+should have read the writer before writing the diagnosis. The e2e only hit it because I hand-seeded a
+key in a case the app itself never produces.
+
+**The thing I should have chased instead, and will next:** his final-meta store has **1 entry against
+4594 drafts.** The saved-metadata carrier is nearly empty, which is a far better explanation for
+"Organize shows nothing about my footage" than a key-casing bug — and it is upstream of everything
+filed.
 
 `test/finalmeta-lookup-case.test.mjs` (6). The half-fix — normalising `byName` and not `byStem` —
 is broken separately, because that is how a half-fix survives a green suite.

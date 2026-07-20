@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ac — Tier 1 item 7: Home now shows what he FINISHED, not only what is owed.
+
+Every card on that screen was a demand — footage waiting, faces waiting, clips to organize. Nothing
+had ever shown him what the work produced. That asymmetry is the measured problem in a line: **267
+face decisions, 354 typed fields, and a ledger that read 0.** An app that only ever says "you still
+have things to do" is one you stop opening.
+
+A quiet card at the BOTTOM: *"N clips in M projects — in your Projects tree, with their metadata"*,
+and clicking it opens the tree. Three deliberate constraints, each with a test:
+- **Counted from the LEDGER**, the one source that cannot flatter him — it gains an entry only when a
+  clip really landed. Counting drafts or scanned clips would report work he has not finished.
+- **Absent, not zero, when nothing is filed.** A fresh install must not open on a scoreboard for a
+  game he has not started.
+- **Rendered last and styled quieter** than the work cards — a reward that competes with what still
+  needs him is a worse screen.
+
+Checked first that item 16 was already built: the folder picker takes a typed path and says *"this
+will be created as a new one"*.
+
+**⚠ MY OWN META-TEST CAUGHT THIS FILE, one iteration after I wrote it.** Two slices here used
+`assert.ok(x.length > 0)` — the guard `assertions-cannot-pass-vacuously` explicitly rejects, because a
+collapsed slice is one character long. It was right both times; now index-guarded.
+
+**And I made the over-broad-scope mistake twice in the same file**: "is there a `catch` somewhere after
+this?" is satisfied by unrelated code further down `renderPendingWork`, so removing the block's own
+catch left the test green. Both assertions now bind to the block, not the function.
+
+vm **1396/1253/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20ab — item 8 finished: the CARD screen now shows where each clip will file.
 
 `aa` built the single ladder and put `→ vlog/2026-03-14` on the Organize rows. This puts it where the

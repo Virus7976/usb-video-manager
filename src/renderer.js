@@ -472,11 +472,44 @@ async function renderPendingWork() {
         <span class="pw-cta">${cta}<span class="pw-chev">›</span></span>
       </button>`);
   }
+  // WHAT HE HAS ACTUALLY FINISHED (Tier 1 item 7 — "make the payoff visible, not buried").
+  //
+  // Every card above is a demand: footage waiting, faces waiting, clips to organize. Nothing on this
+  // screen has ever shown him what the work PRODUCED. That asymmetry is the measured problem in one
+  // line — 267 face decisions, 354 typed fields, and a ledger that read 0 — because an app that only
+  // ever says "you still have things to do" is one you stop opening.
+  //
+  // The ledger is the honest source: it only gains an entry when a clip really landed in his Projects
+  // tree, so this number cannot flatter him. Rendered LAST and only when there is something to show,
+  // so a fresh install stays quiet.
+  try {
+    const led = (await window.api.ledgerGet()) || [];
+    const projects = led.length;
+    const clips = led.reduce((n, p) => n + (Number(p && p.clips) || 0), 0);
+    if (clips > 0) {
+      cards.push(`<button type="button" class="settings-card action pw-card pw-done" id="pwFiled">
+          <span class="sc-icon">${PW_ICON_FILM}</span>
+          <span class="sc-text">
+            <span class="sc-title">Filed and findable</span>
+            <span class="sc-sub"><b>${clips}</b> clip${clips !== 1 ? 's' : ''} in <b>${projects}</b> project${projects !== 1 ? 's' : ''} — in your Projects tree, with their metadata</span>
+          </span>
+          <span class="pw-cta">Open<span class="pw-chev">›</span></span>
+        </button>`);
+    }
+  } catch { /* the demands above still render — this is the reward, never a requirement */ }
+
   if (!cards.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
   host.innerHTML = cards.join('');
   host.classList.remove('hidden');
   const go = host.querySelector('#pwGo');
   if (go) go.addEventListener('click', () => openFinalize());
+  // Straight to the tree itself — the whole point is that the result is a real folder he can open.
+  const filedBtn = host.querySelector('#pwFiled');
+  if (filedBtn) {
+    filedBtn.addEventListener('click', async () => {
+      try { const r = await window.api.getProjectsRoot(); if (r) window.api.openFolder(r); } catch { /* ignore */ }
+    });
+  }
   const ph = host.querySelector('#pwPhone');
   if (ph) ph.addEventListener('click', () => resumePhoneStaged());
   // Straight back into the saved review — the clusters and their crops are already on disk, so this

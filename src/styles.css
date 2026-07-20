@@ -2533,6 +2533,12 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 /* "→ vlog/2026-03-14" — where this clip WILL file when he presses Run. Quiet on purpose: it is a
    prediction sitting beside facts, and it appears on every row, so it must read as an annotation
    rather than compete with the filename. */
+/* The one card on this screen that is a REWARD rather than a demand. Deliberately quieter than the
+   accent-railed work cards: it should read as a receipt he can glance past, not compete with the
+   things that still need him. */
+.pw-card.pw-done::before { background: color-mix(in srgb, var(--text-3) 45%, transparent); }
+.pw-card.pw-done .sc-icon { opacity: 0.75; }
+
 .final-dest {
   /* A quiet second line under the final name: it is a PREDICTION sitting beside a fact, so it must
      read as an annotation rather than compete with the filename it sits under. */

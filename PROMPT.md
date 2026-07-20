@@ -467,20 +467,71 @@ overstated once I read the surrounding code.
 - ~~Phone entry: list built after questions restored; `updateBatchBar` never called~~
 - ~~"AI auto-enhance complete ✓" and "Filed N …✓" claimed success over total failure~~
 
-### Next up — data safety (highest value)
-1. **`_serializePending` prunes resolved clusters on a silently-empty scene list.** If
-   `face-scenes.json` is corrupt, main returns the empty default rather than throwing, so
-   `_scenesLoadFailed` stays false and the next pending save strips every done/skipped cluster.
-   `savePendingNow` checks only `_pendingLoadFailed`. → gate on the scenes load too.
-2. **`gcFaceCrops` guards three stores but not `config.ai.ignored`** (which lives in config.json, not
-   a sidecar). A failed config read → ignored list reads `[]` → the GC unlinks every ignored face's
-   crop. The three sibling guards are present; the fourth is absent.
-3. **Group shots keyed with legacy `clipKey` (`name__size`) while the clusters beside them use
-   `clipKeyV2`.** Two GoPro clips sharing name+size — ordinary given his chaptering — overwrite each
-   other's scene record, and `gcFaceCrops` then unlinks the displaced frame.
-4. **`clipObs` cap sorts on `ts` with `|| 0`**, so legacy records without a `ts` are evicted first
-   regardless of age, and it is the only cap with no unconsumed-work exemption. Not firing yet
-   (1084 of 4000) but it is the shape that produced the 180-day finalMeta bug.
+### Data safety — ALL CLOSED as of 2026-07-20 (be78a87, 947b261)
+
+Items 1-4, 9 and 10 of the original list are done, each with a test proved by breaking it. Kept here
+only so a future session doesn't "rediscover" them and assume they're open:
+
+- `_serializePending` pruning resolved clusters against an untrustworthy scene list → now keeps when
+  in doubt, plus a `stores:readFailures` bridge so a corrupt store is distinguishable from an empty
+  one (main returns the empty DEFAULT for a corrupt file, so the IPC succeeds and the renderer
+  couldn't tell — that was the subtle half).
+- `gcFaceCrops` missing the fourth reference store (`config.ai.ignored` lives in config.json, not a
+  sidecar, so `storeReadFailed` never covered it).
+- `clipObs` cap sorting undated records to epoch (evicted for predating a field, not for being old)
+  and having no unconsumed-work exemption — the only cap in the app without one.
+- Group shots keyed with legacy `clipKey` while their clusters used `clipKeyV2` — the store the #8
+  migration missed. Writes are V2 now; reads stay cross-form via `sceneKeyMatches`, because exact
+  V2 matching would push a SECOND record for a clip that still has a legacy-keyed scene.
+- A face engine failing mid-run marking clips permanently scanned (`ready:false` carries neither
+  error flag). Fixed on BOTH scan paths.
+- Descriptors per pending cluster uncapped — 14 MB, one cluster at 318, capped to 80 on save and
+  load to match what enrolment already truncates to.
+
+
+### ⚠ UI AUDIT — 2026-07-20, his explicit ask ("the navigation is all over the place, buttons are all
+over the place, nothing is up to date"). 15 findings, ranked. NOT yet fixed.
+
+Highest-value first; the top five are things that actively mislead:
+
+1. **Three names for one step.** The home card advertises compress as "ffmpeg (H.264/H.265)"
+   (`src/index.html:100`) but the screen opens in Tdarr/watch-folder mode by default
+   (`10-boot.js:11,17`), and the Done screen calls it "HandBrake / Resolve" (`index.html:271`).
+2. **Compress is a modal; its two siblings are full screens.** `index.html:79/92/105` are three
+   identical-looking rows, but two open screens with step pills and the middle one opens an overlay.
+3. **Clicking a DRIVE card does nothing visible; clicking a PHONE card navigates.** `01-core.js:379-383`
+   — `onDrive()` only sets state and explicitly HIDES the flow. Same affordance, opposite behaviour.
+4. **The Done screen contradicts itself in the phone flow** — `index.html:269` hard-codes "Copied &
+   named — in your Uncompressed folder" while the same screen shows a "Send N videos to Uncompressed"
+   button, because phone videos stage in `_Phone Video Temp`.
+5. **Four names for one folder**: "intake folder", "Uncompressed folder", "01 - Uncompressed", and
+   "Clips are copied to" — and the two buttons that open it call the same handler under two names.
+6. `.ghost` and `.subtle` are pixel-identical (`styles.css:178-180`), ~50 usages chosen at random,
+   with a third bare-`btn` tier mixed into the same rows.
+7. Finalize step footers use three different button orders and three different escape labels; step
+   2's Continue is not `primary`, so the forward action is the weakest control on the screen.
+8. `finMap2Btn` (`index.html:409`) has a live listener but nothing ever removes `hidden` — dead route
+   to a modal that already has two live ones.
+9. The phone flow's Copy button label flips format once any checkbox is ticked, then names a
+   card-flow destination.
+10. The card-flow copy screen tells phone users "the originals stay safe on the card until Step 3" —
+    the files are already on the computer and Step 3 is unreachable.
+11. Two `primary` buttons on the Done screen, and the `primary` one ("Close") hides to tray while the
+    action the screen's own text points at is `ghost`.
+12. "Cancel" on the rename step is a divergent copy of `goHome()` with no `confirmLeaveTransfer()`
+    guard — leaves mid-copy with no warning and a stale device list.
+13. `goToCopyProgress` doesn't hide `#finalize`/`#phone`, so the global copy chip can stack two
+    screens on top of each other. There are 6+ hand-rolled copies of the hide-list; they want one
+    `showScreen(id)`.
+14. Settings is both a container and a peer of its own contents (the Edit menu lists 5 of its 8 cards
+    as flat siblings). Also colour emoji in a codebase that deliberately moved to monochrome SVG.
+15. The Phone screen is the only main screen with no menu route; View duplicates two File items under
+    different names.
+
+**Sequencing note:** he chose "close safety data first, then build new". Data safety is now CLOSED,
+so this list and the AI-pipeline items below are the current front. The UI work should land as
+incremental restructuring behind the existing tests — NOT the greenfield rebuild he floated, because
+1356 vm tests encode behaviour that was expensive to get right. See `ARCHITECTURE.md`.
 
 ### Next up — the AI pipeline never completes ([[usb-app-toolness-100]])
 5. **The Organize shoot question can never fire.** `askAboutShoots` reads `c.date`, but
@@ -497,10 +548,10 @@ overstated once I read the surrounding code.
    feature's own comment says it exists for.
 8. **Face-chip ranking tier 2 is dead**: it reads `p.faces.length`, but `people:get` returns
    `{count, confirmed, unconfirmed}` and no `faces` array. Chips fall through to alphabetical.
-9. **A transient face-engine failure marks the clip permanently scanned** — `detectFacesForClip`
+9. ~~**A transient face-engine failure marks the clip permanently scanned** — `detectFacesForClip`
    returns `{ready:false}` with no `readError`/`detectError`, and the guard checks only those two.
    Should be `if (fr.ready && !fr.readError && !fr.detectError)`.
-10. **Descriptors per pending cluster are uncapped.** Measured: 4715 vectors across 458 clusters, one
+10. ~~**Descriptors per pending cluster are uncapped.** Measured: 4715 vectors across 458 clusters, one
     cluster holding 318 (~880 KB alone), 14 MB total of which only 37 KB is thumbnails. Enrolment
     caps at 80 on arrival, so everything past 80 is written and re-written for nothing.
 

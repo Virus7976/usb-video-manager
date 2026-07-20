@@ -541,17 +541,29 @@ replaces are exactly how `goToCopyProgress` came to leave `#finalize` visible. `
 Also closed AI-backlog item 8 (face-chip ranking read `p.faces.length`, a field `people:get` never
 sends, so tier 2 was always 0 and chips were alphabetical).
 
-**Remaining UI: 2, 4, 6, 7, 14, 15.** Nothing left in this list can lose data — they are consistency
-and information-architecture items now:
-- 2: Compress is a modal while its two siblings are full screens with step pills.
-- 4: the Done screen's static "Copied & named — in your Uncompressed folder" panel is wrong on the
-  phone flow (videos stage in `_Phone Video Temp`); `showDone()` should branch on `isPhoneFlow()`.
-- 6: `.ghost` and `.subtle` are pixel-identical with ~50 arbitrary usages, plus a third bare-`btn`
-  tier mixed into the same rows.
-- 7: three different footer button orders and three different escape labels across the finalize
-  steps; step 2's Continue is not `primary`.
-- 14: Settings is both a container and a peer of its own contents; emoji vs the monochrome SVG rule.
-- 15: the Phone screen has no menu route at all; View duplicates two File items under other names.
+**Batch 3 done 2026-07-20 (commit 18c8cb8):** findings 4, 7, 13 (completed), 15 — and findings 6 and
+7-in-part were **REFUTED**. Read this before "fixing" them again:
+
+- ⚠⚠ **DO NOT MERGE `.ghost` AND `.subtle`.** They share every visual rule, so they read as
+  redundant — but `.row-actions` orders buttons BY CLASS: ghost is `order: 6` ("Back/dismiss"),
+  subtle is `order: 8` ("utilities → far right"), primary/danger `order: 1`, bare `.btn` `order: 4`.
+  Merging them silently reorders every footer in the app. `test/navigation-is-one-system.test.mjs`
+  pins this.
+- ⚠ **"Three different footer button orders" was not a real defect.** Every step footer is a
+  `.row-actions`, so DOM order does not affect what he sees. Only the *class* of each button matters.
+
+**showScreen is now mandatory for opening a screen.** A test fails on any new
+`$('flow'|'finalize'|'phone').classList.remove('hidden')`. Migrating the existing sites surfaced two
+more instances of the original bug — `goToRename` and `openFinalize` never hid `#phone` at all.
+The three home-rendering paths inside `onDriveOptions` are deliberately left open-coded: they run on
+device DETECTION, so a full screen switch there could yank him off Organize when a card is plugged in.
+
+**Remaining UI: 2 and 14 only.**
+- 2: Compress is a modal while its two siblings are full screens with step pills. This is the biggest
+  remaining one and it is a real restructure, not a label change — weigh it against the step-list
+  pipeline UI in `ARCHITECTURE.md`, which may absorb it entirely.
+- 14: Settings is both a container and a peer of its own contents (the Edit menu lists 5 of its 8
+  cards as flat siblings); plus colour emoji in a codebase that deliberately moved to monochrome SVG.
 
 **Sequencing note:** he chose "close safety data first, then build new". Data safety is now CLOSED,
 so this list and the AI-pipeline items below are the current front. The UI work should land as

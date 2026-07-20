@@ -852,14 +852,19 @@ in it override any other prioritisation:
    parity rule enforced by a test that parses both repos' shipped source. The phone is currently at
    roughly 10% parity — exactly one workflow (the face review) is complete end to end.
 
-Also in there: **7 capabilities that are built, shipped, and unreachable** — no preload caller, or
+Also in there: **6 capabilities that are built, shipped, and unreachable** — no preload caller, or
 no UI route. Several are small wiring jobs and each one is something he paid for and cannot use.
-(It was 11 until 2026-07-20, when items **7, 10, 28 and 55** were wired up. The first three shared a
+(It was 11 until 2026-07-20, when items **7, 10, 28, 55 and 42** were wired up. The first three shared a
 shape worth carrying forward: each was the *off switch* for something the app could only turn ON —
 fast transfer, the wireless backup folder, a remembered autocomplete value. **A feature is not
 finished at the point it can be enabled.** When adding one, look for the way back out in the same
 change. 55 was different — a fact the app knew and never said, which on a 6 GB card is the difference
-between an analyze run that is fast and one that swaps to disk.)
+between an analyze run that is fast and one that swaps to disk.
+**42 carried the real lesson: an unreachable handler has never been audited.** `rename:apply` looked
+finished and had TWO bugs — no path guard at all (every other renderer-path handler has one; this is
+the only one that MOVES a file), and it renamed the clip while leaving its `finalMeta` record behind
+under the old filename key, so fixing a typo would have cost him the record. **Before wiring a dead
+handler, read it as if it were new code.** It has never had a live call site to be audited from.)
 
 ⚠ **A trap in `test/ipc-reachability.test.mjs` that nearly let a fix ship dead.** Its `used()` check
 matches `` `.${m}(` ``, so a **renderer-local function with the same name as the bridge method

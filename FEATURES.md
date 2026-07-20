@@ -152,7 +152,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 39 | Autosave drafts continuously, survive a crash | ✓ | ✓ | ✓ | partial — desktop only |
 | 40 | Restore what he typed last session | ✓ | ✓ | – | partial — desktop only |
 | 41 | Save points he can roll back to | ✓ | – | – | done |
-| 42 | **Rename a clip that is already filed** | ✓ | ✓ | ✓ | **dead** — `rename:apply` is implemented and unreachable; a typo is permanent |
+| 42 | **Rename a clip that is already filed** | ✓ | ✓ | ✓ | done (D) — right-click a row in Organize; the metadata record moves with the file (it is keyed by filename) |
 
 ### D. Let the AI help, without letting it decide (43–56)
 
@@ -246,11 +246,11 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 
 ## What this list says
 
-**7 capabilities are built, shipped, and unreachable** (42, 84, plus `faces:image`,
+**6 capabilities are built, shipped, and unreachable** (84, plus `faces:image`,
 `feedback:list`, `intake:get`, `ai:visionAdvice`, `ai:recallShoot`). He paid for those and cannot use
 them. Several are small wiring jobs.
 
-Four came off that list on 2026-07-20 — **7, 10, 28 and 55**. The first three had a shape worth
+Five came off that list on 2026-07-20 — **7, 10, 28, 55 and 42**. The first three had a shape worth
 naming: each was the *off switch* for something the app could only turn ON. Fast transfer, the wireless backup
 folder, a remembered autocomplete value. A feature is not finished at the point it can be enabled,
 and a reachability test that only asks "does a handler exist" will never notice, because in all three

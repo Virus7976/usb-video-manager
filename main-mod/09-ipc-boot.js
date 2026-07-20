@@ -1218,20 +1218,78 @@ ipcMain.handle('intake:set', (_evt, folder) => {
 });
 
 // Rename a copied file inside the intake folder. Returns the new path.
+// Rename a clip ON DISK, carrying its metadata with it (FEATURES.md item 42).
+//
+// This handler EXISTED, correct-looking and unreachable, since before the audit. Wiring it as it
+// stood would have shipped two bugs, both of the exact shape this repo keeps producing:
+//
+//  ⚠⚠ 1. IT TOOK A RENDERER-SUPPLIED PATH AND RENAMED THE FILE AT IT, with no path guard. Every
+//        other handler that touches a renderer path is guarded (#95); this one escaped because
+//        nothing could call it, so no audit of live call sites ever saw it. It is also the most
+//        consequential of them — the others read, this one MOVES a file.
+//
+//  ⚠⚠ 2. IT RENAMED THE FILE AND LEFT THE METADATA BEHIND. `finalMeta` is keyed by lower-cased
+//        FILENAME, so renaming `2026-06-01_vlog_v1.mp4` orphaned its subject, its people and its
+//        `done` flag under a key that no longer names anything. The clip would come back looking
+//        never-filed and never-analyzed. Fixing a typo would have silently cost him the record —
+//        strictly worse than the typo.
+//
+// So the rename and the record move together, or neither happens.
 ipcMain.handle('rename:apply', async (_evt, payload) => {
-  const { destPath, newName } = payload;
+  const destPath = String((payload && payload.destPath) || '');
+  const newName = String((payload && payload.newName) || '');
+  // GUARD 1 — the path guard, fail-closed like every other one.
+  if (!isPathAllowed(destPath)) return refusePath('rename:apply', destPath);
+  // GUARD 2 — an unreadable finalMeta store means an empty default in memory. We could not SEE the
+  // record to move it, and renaming anyway would orphan metadata we are not even able to read. Same
+  // contract as the rest of the app: refuse rather than half-do it.
+  if (storeReadFailed.finalMeta) {
+    return { ok: false, error: 'Your clip metadata could not be read this launch, so renaming would lose it. Restart the app first.' };
+  }
   try {
     const dir = path.dirname(destPath);
     const ext = path.extname(destPath);
-    // Sanitize the user-supplied name; keep their extension if they typed one.
-    let cleaned = String(newName || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
-    if (!cleaned) return { ok: false, error: 'Name cannot be empty' };
+    // ⚠ ORDER MATTERS HERE, and getting it wrong is safe-but-ugly rather than dangerous — which is
+    // why it is easy to miss. Drop any directory part FIRST, splitting on both separators by hand:
+    // `path.basename` is platform-specific, so on Linux it would leave a Windows-style `..\..\x.mp4`
+    // intact, and running the character filter first turns `../../escaped.mp4` into the literal
+    // filename `.._.._escaped.mp4`. Both stay inside the folder; only this order also keeps the
+    // name readable.
+    let cleaned = String(newName || '').trim().split(/[\\/]+/).pop() || '';
+    cleaned = cleaned.replace(/[<>:"|?*\x00-\x1f]/g, '_');
+    if (!cleaned || cleaned === '.' || cleaned === '..') return { ok: false, error: 'Name cannot be empty' };
+    // A name with nothing nameable in it — `/`, `...`, `???` — sanitizes to punctuation and would
+    // produce a clip called `_.mp4`. Refuse it and say so, rather than renaming his footage to
+    // something he can never find again.
+    if (!/[a-z0-9]/i.test(path.basename(cleaned, path.extname(cleaned)))) {
+      return { ok: false, error: 'That name has no letters or numbers in it' };
+    }
     if (path.extname(cleaned).toLowerCase() !== ext.toLowerCase()) {
       cleaned += ext;
     }
+    if (cleaned === path.basename(destPath)) return { ok: false, error: 'That is already its name' };
     const target = await uniqueDest(dir, cleaned);
+    // GUARD 3 — where it LANDS must be allowed too. uniqueDest keeps it in `dir`, so this can only
+    // fire if the guard's roots change underneath us; it costs nothing and it fails closed.
+    if (!isPathAllowed(target)) return refusePath('rename:apply', target);
     await fsp.rename(destPath, target);
-    return { ok: true, destPath: target, name: path.basename(target) };
+    const name = path.basename(target);
+    // Carry the metadata across. uniqueDest may have appended " (1)", so key off the ACTUAL new
+    // basename, never off what was typed.
+    let movedMeta = false;
+    try {
+      const store = currentFinalMeta();
+      const oldKey = Object.keys(store).find((k) => finalMetaKeyMatches(path.basename(destPath), k));
+      if (oldKey) {
+        const rec = store[oldKey];
+        delete store[oldKey];
+        store[name.toLowerCase()] = rec;
+        config.finalMeta = store;
+        saveStore('finalMeta');
+        movedMeta = true;
+      }
+    } catch { /* the file IS renamed; report it rather than throwing the result away */ }
+    return { ok: true, destPath: target, name, movedMeta };
   } catch (err) {
     return { ok: false, error: err.message };
   }

@@ -14120,6 +14120,64 @@ $('copyChip').addEventListener('click', async () => {
   if (cs && cs.active) goToCopyProgress(cs);
 });
 
+// Rename a clip on disk (FEATURES.md item 42). Reachable from the right-click menu on any row in
+// the Organize list — including a clip that has ALREADY been filed, which is the case that mattered:
+// until now a typo in a filed clip was permanent, because nothing in the app could rename it and the
+// filename is what its metadata is keyed by.
+//
+// The extension is shown but not editable. Letting him retype it invites `.mp4` → `.mp$` and a clip
+// that no longer looks like video to any of the scanners.
+async function renameClipDialog(f) {
+  if (!f || !f.sourcePath) return;
+  const dot = f.name.lastIndexOf('.');
+  const stem = dot > 0 ? f.name.slice(0, dot) : f.name;
+  const ext = dot > 0 ? f.name.slice(dot) : '';
+  const typed = await new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML = `<div class="modal-card modal-form" style="width:min(520px,94vw);text-align:left">
+      <h3>Rename this clip</h3>
+      <p class="muted small">${f.filed
+    ? 'This clip is already filed. Renaming it here renames the file and carries its metadata across — but the COPY you filed into Projects keeps its old name.'
+    : 'Renames the file on disk. Its metadata follows it.'}</p>
+      <div class="ai-ctl-row" style="gap:6px"><input type="text" class="ai-input rc-name" style="flex:1" /><span class="muted small rc-ext"></span></div>
+      <div class="modal-actions">
+        <button type="button" class="btn primary rc-ok">Rename</button>
+        <button type="button" class="btn rc-cancel">Cancel</button>
+      </div></div>`;
+    document.body.appendChild(ov);
+    const inp = ov.querySelector('.rc-name');
+    ov.querySelector('.rc-ext').textContent = ext;
+    inp.value = stem;
+    const done = (v) => { ov.remove(); resolve(v); };
+    ov.querySelector('.rc-ok').addEventListener('click', () => done(inp.value));
+    ov.querySelector('.rc-cancel').addEventListener('click', () => done(null));
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) done(null); });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); done(inp.value); }
+      else if (e.key === 'Escape') { e.preventDefault(); done(null); }
+    });
+    inp.focus();
+    inp.select();
+  });
+  if (typed === null) return;
+  const wanted = String(typed).trim();
+  if (!wanted || wanted === stem) return;
+  let r = null;
+  try { r = await window.api.applyRename(f.sourcePath, wanted + ext); } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+  if (!r || !r.ok) { showToast(`Couldn’t rename — ${(r && r.error) || 'unknown error'}`, 7000); return; }
+  const renamedTo = r.name;
+  f.name = renamedTo;
+  f.sourcePath = r.destPath;
+  // ⚠ Say whether the METADATA came with it. A rename that quietly orphaned the record would look
+  // identical to one that worked until the clip turned up unnamed weeks later, so the difference is
+  // reported rather than assumed — and `movedMeta: false` is normal for a clip that never had one.
+  showToast(r.movedMeta
+    ? `Renamed to ${renamedTo} — its name, people and filing history came with it ✓`
+    : `Renamed to ${renamedTo} ✓`, 6000);
+  finRenderList();
+}
+
 // Keyboard-navigable choice dialog: ↑/↓ to move, Enter to pick, Esc cancels.
 // options: [{ label, value }]. Resolves the chosen value, or null if cancelled.
 function keyChoiceDialog(message, detail, options) {
@@ -14654,6 +14712,7 @@ function finRenderList() {
       e.preventDefault(); e.stopPropagation();
       showContextMenu(e.clientX, e.clientY, [
         { label: f.filed ? 'File this clip again' : 'File this clip now', action: () => fileOneClipNow(f) },
+        { label: 'Rename this clip…', action: () => renameClipDialog(f) },
         { sep: true },
         { label: f.selected ? 'Untick this clip' : 'Tick this clip', action: () => { f.selected = !f.selected; finRenderList(); } },
         { label: 'Open the folder it is in', action: () => window.api.openFolder(finScan.dir) }

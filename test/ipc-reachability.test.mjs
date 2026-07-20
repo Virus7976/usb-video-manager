@@ -42,7 +42,7 @@ const preloadMethods = [...preloadSrc.matchAll(/^\s{2}([A-Za-z0-9_]+):\s*\(/gm)]
 // codebase's own lessons warn about. Trimming them is a good deliberate follow-up — each one removed
 // is one less thing an injected script can call in a webSecurity:false renderer.
 const KNOWN_UNUSED = [
-  'aiRecallShoot', 'aiVisionAdvice', 'applyRename',
+  'aiRecallShoot', 'aiVisionAdvice',
   'facesImage', 'feedbackList', 'getIntake',
 ];
 // FOUR came OFF this list on 2026-07-20 because they now have real UI: `adbDisable` (a "Turn off

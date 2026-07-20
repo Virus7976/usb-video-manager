@@ -1,0 +1,24 @@
+# LOCAL ONLY. See ARCHITECTURE.md Rule 0 — nothing here deploys to the NAS; moving it there is Jake's
+# to do by hand, later. There is deliberately no Portainer redeploy step, unlike the gour-landscaping
+# workflow this is otherwise modelled on.
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    ports:
+      # Bound to all interfaces so the phone can reach it on the LAN. Change to 127.0.0.1:8787:8787
+      # to keep it on this machine only.
+      - "8787:8787"
+    environment:
+      # Generate one:  node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"
+      UVD_TOKEN: "${UVD_TOKEN:?set UVD_TOKEN before starting — the server will not run without it}"
+      UVD_STORE_DIR: /store
+      UVD_PORT: "8787"
+    volumes:
+      # ⚠⚠ :ro IS LOAD-BEARING. The desktop app owns every write to these files — atomic writes, a
+      # read-failure quarantine, debounced saves, caps, prunes and a single undo record. A second
+      # writer would race all of it. Do NOT drop the :ro until the write path exists and has been
+      # designed against that behaviour.
+      - "${UVD_STORE_HOST_DIR:?set UVD_STORE_HOST_DIR to your USB SD Auto-Action folder}:/store:ro"
+    restart: unless-stopped

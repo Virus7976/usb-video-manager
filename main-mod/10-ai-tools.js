@@ -728,6 +728,11 @@ async function backfillLedgerFromTree(root, onProgress) {
     rec.samples = [...new Set([...(rec.samples || []), ...samples])].slice(0, 8);
   }
 
+  // projectLedger is a SIDECAR store, and saveConfig() runs stripStoresForWrite(), which deletes
+  // every key whose sidecar exists on disk. Saving config ALONE therefore discarded this entire
+  // import at the next launch — silently, after reading a whole library. Every other ledger writer
+  // pairs these two; this one did not.
+  saveStore('projectLedger');
   saveConfig();
   return { ok: true, projects: (config.projectLedger || []).length, learned, scanned: rels.length };
 }
@@ -1457,6 +1462,31 @@ ipcMain.handle('ai:health', async () => {
       fix: 'learn',
       fixLabel: 'Learn from my clips',
       arg: libs,
+    });
+  }
+
+  // 3b. It has never read the filing he ALREADY did by hand.
+  //
+  // `backfillLedgerFromTree` existed, was tested, had an IPC handler and a preload bridge — and no
+  // caller at all. Meanwhile his Projects tree holds 1354 clips filed by hand and the ledger reads
+  // ZERO, so everything downstream is dead: `ledgerMatch` opens with `if (!ledgerCache.length)
+  // return null`, the same-shoot offer never fires, and `search_projects` finds nothing. The answer
+  // has been on his disk the whole time next to a one-shot importer with no button.
+  let ledgerN = 0;
+  try { ledgerN = (config.projectLedger || []).length; } catch { ledgerN = 0; }
+  let treeHasFiles = false;
+  if (!ledgerN && config.projectsRoot) {
+    try { treeHasFiles = fs.readdirSync(config.projectsRoot).length > 0; } catch { treeHasFiles = false; }
+  }
+  if (!ledgerN && treeHasFiles) {
+    problems.push({
+      id: 'no-ledger',
+      severity: 'medium',
+      title: "It doesn't know what you've already filed",
+      detail: 'Your Projects folder is full of footage you filed yourself, and the app has never read it. That memory is what makes a new card from the same shoot offer the right project instead of asking again.',
+      fix: 'backfillLedger',
+      fixLabel: 'Read my Projects folder',
+      arg: config.projectsRoot,
     });
   }
 

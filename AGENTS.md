@@ -322,6 +322,49 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bw — ⭐ a tested importer with NO BUTTON, beside 1354 hand-filed clips and a ledger of 0
+
+Swept a NEW axis suggested by the last three iterations — *a feature that is fully built but never
+receives the data it needs* — after noticing it had been 4-for-4. It found the biggest single
+disconnect in the app.
+
+`backfillLedgerFromTree` has an IPC handler, a preload bridge, four passing tests, and **zero
+callers**. The repo's own `ipc-reachability` test had it pinned in `KNOWN_UNUSED`, with a note proudly
+recording that the check had caught the false positive — nobody then asked *why* it was unused. Its
+header states the purpose exactly: *"for anyone with an existing library… it is completely empty. This
+reads what is ALREADY on disk and builds the memory that should have been there."*
+
+**His actual disk:** `2026 - Client Work` **1194 files** · `2026 - Personal` 60 · `2026 - Social
+Media` 100 — **1354 clips filed by hand — against a project ledger of ZERO.** So everything downstream
+was dead: `ledgerMatch` opens `if (!ledgerCache.length) return null`, the same-shoot offer never fired,
+`search_projects` found nothing. The answer sat on his disk the whole time, next to a tested one-shot
+importer with no button.
+
+**And wiring it up alone would have achieved nothing.** `backfillLedgerFromTree` ended with
+`saveConfig()` ALONE — but `projectLedger` is a SIDECAR store, and `saveConfig()` runs
+`stripStoresForWrite()`, which deletes every key whose sidecar exists on disk. **The entire import
+would have vanished at the next launch, silently, after reading a whole library.** Every other ledger
+writer pairs `saveStore('projectLedger')` with `saveConfig()`; this one didn't. Fixed first, and a
+test asserts the sidecar write specifically.
+
+Surfaced through the health card, which is already the app's "detect a problem, offer one click"
+surface: *"It doesn't know what you've already filed."* Only when the ledger is empty AND the tree has
+files, so it cannot nag.
+
+`test/ledger-backfill-offered.test.mjs`, 6 tests, all three parts proven by breaking them. Two guard
+the other direction: no nagging once the ledger has entries, and nothing offered when there is no tree.
+
+**Removed the stale `KNOWN_UNUSED` pin.** A test documenting "this is unreachable" is right until it
+isn't — leaving it would have meant un-wiring the button again went unnoticed.
+
+Both tiers green: vm **1142/1010/132/0**, e2e **132/131/1/0**.
+
+**THE AXIS IS THE LESSON.** Four in a row, now five: the combobox designed for a ranked list nobody
+ranked · the ledger keyed on a path his workflow never sets · `projectsRoot` configured and unread ·
+`pending:work` blind to the stores · and an importer with no caller. **This app's gap is rarely a
+missing feature — it is a built feature never connected to his real data.** Sweep for consumers whose
+input is structurally empty for HIM, not for missing code.
+
 ### 2026-07-19bv — TIER 2 #22: the subject dropdown now leads with the words he actually uses
 
 **Checked what existed first, again, and it was half-built in an unusual way:** a good fuzzy

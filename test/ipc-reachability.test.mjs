@@ -42,13 +42,17 @@ const preloadMethods = [...preloadSrc.matchAll(/^\s{2}([A-Za-z0-9_]+):\s*\(/gm)]
 // codebase's own lessons warn about. Trimming them is a good deliberate follow-up — each one removed
 // is one less thing an injected script can call in a webSecurity:false renderer.
 const KNOWN_UNUSED = [
-  'adbDisable', 'aiBackfillLedger', 'aiLoaded', 'aiRecallShoot', 'aiVisionAdvice', 'applyRename',
+  'adbDisable', 'aiLoaded', 'aiRecallShoot', 'aiVisionAdvice', 'applyRename',
   'clearPhoneBackupFolder', 'facesImage', 'feedbackList', 'getIntake', 'removeFieldHistory',
 ];
-// `aiBackfillLedger` is on that list even though a test mentions backfilling: the test calls the
-// INTERNAL function (`backfillLedgerFromTree`) directly, never the bridge method. A looser scan
-// counted it as used — this stricter one caught the false positive, which is the check earning its
-// keep on its first run. `getFinalMeta` by contrast IS a genuine test seam: the e2e calls
+// `aiBackfillLedger` WAS on this list, and its entry recorded the check earning its keep: a test
+// mentioned backfilling but called the INTERNAL function directly, never the bridge, so a looser scan
+// had counted it as used. The stricter check was right — nothing in the app could run it.
+//
+// It is off the list as of 2026-07-19bw because the health card now calls it for real. That matters
+// more than tidiness: it had a handler, a bridge, tests and no button, while his Projects tree held
+// 1354 hand-filed clips and the ledger read zero. Leaving the pin would mean un-wiring it again went
+// unnoticed. `getFinalMeta` by contrast IS a genuine test seam: the e2e calls
 // `window.api.getFinalMeta()` through the real bridge, so it stays off the list.
 
 test('every ipcMain handler is reachable — no main-side code a user can never run', () => {

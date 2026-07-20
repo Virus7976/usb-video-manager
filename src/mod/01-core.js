@@ -1586,6 +1586,17 @@ async function applyAiHealthFix(p, card) {
       done(`Learned ${r.subjects.length} of your subjects and ${r.examples.length} real examples from ${r.parsed} clips ✓${dupes.length ? ` · Heads up: ${dupes[0]} — I won't create any more of those.` : ''}`);
       return;
     }
+    if (p.fix === 'backfillLedger') {
+      // Reads the tree he already filed by hand into project memory. One shot, additive: it only
+      // ADDS projects it finds on disk, so there is nothing to undo and re-running is harmless.
+      const r = await withBusyBtn(card, 'Reading your Projects folder…', () => window.api.aiBackfillLedger());
+      if (!r || !r.ok) { showToast((r && r.error) || 'Could not read your Projects folder', 6000); return; }
+      const n = r.projects || (r.added || 0);
+      done(n
+        ? `Learned ${n} project${n !== 1 ? 's' : ''} from footage you already filed ✓ — a new card from the same shoot will now offer the right one.`
+        : 'Nothing new to learn from that folder yet.');
+      return;
+    }
     if (p.fix === 'useProjects') {
       // The folder was already there — accept it in one click rather than opening a file browser.
       await withBusyBtn(card, 'Setting…', () => window.api.setProjectsRoot(p.arg));

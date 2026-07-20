@@ -780,6 +780,44 @@ lifecycle (subscribeProgress is idempotent, every per-run handle is torn down in
 double-subscribe, no leak); compress (the new `compressRunning` + finally is correct and
 `compressAborted` is checked at both the loop head and after the encode).
 
+
+## 8g. FRESH-INSTALL AUDIT — 2026-07-20. Most closed (979f43b). ONE blocker left, needs his decision.
+
+Audited against his own goal: *"ship stock working completely on 1 computer with it compressing
+everything and renaming writing metadata."* The path is in **much better shape than expected** — there
+is a real 7-step wizard, empty states return clean `{ok:false,error}` shapes, and the AI degradation is
+the single best-executed part of the app (aiReady/requireAi show two distinct actionable modals, a
+`ui-ai-off` class hides AI affordances, naming by hand is unaffected throughout). Face models really
+are bundled; exiftool is vendored and asarUnpack'd with a dual-layout resolver; adb is correctly
+optional behind `useAdb:false`. **Do not "fix" any of those.**
+
+**Closed:** `compressMode` defaulting to his Tdarr watch-folder (which HIDES the Run button, so stock
+had no compress button at all) · `launchAtLogin` defaulting true and applied unconditionally ·
+`defaultProjectsRoot()` asserting his tree shape on every machine · the hardcoded `L:\` fallback.
+
+### ⚠ THE ONE REMAINING BLOCKER — ffmpeg. Needs a decision, do not guess.
+
+`ffmpegPath: 'ffmpeg'` / `ffprobePath: 'ffprobe'` (01-core.js) assume they are on PATH, and **nothing
+vendors them**. On a clean Windows box they are absent and the failures are SILENT:
+- `06-copy-transfer.js:19-26` — `proc.on('error', () => resolve(false))`: every thumbnail and poster
+  simply never appears, with no message.
+- `06-copy-transfer.js:39-53` — `probeMeta` swallows it and returns `durationSec: 0`, so every clip
+  shows no duration and the compress bar goes indeterminate.
+- Only `compress:run` surfaces anything, and it surfaces the raw `spawn ffmpeg ENOENT`.
+
+**There is no ffmpeg path field anywhere in the UI** — grepped all of src/mod/. A user with ffmpeg
+installed somewhere non-PATH cannot point the app at it without hand-editing config.json.
+
+Three options, none obviously right: **(a)** vendor it (~80 MB on an installer already at 135 MB);
+**(b)** probe at startup and show one honest blocking message with a download link, plus a settings
+field; **(c)** wizard step. **(b) is the cheapest real fix** and should probably happen regardless.
+
+### ⚠ DELIBERATELY NOT DONE — the AI prompt example
+The audit's last item was to genericize `"Gourgess Lawns"` in the placement prompt's few-shot example
+(03-ai-ollama.js:408, :478). **It is a MEASURED INPUT.** A cosmetic rename of a tool RESULT already
+cost 20 points of accuracy here, 4/4 deterministic ([[usb-app-tool-strings-are-input]]). The prompt
+does say "do not copy its values". Leave it until someone re-measures.
+
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
 - **A STRUCTURAL ASSERTION MUST NAME THE THING THAT WOULD GO MISSING — and you must break each part

@@ -817,7 +817,16 @@ async function showFaceReviewGrid(clusters, clipList, autoCount) {
     recentNames.push(s);
   }
   function rankedNames() {
-    const strength = new Map(people.map((p) => [p.name, (p.faces && p.faces.length) || 0]));
+    // ⚠ `p.faces` DOES NOT EXIST on this side. `people:get` returns
+    // `{ id, name, thumb, count, confirmed, unconfirmed }` (main-mod/08-finalize-feedback.js:164) —
+    // the faces array itself is never sent to the renderer. So this read was always 0, tier 2 of the
+    // three-tier ranking never applied, and chips fell through to `localeCompare` — i.e. alphabetical,
+    // which is the raw-store-order problem this ranking was written to replace, wearing a disguise.
+    //
+    // `confirmed` is the field the comment above actually describes ("how many confirmed faces that
+    // person has accumulated"); `count` includes unconfirmed auto-guesses, so it would rank a person
+    // the AI guessed at often above one Jake has actually confirmed.
+    const strength = new Map(people.map((p) => [p.name, Number(p.confirmed) || Number(p.count) || 0]));
     const all = people.map((p) => p.name);
     for (const n of recentNames) if (!all.includes(n)) all.push(n);
     return all.slice().sort((a, b) => {
@@ -2267,10 +2276,7 @@ async function confirmLeaveTransfer() {
 async function goHome() {
   if (!(await confirmLeaveTransfer())) return;
   closePopover();
-  $('flow').classList.add('hidden');
-  $('finalize').classList.add('hidden');
-  $('phone').classList.add('hidden');
-  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
+  showScreen('home');   // was five hand-written lines; see the note on showScreen in 01-core.js
   // (no phoneBackup flag to reset — isPhoneFlow() is derived from state.scannedDrive)
   // Leaving the flow ends the copy→verify→delete session. Anything we copied belonged to THAT
   // session; carrying it home meant a later, unrelated flow could still offer to delete it.

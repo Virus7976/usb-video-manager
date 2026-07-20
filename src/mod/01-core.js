@@ -409,6 +409,27 @@ function autoMode() { return !!uiPrefs.autoMode; }
 // device/action lists — shown on home, hidden inside the flow/phone/finalize screens.
 // Called wherever actionList/driveList toggle. Null-safe so order of init doesn't matter.
 function hideHomeExtras() { ['pendingWork', 'autoModeBar'].forEach((id) => { const el = $(id); if (el) el.classList.add('hidden'); }); }
+
+// ⚠ ONE PLACE THAT DECIDES WHICH SCREEN IS VISIBLE.
+//
+// `#flow`, `#finalize` and `#phone` are sibling sections in `#main`, and "showing" one meant
+// hand-writing the list of the others to hide. There were 6+ copies of that list, and they had
+// drifted: `goToCopyProgress` showed `#flow` without hiding `#finalize`/`#phone`, and the copy chip
+// is a GLOBAL top-bar control clickable from any screen — so clicking it while on Organize left both
+// sections un-hidden and rendered the Organize screen on top of the copy progress.
+//
+// A hide-list you have to remember to update is a bug waiting for the next screen to be added. This
+// is derived from one array instead, so a new screen is hidden by every other screen automatically.
+//
+// `driveBanner` is deliberately NOT handled here: goHome shows it when a drive is selected while
+// goToCopyProgress always hides it, so it stays the caller's decision rather than becoming a flag.
+const APP_SCREENS = ['flow', 'finalize', 'phone'];
+function showScreen(id) {
+  for (const s of APP_SCREENS) { const el = $(s); if (el) el.classList.toggle('hidden', s !== id); }
+  const home = id === 'home';
+  for (const s of ['actionList', 'driveList']) { const el = $(s); if (el) el.classList.toggle('hidden', !home); }
+  if (home) showHomeExtras(); else hideHomeExtras();
+}
 function showHomeExtras() {
   const amb = $('autoModeBar'); if (amb) amb.classList.remove('hidden');
   const pw = $('pendingWork'); if (pw) pw.classList.toggle('hidden', !pw.innerHTML.trim());   // only if it has content

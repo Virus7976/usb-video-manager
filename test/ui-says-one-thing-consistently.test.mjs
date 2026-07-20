@@ -38,7 +38,10 @@ test('⚠⚠ Cancel goes home through goHome(), so it cannot skip the mid-copy w
   assert.ok(at > -1, 'goHome exists');
   const body = people.slice(at, people.indexOf('\n}', at));
   assert.match(body, /if \(!\(await confirmLeaveTransfer\(\)\)\) return;/, 'and it still guards a running transfer');
-  assert.match(body, /\$\('finalize'\)\.classList\.add\('hidden'\)/, 'and hides the other screens');
+  // goHome hides the other screens through showScreen('home') since 2026-07-20 — there were 6+
+  // hand-written hide-lists and they had drifted (goToCopyProgress left #finalize visible, so the
+  // copy chip stacked two screens). The property is the same; it is just no longer open-coded here.
+  assert.match(body, /showScreen\('home'\)/, 'and hides the other screens, via the one helper that does that');
 });
 
 test('⚠ Cancel no longer reimplements any of it', () => {

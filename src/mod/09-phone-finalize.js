@@ -584,9 +584,17 @@ document.querySelectorAll('.steps .step').forEach((stepEl) => {
     // Say WHY a step won't open. These guards used to fail completely silently: you clicked the
     // pill, nothing happened, nothing was said, and there was no way to tell whether the app was
     // broken or you'd missed a prerequisite.
-    if (n === 1 && !state.scannedFiles.length) { showToast('Nothing scanned yet — pick a drive first.'); return; }
-    if (n === 2 && !state.scannedFiles.length) { showToast('Nothing scanned yet — pick a drive first.'); return; }
-    if (n === 3 && !state.copied.length) { showToast('Nothing has been copied off this card yet — copy first, then you can clear it.', 4000); return; }
+    // Say "phone" on the phone flow. These three read "drive"/"card" unconditionally, on a screen
+    // whose files came off a phone and are already on the computer.
+    const src = isPhoneFlow() ? 'phone' : 'drive';
+    if (n === 1 && !state.scannedFiles.length) { showToast(`Nothing scanned yet — pick a ${src} first.`); return; }
+    if (n === 2 && !state.scannedFiles.length) { showToast(`Nothing scanned yet — pick a ${src} first.`); return; }
+    if (n === 3 && !state.copied.length) {
+      showToast(isPhoneFlow()
+        ? 'Nothing has been copied out yet — copy first.'
+        : 'Nothing has been copied off this card yet — copy first, then you can clear it.', 4000);
+      return;
+    }
     if (n === 1) buildRenameStep();
     else if (n === 2) buildUploadStep();
     else if (n === 3) buildDeleteStep();
@@ -634,10 +642,23 @@ function buildUploadStep() {
     dupRow.style.display = dupN ? '' : 'none';
     const cnt = document.getElementById('skipImportedCount'); if (cnt) cnt.textContent = dupN ? ` — ${dupN} look already imported (same name & size)` : '';
   }
+  // ⚠ The step-2 hero is written for a CARD. On the phone flow the files are already on the
+  // computer (staged in the temp folders), and Step 3 — "the originals stay safe on the card until
+  // Step 3" — is not even reachable: setStep(3) refuses with a toast. Telling him his originals are
+  // safe somewhere they aren't is the kind of confident-and-wrong the whole app is trying to stop.
+  const heroT = $('upHeroTitle'); const heroS = $('upHeroSub');
+  if (heroT && heroS) {
+    if (isPhoneFlow()) {
+      heroT.textContent = 'Copy your footage off your phone';
+      heroS.innerHTML = 'Your renamed clips are copied into your <b>Uncompressed</b> folder — that\'s where you\'ll compress them next. Nothing is removed from your phone.';
+    } else {
+      heroT.textContent = 'Copy your footage to your computer';
+      heroS.innerHTML = 'Your renamed clips are copied into your <b>Uncompressed</b> folder — that\'s where you\'ll compress them next. The originals stay safe on the card until Step&nbsp;3.';
+    }
+  }
   renderUploadList();
   renderPhoneDest();
   refreshUploadFreeSpace();
-  if (isPhoneFlow()) $('copyStartBtn').textContent = 'Copy out';
   // AUTO MODE: once you've named/batched and continued, copy out on its own — no extra click.
   //
   // This was gated on isPhoneFlow(), so on a CARD auto mode did nothing at all — despite the
@@ -742,12 +763,22 @@ function renderUploadList() {
   }
   const n = files.length;
   const photoN = clipPhotos().length;
+  // ⚠ THE PHONE WORDING BELONGS HERE, not at the call site. It used to be applied once after
+  // renderUploadList() ran — but renderUploadList() re-runs on every `onlyRenamed` / `skipImported`
+  // toggle and rewrites this label. So in the phone flow the button read "Copy out" until he ticked
+  // any checkbox, then permanently became "Copy 12 files (4.2 GB) to intake" — naming a CARD-flow
+  // destination on a screen where the files came off a phone. Keeping the count in both wordings, so
+  // he never loses "how many am I about to move".
+  const phone = isPhoneFlow();
   if (n === 0 && photoN > 0) {
     // Photos-only card: no videos to copy, but the stills can still be backed up.
     $('copyStartBtn').textContent = `Back up ${photoN} photo${photoN !== 1 ? 's' : ''}`;
     $('copyStartBtn').disabled = false;
+  } else if (phone) {
+    $('copyStartBtn').textContent = `Copy ${n} video${n !== 1 ? 's' : ''} off your phone (${fmtBytes(total)})`;
+    $('copyStartBtn').disabled = n === 0;
   } else {
-    $('copyStartBtn').textContent = `Copy ${n} file${n !== 1 ? 's' : ''} (${fmtBytes(total)}) to intake`;
+    $('copyStartBtn').textContent = `Copy ${n} file${n !== 1 ? 's' : ''} (${fmtBytes(total)}) to your Uncompressed folder`;
     $('copyStartBtn').disabled = n === 0;
   }
 }
@@ -784,9 +815,11 @@ function showCopyingUI() {
 
 // Show progress for an already-running copy (resume after reopening / chip click).
 function goToCopyProgress(status) {
-  $('actionList').classList.add('hidden'); $('driveList').classList.add('hidden'); hideHomeExtras();
+  // showScreen, not a hand-written hide-list: this function used to show #flow while leaving
+  // #finalize and #phone un-hidden, and the copy chip that calls it is clickable from EVERY screen —
+  // so clicking it from Organize rendered the Organize screen on top of the copy progress.
+  showScreen('flow');
   $('driveBanner').classList.add('hidden');
-  $('flow').classList.remove('hidden');
   setStep(2);
   $('fileList').innerHTML = '';
   showCopyingUI();

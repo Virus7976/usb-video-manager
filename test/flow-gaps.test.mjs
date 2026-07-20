@@ -155,9 +155,14 @@ test('phone:distribute returns per-job results, which is what makes that possibl
 test('a step pill that refuses to open SAYS WHY', () => {
   // They failed completely silently: click, nothing happens, no way to tell whether the app is
   // broken or you missed a prerequisite.
+  // 2026-07-20: these now name the right SOURCE. They said "card"/"drive" unconditionally, on a
+  // phone flow whose files are already on the computer. The property under test is unchanged —
+  // a refusal must explain itself — so assert both wordings exist and that the source is derived.
   const flow = mod('09-phone-finalize.js');
-  assert.match(flow, /Nothing has been copied off this card yet/, 'the Delete pill explains itself');
-  assert.match(flow, /Nothing scanned yet — pick a drive first\./);
+  assert.match(flow, /Nothing has been copied off this card yet/, 'the Delete pill explains itself on a card');
+  assert.match(flow, /Nothing has been copied out yet — copy first\./, 'and on a phone');
+  assert.match(flow, /const src = isPhoneFlow\(\) \? 'phone' : 'drive';/, 'the source is derived, not hardcoded');
+  assert.match(flow, /Nothing scanned yet — pick a \$\{src\} first\./, 'and the scan pill uses it');
 });
 
 test('Cancel leaves the flow properly — it does not resume you back into the card you just left', () => {

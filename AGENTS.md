@@ -322,6 +322,39 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19cd — measured against his REAL data: the backlog is fileable, and it all lands in one folder.
+
+Chased the number I flagged last iteration (final-meta = 1 against 4594 drafts) and stopped guessing
+about it. Measured instead, read-only:
+
+- `01 - Uncompressed` — **203 files**; `02 - Compressed` — **310 files**, all in final-name form
+  (`2024-11-29_vlog_josiah-bedroom-timelapse_v1.mp4`). So the copy+rename step HAS run, repeatedly.
+- final-meta holds **1** entry. The old 180-day/5000-cap prune evicted the rest long ago; that prune
+  has since been fixed to exempt unorganized work, but the eviction already happened.
+- Drafts hold **206** entries with a typed subject, keyed `name__size__mtime` on the ORIGINAL card
+  filenames — which do not match the renamed files in Compressed. That bridge is not recoverable by
+  name.
+
+**The good news, measured:** I copied 40 of his real FILENAMES (empty files, no footage touched) into
+a temp folder and scanned it. **All 40 matched, `matchType: 'name'`**, recovering subject,
+description and date from the filename. The graceful-degradation ladder does its job — his backlog is
+fully fileable even with the saved records gone.
+
+**The finding, also measured:** filing those 40 into a temp Projects tree put **all 40 into a single
+flat `vlog` folder**, and taught the ledger exactly **1** entry. Every one of his filenames carries
+`vlog` in the subject slot, so the destination ladder's `[subject]` rung collapses the whole backlog
+into one directory — beside his real folders (`2026 - Client Work`, `2026 - Personal`,
+`2026 - Social Media`), matching none of them. 310 clips in one folder is not filed; it is a second
+holding pen with a nicer name.
+
+**Deliberately NOT changed.** The fix is a layout decision over his real Projects tree — date-grouped
+under the subject, year-prefixed to match his existing naming, or something else — and guessing it
+would reshape 310 clips of his archive to suit my assumption. The measurement is the deliverable;
+the choice is his. Raised with him.
+
+Also corrected the previous entry's scope (see the ⚠ above it): the finalMeta case fix is hardening,
+not a live bug — `finalMeta:save` already lowercases, and his real store confirms it.
+
 ### 2026-07-19cc — proving the embed actually works turned up a SECOND silent metadata killer.
 
 `exiftool-constructs` proves the singleton constructs again. That says the door opens, not that

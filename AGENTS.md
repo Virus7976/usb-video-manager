@@ -322,6 +322,31 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20m — the Home card was blind to 203 files, and would have given impossible advice.
+
+Same measurement, one screen up. `pending:work` counted the intake with `listVideosShallow` — videos
+only — and his `01 - Uncompressed` holds **203 photos and ZERO videos**. So the card whose entire job
+is to show outstanding work rendered **nothing at all** while his largest untouched pile sat there.
+That is Tier 1 item 4 ("he cannot see that he has unfinished work") failing on the biggest case.
+
+**The second half matters more than the first.** Folding photos into the same counter would have made
+the card say *"203 in Uncompressed — compress them first"* — and **photos are never compressed.**
+Tdarr takes video only; a still waits forever for a step that will never come. Advice that cannot be
+followed is worse than silence: it explains a pile instead of clearing it. Photos get their own line —
+*"ready to organize now"* — which is verified true (203/203 file cleanly, 2026-07-20k), and the CTA
+now counts them so the button offers to do it.
+
+`test/home-card-counts-photos.test.mjs` (8). Four breaks proven, including folding the counts together
+and swapping in the compress wording.
+
+**A test that failed for its own imprecision.** My "never says compress" assertion banned `/compress/i`
+outright — and matched **"Uncompressed"**, the folder's *name*. Naming his folder is correct; the
+instruction is what must not appear. Now matches `/compress (them|it) first/`. **Ban the instruction,
+not the word** — and note this failed in the safe direction: an over-strict assertion shouts, an
+over-loose one is silent.
+
+vm **1297/1154/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20l — "This folder has no video files" over 203 of his photos.
 
 Acted on yesterday's Q4 in the way that needs no decision from him. With "Include photos" unticked,

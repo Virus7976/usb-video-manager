@@ -302,6 +302,14 @@ ipcMain.handle('pending:work', async () => {
   const readyDir = config.finalizeSource || config.organizeDest || '';
   let uncompressed = 0; let ready = 0; let readyTotal = 0; let readyAnalyzed = 0;
   try { uncompressed = (await listVideosShallow(intakeDir)).length; } catch { /* ignore */ }
+  // STILLS IN THE INTAKE, counted separately — because the advice for them is the opposite.
+  // Measured: his `01 - Uncompressed` holds 203 app-named photos and ZERO videos, so this card
+  // reported nothing at all while 203 files sat there. Worse, had it counted them together the card
+  // would have said "compress them first", and photos are NEVER compressed — Tdarr only takes video,
+  // so that is advice which can never come true. They are ready to organize as they are (verified:
+  // 203/203 file cleanly).
+  let uncompressedPhotos = 0;
+  try { uncompressedPhotos = (await listImagesShallow(intakeDir)).length; } catch { /* ignore */ }
   if (readyDir && readyDir !== intakeDir) {
     try {
       const files = await listVideosShallow(readyDir);
@@ -344,7 +352,7 @@ ipcMain.handle('pending:work', async () => {
     if (Array.isArray(pend)) facesPending = pend.filter((c) => c && !c.done && !c.skipped && !c.rejected).length;
   } catch { facesPending = 0; }
 
-  return { ok: true, intakeDir, readyDir, uncompressed, ready, readyTotal, readyAnalyzed, facesPending };
+  return { ok: true, intakeDir, readyDir, uncompressed, uncompressedPhotos, ready, readyTotal, readyAnalyzed, facesPending };
 });
 
 // Scan the (top level of the) Compressed folder and match each file to a stored

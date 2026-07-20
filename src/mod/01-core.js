@@ -404,6 +404,7 @@ async function renderPendingWork() {
   let w = {}; try { w = await window.api.pendingWork(); } catch { w = {}; }
   const ready = (w && w.ready) || 0;
   const uncompressed = (w && w.uncompressed) || 0;
+  const uncPhotos = (w && w.uncompressedPhotos) || 0;   // stills need no compressing — see below
   const analyzed = (w && w.readyAnalyzed) || 0;
   // Phone media already pulled off the phone and waiting locally — you can name/organize it
   // WITHOUT reconnecting the phone. Keyed on the video temp (empties when finished).
@@ -444,7 +445,7 @@ async function renderPendingWork() {
         <span class="pw-cta">Continue<span class="pw-chev">›</span></span>
       </button>`);
   }
-  if (ready || uncompressed) {
+  if (ready || uncompressed || uncPhotos) {
     const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} analysed` : ''}` : '';
     let uncLine = '';
     if (uncompressed) {
@@ -452,8 +453,14 @@ async function renderPendingWork() {
         ? `<b>${uncompressed}</b> still in Uncompressed`
         : `<b>${uncompressed}</b> in Uncompressed — compress ${uncompressed !== 1 ? 'them' : 'it'} first`;
     }
-    const sub = [readyLine, uncLine].filter(Boolean).join(' · ');
-    const cta = ready ? `Organize ${ready}` : 'Open Organize';
+    // Photos get their OWN line, and it must not say "compress them first": stills never go through
+    // Tdarr, so that advice can never come true and it is why 203 of his sat in the intake folder
+    // untouched. They are ready to file exactly as they are.
+    const photoLine = uncPhotos
+      ? `<b>${uncPhotos}</b> photo${uncPhotos !== 1 ? 's' : ''} in Uncompressed — ready to organize now`
+      : '';
+    const sub = [readyLine, uncLine, photoLine].filter(Boolean).join(' · ');
+    const cta = (ready || uncPhotos) ? `Organize ${ready || uncPhotos}` : 'Open Organize';
     cards.push(`<button type="button" class="settings-card action pw-card" id="pwGo">
         <span class="sc-icon accent">${PW_ICON_FILM}</span>
         <span class="sc-text">

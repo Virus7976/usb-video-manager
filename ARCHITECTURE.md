@@ -78,11 +78,24 @@ existing 458 face descriptors, which are face-api.js embeddings. ONNX-in-Node is
    (1,408 lines) is PowerShell + Windows Shell COM; drive detection is PowerShell WMI. Card ingest is
    permanently desktop-only. This is why the answer above matters: phone upload over HTTP needs no
    Windows involvement, so no Windows agent process is required.
-2. **`main-mod/` has no module boundaries.** Ten files are *concatenated* by `scripts/bundle.mjs`, not
-   imported — one `require('electron')` at the top of `01-core.js`, everything else sharing lexical
-   scope. ~90 IPC handlers carry business logic inline. **Nothing can be shared with a server until
-   this is unpicked**, and that work is mechanical, unavoidable, and independent of every language
-   choice above. It is the single largest line item in this plan.
+2. ~~**`main-mod/` has no module boundaries.**~~ **SOLVED 2026-07-20 — this was the largest line item
+   in the plan and it turned out to be avoidable.** The bundler only reads `main-mod/*.js`, so a
+   separate **`core/`** of ordinary CommonJS modules can be required BY the bundled main.js and later
+   by a Node server, with **no restructuring of main-mod at all**. Logic moves across one piece at a
+   time. Proven end to end on `core/clip-key.js` (commit 939fe08): the require survives the
+   concatenation verbatim, the vm test harness provides a real `require` resolved from the same base
+   path the packaged app uses, and all ~1390 tests load unchanged.
+
+   Three rules, all pinned by `test/core-modules-actually-ship.test.mjs`:
+   - ⚠⚠ **`core/**/*` must be in `package.json` → `build.files`.** That list is an allowlist; a new
+     top-level dir matches nothing, so electron-builder drops it — and every test still passes while
+     the INSTALLED app fails to boot. No test could catch this, hence the guard.
+   - ⚠ Require as `./core/x`, never `../core/x` — the line executes from main.js at the repo root.
+   - ⚠ core/ modules must be **stateless**: the require cache is per-process while the vm context is
+     per-`loadMain()`, so module-level state leaks between tests. Also what makes them server-usable.
+
+   Still true: ~90 IPC handlers carry business logic inline, and each needs extracting into a callable
+   function before it can be a route. But that is now incremental, not a prerequisite.
    - Start with `03-ai-ollama.js`, `07-naming-organize.js`, `10-ai-tools.js` (~3,200 lines): they
      touch no Electron API except `ipcMain.handle`, so they extract almost for free.
    - File by file, behind the existing suite. **Never a big-bang conversion** — see the whack-a-mole

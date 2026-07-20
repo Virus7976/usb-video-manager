@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bv — TIER 2 #22: the subject dropdown now leads with the words he actually uses
+
+**Checked what existed first, again, and it was half-built in an unusual way:** a good fuzzy
+combobox is already wired to every subject field, and its own comment says *"empty query keeps the
+caller's order (e.g. most-used descriptions first)"* — **it was designed to be handed a ranked list,
+and nothing ever ranked one.** `subjects:add` sorts alphabetically and `subjects:get` handed that
+straight back.
+
+Measured on his real data: **396 remembered subjects**, of which **112 are actually used**, and the
+distribution is nowhere near uniform — `talking-head` 28 · `liam` 14 · `vlog` 7 · `talking-head-young`
+7 · `misc` 6 — with **88 used exactly once**. Alphabetical is close to worst-case here: those 88
+one-offs are scattered through precisely the place his five real words belong, so the field opened on
+"abby, adjusting-airsoft-gun, aiden, airplane-passenger…". He typed 354 field entries in his click
+log; this is the difference between typing a subject and picking one.
+
+`subjects:get` now ranks by use — counted from drafts AND finalMeta, because a subject he has FILED is
+the strongest signal of what he actually shoots. Unused subjects are still offered, in their existing
+alphabetical order, after the used ones.
+
+**A READ-ORDER view only.** `config.subjects` is never rewritten, so storage cannot come to depend on
+when it was last read, and every other consumer keeps the order it expects. The fuzzy scorer still
+takes over the moment he types.
+
+`test/subjects-ranked-by-use.test.mjs`, 7 tests, all three parts proven by breaking them. Three guard
+the other direction: the vocabulary never shrinks, a fresh install is byte-identical to before, and
+reading never mutates storage.
+
+Both tiers green: vm **1136/1004/132/0**, e2e **132/131/1/0**.
+
 ### 2026-07-19bu — TIER 2 #19: "biggest shoots first" — 50 decisions covers HALF his unnamed library
 
 **Checked before building, and half the item was already done** — the rename screen already groups by

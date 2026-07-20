@@ -7156,7 +7156,34 @@ ipcMain.handle('player:setSpeed', (_evt, speed) => {
   return config.defaultSpeed;
 });
 
-ipcMain.handle('subjects:get', () => config.subjects || []);
+// MOST-USED FIRST. The stored list is alphabetical (subjects:add sorts it), and he has 396 remembered
+// subjects — so the dropdown opened on "abby, adjusting-airsoft-gun, aiden…" while the words he
+// actually uses sat hundreds of entries down. Measured on his real drafts: 112 subjects in use,
+// `talking-head` 28 · `liam` 14 · `vlog` 7 … and **88 used exactly once**, which makes alphabetical
+// close to worst-case — the one-offs are scattered through the exact place his real vocabulary
+// belongs.
+//
+// The combobox was already built for this: "empty query keeps the caller's order (e.g. most-used
+// descriptions first)". Nothing ever handed it a ranked list.
+//
+// A READ-ORDER view only — `config.subjects` is not touched, so storage never depends on when it was
+// last read. Once he types a character the fuzzy scorer takes over as before. Counts come from drafts
+// AND finalMeta: a subject he has FILED is the strongest signal of what he actually shoots.
+ipcMain.handle('subjects:get', () => {
+  const all = config.subjects || [];
+  const counts = new Map();
+  const bump = (v) => {
+    const s = String((v && v.subject) || '').trim();
+    if (s) counts.set(s, (counts.get(s) || 0) + 1);
+  };
+  try { for (const v of Object.values(currentDrafts() || {})) bump(v); } catch { /* ignore */ }
+  try { for (const v of Object.values(currentFinalMeta() || {})) bump(v); } catch { /* ignore */ }
+  if (!counts.size) return all;
+  // Stable: used ones by count (desc), then everything else in the alphabetical order it arrived in.
+  const used = all.filter((s) => counts.has(s)).sort((a, b) => (counts.get(b) - counts.get(a)) || a.localeCompare(b));
+  const rest = all.filter((s) => !counts.has(s));
+  return used.concat(rest);
+});
 
 ipcMain.handle('subjects:add', (_evt, name) => {
   const s = String(name || '').trim();

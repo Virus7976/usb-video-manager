@@ -322,6 +322,40 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20i — the exemption protecting every name he has ever typed had no behavioural test.
+
+`writeDrafts` prunes on **every** save — shed >60 days, then cap at 10000 — and both steps are gated
+by `draftIsNamed`, which appears in **zero** test files by name. The existing drafts-cap tests are
+structural: the constant is declared once, referenced in both places. **Nothing exercised what
+actually gets evicted.**
+
+The bug the exemption fixed is recorded in the code and is nasty because it is invisible:
+
+> *"a card named but left uncopied for two months lost those names — and because this prune runs on
+> EVERY writeDrafts call, editing one clip today deleted another clip's older name."*
+
+Silent, delayed, and triggered by unrelated work. He would never connect "I renamed a clip on
+Tuesday" to "the names I typed in May are gone". Drafts are the ONLY place a name lives until the
+footage is copied, so an evicted named draft is typing that must be redone — 206 named drafts and 354
+typed field entries in his log.
+
+`test/drafts-prune-keeps-names.test.mjs` (7), behavioural on both rules and **both directions**: a
+named draft survives age and cap pressure; an old FLAG-ONLY one is still shed, because a guard that
+exempts everything is the same as no guard. Also covers description and location (two thirds of
+`draftIsNamed` that a subject-only test would leave unexercised) and a missing `ts`, which reads as
+1970 — exactly the legacy entries most likely to hold old typed work.
+
+**⚠ The fixture couldn't reach the code under test, for a NEW reason.** `writeDrafts` stamps every
+incoming draft `ts: now`, so a draft cannot be old on the same call that saves it — my seeded
+timestamps came back rewritten and the age filter never ran. Fixed by seeding the store directly and
+triggering the prune with an *unrelated* save, which is not a workaround: **it is precisely the
+reported scenario.** Fifth blind fixture this session, and the first where the code under test
+actively overwrote the fixture's input.
+
+Four breaks proven.
+
+vm **1274/1131/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20h — the face GC's most important guard existed only as a comment and a branch.
 
 `gcFaceCrops` is reference-counted: build a keep-set from the stores, **delete every file in `faces/`

@@ -76,6 +76,15 @@ function gcFaceCrops() {
     for (const k of ['ai.people', 'ai.facesPending', 'ai.faceScenes']) {
       if (storeReadFailed[k]) { console.error(`[people] gc: skipped — ${k} failed to read this launch`); return; }
     }
+    // ⚠ THE FOURTH REFERENCE STORE. `config.ai.ignored` is part of the keep-set below, but it lives
+    // in config.json — NOT a sidecar — so `storeReadFailed` never covers it and the loop above
+    // cannot see it. Without this, an unreadable config.json means the session runs on defaults,
+    // `ignored` reads [], and the very next people:delete / people:merge / faces:saveScenes unlinks
+    // every ignored face's crop. config.json itself is left intact by the save guard, so on the next
+    // good launch the Ignored view points at files that no longer exist — and each entry carries the
+    // `from`/`fromName` needed to restore a CONFIRMED enrolment face, so this is a one-way loss of
+    // confirmed work, not just a dismissal.
+    if (config_readFailed) { console.error('[people] gc: skipped — config.json failed to read this launch'); return; }
     const keep = new Set();
     const note = (u) => {
       const s = String(u || '');

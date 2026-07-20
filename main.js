@@ -746,6 +746,13 @@ function notePersistFailure(key, why) {
   } catch { /* no window yet — stores:persistFailures covers it */ }
 }
 ipcMain.handle('stores:persistFailures', () => Object.values(storePersistFailed));
+// READ health, which persistFailures cannot report: storePersistFailed only fills once a WRITE has
+// been attempted and refused, so a store that failed to load is invisible until something tries to
+// save it. The renderer needs to know BEFORE that, because a store it believes is empty is a store
+// it will prune against — the faces-pending save drops every resolved cluster when the face-scenes
+// list reads empty, and a corrupt scenes file is indistinguishable from "no group shots yet" from
+// the renderer's side. This is that distinction.
+ipcMain.handle('stores:readFailures', () => Object.keys(storeReadFailed).filter((k) => storeReadFailed[k]));
 
 function saveStore(key) {
   const file = STORE_FILES[key];
@@ -2517,8 +2524,36 @@ ipcMain.handle('clipObs:save', (_e, payload) => {
   const store = clipObsStore();
   store[key] = { obs, ts: Date.now() };
   // Cap to 4000 most-recent observations.
+  //
+  // ⚠ Two things this must not do, both learned from caps elsewhere in this app:
+  //
+  //  1. `store[a].ts || 0` sorted every record WITHOUT a `ts` to the very front of the deletion list,
+  //     so observations written before `ts` existed were evicted FIRST regardless of age — oldest-
+  //     looking purely because they predate the field. Missing timestamps now sort as "unknown, treat
+  //     as recent" rather than "epoch", so an undated record is never preferentially destroyed.
+  //  2. It had no unconsumed-work exemption at all — the only cap in the codebase without one.
+  //     `finalMeta` gates eviction on `done`; drafts exempt named entries (draftIsNamed). An
+  //     observation belonging to a clip he has NOT named yet is the AI's only memory of that clip;
+  //     shedding it is shedding work that has not been used. That is exactly the shape that produced
+  //     the 180-day finalMeta bug. Unnamed clips' observations are kept ahead of consumed ones.
   const keys = Object.keys(store);
-  if (keys.length > 4000) { keys.sort((a, b) => (store[a].ts || 0) - (store[b].ts || 0)); for (const k of keys.slice(0, keys.length - 4000)) delete store[k]; }
+  if (keys.length > 4000) {
+    const named = currentFinalMeta ? currentFinalMeta() : {};
+    const consumed = (k) => {
+      // The observation has served its purpose once the clip it describes carries a real name.
+      const rec = named && (named[String(k).split('__')[0].toLowerCase()] || null);
+      return !!(rec && (rec.subject || rec.description));
+    };
+    keys.sort((a, b) => {
+      const ca = consumed(a); const cb = consumed(b);
+      if (ca !== cb) return ca ? -1 : 1;                       // consumed sheds before unconsumed
+      const ta = Number(store[a] && store[a].ts); const tb = Number(store[b] && store[b].ts);
+      const va = Number.isFinite(ta) && ta > 0 ? ta : Infinity;  // undated → treat as recent, not epoch
+      const vb = Number.isFinite(tb) && tb > 0 ? tb : Infinity;
+      return va - vb;
+    });
+    for (const k of keys.slice(0, keys.length - 4000)) delete store[k];
+  }
   saveStore('ai.clipObs');
   return true;
 });
@@ -6567,6 +6602,15 @@ function gcFaceCrops() {
     for (const k of ['ai.people', 'ai.facesPending', 'ai.faceScenes']) {
       if (storeReadFailed[k]) { console.error(`[people] gc: skipped — ${k} failed to read this launch`); return; }
     }
+    // ⚠ THE FOURTH REFERENCE STORE. `config.ai.ignored` is part of the keep-set below, but it lives
+    // in config.json — NOT a sidecar — so `storeReadFailed` never covers it and the loop above
+    // cannot see it. Without this, an unreadable config.json means the session runs on defaults,
+    // `ignored` reads [], and the very next people:delete / people:merge / faces:saveScenes unlinks
+    // every ignored face's crop. config.json itself is left intact by the save guard, so on the next
+    // good launch the Ignored view points at files that no longer exist — and each entry carries the
+    // `from`/`fromName` needed to restore a CONFIRMED enrolment face, so this is a one-way loss of
+    // confirmed work, not just a dismissal.
+    if (config_readFailed) { console.error('[people] gc: skipped — config.json failed to read this launch'); return; }
     const keep = new Set();
     const note = (u) => {
       const s = String(u || '');

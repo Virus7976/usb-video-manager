@@ -744,6 +744,13 @@ function notePersistFailure(key, why) {
   } catch { /* no window yet — stores:persistFailures covers it */ }
 }
 ipcMain.handle('stores:persistFailures', () => Object.values(storePersistFailed));
+// READ health, which persistFailures cannot report: storePersistFailed only fills once a WRITE has
+// been attempted and refused, so a store that failed to load is invisible until something tries to
+// save it. The renderer needs to know BEFORE that, because a store it believes is empty is a store
+// it will prune against — the faces-pending save drops every resolved cluster when the face-scenes
+// list reads empty, and a corrupt scenes file is indistinguishable from "no group shots yet" from
+// the renderer's side. This is that distinction.
+ipcMain.handle('stores:readFailures', () => Object.keys(storeReadFailed).filter((k) => storeReadFailed[k]));
 
 function saveStore(key) {
   const file = STORE_FILES[key];

@@ -10160,6 +10160,16 @@ async function ensureFaceScenes() {
   try {
     faceScenes = (await window.api.getFaceScenes()) || [];
     _scenesLoaded = true; _scenesLoadFailed = false;
+    // ⚠ AN EMPTY LIST IS AMBIGUOUS, and the ambiguity costs him his group shots. If
+    // face-scenes.json is corrupt, main's aiFaceScenes() returns the empty DEFAULT rather than
+    // throwing — so the IPC succeeds, we set _scenesLoadFailed = false, and `faceScenes` reads []
+    // exactly as it would if he simply had no group shots yet. _serializePending then prunes every
+    // resolved cluster on the grounds that no scene references it. Ask main which stores actually
+    // failed to read this launch, so "empty because broken" is distinguishable from "empty".
+    try {
+      const failed = (await window.api.storeReadFailures()) || [];
+      if (failed.includes('ai.faceScenes')) _scenesLoadFailed = true;
+    } catch { /* older main without the bridge — fall through to the conservative prune below */ }
   } catch {
     // Deliberately do NOT set _scenesLoaded: leaving it false means a later call retries the read
     // instead of running the rest of the session on a phantom empty store.
@@ -10409,8 +10419,20 @@ function _clusterInAnyScene(c) {
   return false;
 }
 function _serializePending(clusters) {
+  // ⚠ ONLY PRUNE WHEN THE SCENE LIST CAN BE TRUSTED.
+  //
+  // The filter below drops a resolved (done/skipped) cluster unless some group shot still references
+  // it. That is correct when `faceScenes` is real. When it ISN'T — the read threw, or it never
+  // loaded, or main handed back the empty default for a corrupt file — every resolved cluster looks
+  // unreferenced and the next pending save strips the lot. That re-creates the #45 vanishing this
+  // filter was written to fix, from the other side: the scenes file is protected by its own write
+  // guard, so on the next good launch the group shots come back with nothing left to resolve them.
+  //
+  // Keeping too much is recoverable (a stale cluster reappears in the grid and he answers it once).
+  // Dropping his answers is not. So when in doubt, keep.
+  const scenesTrustworthy = _scenesLoaded && !_scenesLoadFailed;
   return (clusters || [])
-    .filter((c) => c && c.descriptor && (!(c.done || c.skipped) || _clusterInAnyScene(c)))
+    .filter((c) => c && c.descriptor && (!(c.done || c.skipped) || !scenesTrustworthy || _clusterInAnyScene(c)))
     .map((c) => ({
       thumb: c.thumb || '',
       descriptor: c.descriptor,

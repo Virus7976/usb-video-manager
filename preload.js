@@ -231,6 +231,7 @@ contextBridge.exposeInMainWorld('api', {
   // People / face recognition (descriptors computed in the renderer via face-api.js)
   getPeople: () => ipcRenderer.invoke('people:get'),
   storePersistFailures: () => ipcRenderer.invoke('stores:persistFailures'),
+  storeReadFailures: () => ipcRenderer.invoke('stores:readFailures'),
   onStorePersistFailed: (cb) => {
     const listener = (_e, info) => cb(info);
     ipcRenderer.on('store:persist-failed', listener);

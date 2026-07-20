@@ -1276,7 +1276,12 @@ function getExifTool() {
   // Writing XMP into an MP4/MOV makes exiftool REWRITE the whole file, so a big
   // GoPro clip (multi-GB, possibly on a slow/network drive) can take minutes — a
   // short task timeout spuriously fails the embed. Give each task plenty of room.
-  _exiftool = new ExifTool({ exiftoolPath: exiftoolBinaryPath(), taskTimeoutMillis: 600000 });
+  // maxProcAgeMillis MUST be >= max(spawnTimeoutMillis, taskTimeoutMillis) or BatchCluster throws
+  // from the CONSTRUCTOR — and since every read and every write goes through this one function, that
+  // throw took out ALL of exiftool: no embedding, no reading a record back, no metadata at all. The
+  // task timeout above was raised without it, so the app has been unable to touch metadata since
+  // 0.4.15. Give the process room to outlive the longest single task it is allowed to run.
+  _exiftool = new ExifTool({ exiftoolPath: exiftoolBinaryPath(), taskTimeoutMillis: 600000, maxProcAgeMillis: 660000 });
   return _exiftool;
 }
 async function endExifTool() {

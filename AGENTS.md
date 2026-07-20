@@ -322,6 +322,43 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19cb — ⚠⚠ ALL OF EXIFTOOL HAS BEEN DEAD SINCE 0.4.15. Found by the e2e for yesterday's feature.
+
+I wrote an e2e for the new one-clip path — real right-click, real menu click, real disk — and it
+failed with a message that had nothing to do with the feature:
+
+    BatchCluster was given invalid options: maxProcAgeMillis must be greater than or equal to
+    600000: the max value of spawnTimeoutMillis (30000) and taskTimeoutMillis (600000)
+
+`getExifTool()` raised `taskTimeoutMillis` to 600000 for a correct, documented reason (writing XMP
+into an MP4 rewrites the whole file; a multi-GB GoPro clip takes minutes) — but BatchCluster
+validates in the CONSTRUCTOR, and the default `maxProcAgeMillis` is below that. So
+`new ExifTool(...)` **threw, every time**. That lazily-constructed singleton is what every read and
+every write goes through, so the app has been structurally unable to touch file metadata for the
+entire life of the modular main process: no embedding at finalize, no reading a record back, nothing.
+
+**Why nothing caught it, which is the part worth keeping:**
+- the vm suite loads `main.js` but never spawns exiftool;
+- the one existing filing e2e runs with embedding **off**;
+- **the renderer swallows it.** `finalize:run`'s per-item try/catch turns the throw into an entry in
+  `summary.errors`, so the run still reports `ok` and the screen still says "Done".
+
+It surfaced only because the new e2e filed with the embed checkbox at its real default (ON) and read
+the TOAST TEXT. A structural test cannot see a constructor that throws.
+
+`test/exiftool-constructs.test.mjs` (3) constructs it for real with the options parsed out of main's
+own source — mocking the options object would test my arithmetic, not the library's rule, and the
+library's rule is what broke. One test asserts the pre-fix options still throw, so a future library
+version relaxing this says so loudly instead of leaving a mysterious constant behind.
+
+**Two of the four new e2e assertions were wrong, and both were MY contract error, not the app's:**
+"exactly one file arrived" ignored that the .xmp sidecar is supposed to follow the footage (asserting
+it would have re-broken a fixed bug), and "one clip teaches the ledger" is false for an UNNAMED clip —
+`recordLedgerEntries` has a holding-pen rule and a dated `_unsorted` folder is not a project. Inverted
+to assert the holding-pen rule instead, which is the case his real store hits 4263 times out of 4594.
+
+vm **1182/1042/140/0**, e2e **140/139/1/0**.
+
 ### 2026-07-19ca — Tier 1 item 3: one clip, end to end, in ten seconds.
 
 First of the toolness items rather than a bug sweep. His project ledger is 0 after months of use, and

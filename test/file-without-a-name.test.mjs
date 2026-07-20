@@ -163,8 +163,14 @@ test('the Organize screen offers unmatched clips instead of hiding them', async 
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(join(process.cwd(), 'src', 'mod', '09-phone-finalize.js'), 'utf8').replace(/\/\/.*$/gm, '');
   const i = src.indexOf('function finMatched()');
-  const fn = src.slice(i, src.indexOf('\n', src.indexOf('function finSelected()')));
-  assert.ok(i > 0, 'found finMatched');
+  // Prove BOTH anchors resolved before slicing. A missing start anchor makes this `slice(-1)` — one
+  // character — and the doesNotMatch below then passes while checking nothing. A length guard does
+  // NOT catch that (the collapsed slice is length 1); the index must be checked. See
+  // test/assertions-cannot-pass-vacuously.test.mjs.
+  const j = src.indexOf('function finSelected()');
+  assert.ok(i > -1, 'found finMatched');
+  assert.ok(j > i, 'and finSelected after it');
+  const fn = src.slice(i, src.indexOf('\n', j));
   assert.doesNotMatch(fn, /files\.filter\(\(f\) => f\.matched\)\s*;/,
     'it no longer hides every clip the AI has not described');
 });

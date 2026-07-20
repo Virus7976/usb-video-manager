@@ -47,7 +47,14 @@ test('the cards are not washed in accent any more', () => {
   // Each card was flooded with accent-14% behind an accent-40% border, so two stacked read as two
   // competing alert boxes drowning the Devices list beneath them. The accent is now a slim rail plus
   // the CTA pill — enough to say "this needs you" without shouting.
-  const rule = css.slice(css.indexOf('.pw-card {'), css.indexOf('.pw-cta {'));
+  // Prove the anchors resolved. Renaming `.pw-card` would make this `slice(-1)` — one character —
+  // and the "no accent wash" check below would then pass while looking at nothing, silently. A length
+  // guard does not catch it; the index must be. See test/assertions-cannot-pass-vacuously.test.mjs.
+  const start = css.indexOf('.pw-card {');
+  const end = css.indexOf('.pw-cta {');
+  assert.ok(start > -1, 'found the .pw-card rule');
+  assert.ok(end > start, 'and .pw-cta after it');
+  const rule = css.slice(start, end);
   assert.equal(/background:\s*color-mix\(in srgb, var\(--accent\) 1[0-9]%/.test(rule), false,
     'no full-card accent wash');
   assert.match(css, /\.pw-card::before \{[\s\S]*?background: var\(--accent\);/, 'a slim accent rail instead');

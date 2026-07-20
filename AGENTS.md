@@ -322,6 +322,41 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20q — a meta-test so the vacuous-assertion class cannot come back. And I got it wrong twice.
+
+Four shape-pinned tests and six blind fixtures this session, so I stopped fixing instances and wrote
+the rule instead. The dangerous shape:
+
+    const body = src.slice(src.indexOf('function foo'));   // renamed → indexOf is -1
+    assert.doesNotMatch(body, /dangerous/);                // …passes. Silently. Forever.
+
+`slice(-1)` returns the LAST CHARACTER — so a missing anchor does not throw, it yields a one-character
+string that contains nothing, and every "must not contain" assertion on it succeeds. **A positive
+assertion fails loudly when its anchor drifts; a negative one goes quiet.** That asymmetry is why this
+needs a rule rather than vigilance: the failure mode is silence, and silence looks exactly like a
+green suite. `delete-gate.test.mjs` was on the initial list.
+
+**⚠ I WAS WRONG TWICE, and both corrections are the actual content here:**
+
+1. **My first fix was worthless.** I added `assert.ok(v.length > 0)` to all 13 flagged files. A
+   collapsed slice is **one character long**, so that check passes while the negative assertion below
+   it is still vacuous. Proved it in a one-liner. **The guard must assert the INDEX resolved**, not
+   that the slice is non-empty. Reverted all 13.
+2. **Only the START anchor is dangerous.** `slice(0, indexOf(x))` with a missing anchor becomes
+   `slice(0, -1)` — nearly the whole string — so a negative assertion runs on MORE text and can only
+   fail loudly. Narrowing to start-anchors dropped 13 flagged files to **2 real ones**; the rest
+   already had a positive assertion pinning the anchor.
+
+Both real cases (`file-without-a-name`, `ui-chrome`) now assert the index and **fail loudly when I
+rename the thing they anchor on** — verified by renaming `.pw-card` and `finMatched`.
+
+**The meta-test also caught its own blind spot.** Weakening the rule to accept a length guard changed
+nothing, because its window only looked BACKWARDS from the slice and the sample writes the guard
+after. Widened to both sides; the break now fails correctly. *A rule that cannot detect its own
+weakening is the thing it was written to prevent.*
+
+vm **1323/1180/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20p — the shoot question had ONE call site, on the path his old footage never takes.
 
 Second half of why `shootMemory` reads 0. `askAboutShoots` was called only from the **card-flow** run

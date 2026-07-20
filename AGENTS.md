@@ -322,6 +322,60 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ak — item 26 was already correct, for a reason one "optimisation" would destroy.
+
+Checked rather than assumed: *"never re-ask a face he has already answered."* A scan starts from the
+persisted clusters and merges into them, and the merge condition is the load-bearing part —
+
+    let c = clusters.find((u) => faceDist(u.descriptor, f.descriptor) < FACE_CLUSTER_DIST);
+
+It searches **every** cluster, answered ones included. So the same person detected on a later card
+merges into the cluster he rejected and inherits that rejection. No bug.
+
+**The tempting optimisation is the trap.** Searching only unresolved clusters — the ones the grid
+renders — looks faster, passes every existing test, and quietly resurrects **every face he has ever
+said no to** on the next scan. 41 recorded "✗ No" answers, silently undone. That is the app forgetting
+his decisions, the one thing he named as unacceptable, so the property is now pinned.
+
+**⚠ AND THE TEST I FIRST WROTE ONLY GUARDED HALF OF IT.** There are TWO merge sites — the card scan
+and the Organize-screen scan — and I anchored on `indexOf`, which finds one. **The break script is
+what caught it**: `assert s.count(target)==1` failed because the target appeared twice. Without that
+guard in the break script I would have shipped a test that protects one path and leaves its twin
+open — *the exact "one path fixed, its twin missed" shape that has produced a confirmed bug on four
+separate days here, this time in my own test.*
+
+Now matches all sites with a global regex, asserts there are exactly 2, and checks each. Both broken
+separately.
+
+vm **1448/1305/143/0**, e2e **143/142/1/0**.
+
+### 2026-07-20aj — ⚠ NEXT TASK, specified: same-shoot inference is locked behind the AI.
+
+Found while surveying Tier 2 item 29 ("infer subject from the folder he last filed a same-date shoot
+into"). `maybeOfferLedgerProject` — the same-shoot detector — sits inside `aiAnalyzeSelected`, which
+opens with `if (!requireAi()) return;`. **So a match between today's card and a project he filed
+before only surfaces during an AI run**, even though `ledger:matchDates` is pure JSON arithmetic that
+needs no model at all.
+
+**Third instance of this exact shape this session**, and worth naming as an axis:
+- filing rules applied only if he opened the destination map (`ad`);
+- the shoot question was gated on a flag latched by an unrelated render (`o`);
+- now: his own filing history only informs him when Ollama happens to be running.
+
+**Why I did not do it in this iteration rather than half-doing it:** the right fix is a ledger rung in
+`destinationParts` — after his explicit placement and his routes, before the subject/date fallback —
+so history informs the preview AND the file on every path, with no popup and no AI. That is a change
+to the **filing ladder**, i.e. where his footage lands. PROMPT.md §8 is explicit that such a change
+ships with its verification or not at all, and there was not room to do that carefully here.
+
+**Specification for the next iteration**, so it starts with the thinking done:
+- Use `ledger:matchDates`' existing CONTENT scoring (subject/people/location overlap), **never a bare
+  date** — "unrelated footage shot the same day" is precisely what that scoring exists to reject, and
+  a bare-date rung would file a birthday into a client job.
+- Require a strong match, and prefer his explicit signals: placement > routes > **ledger** > subject/date.
+- Test the same way as `ad`: the preview must agree with what filing does, and a clip with no strong
+  match must be completely unaffected.
+
 ### 2026-07-20ai — Tier 2 item 28: a chaptered GoPro take now names as one.
 
 **Measured before building any of it**, because "does he actually have chaptered takes?" is a question,

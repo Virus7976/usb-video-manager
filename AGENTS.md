@@ -322,6 +322,33 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20ab — item 8 finished: the CARD screen now shows where each clip will file.
+
+`aa` built the single ladder and put `→ vlog/2026-03-14` on the Organize rows. This puts it where the
+item actually asks for it — **on the card screen, while he is still naming.** The rows already
+answered *"what will this be called"*; they never answered *"and where does it end up"*, which is the
+question he has before committing a whole card and the one whose absence makes filing feel like
+something to check afterwards rather than something he decided.
+
+**The card screen deliberately does NOT compute it.** The clips are not filed yet, so re-deriving
+"subject/date" from the fields already on screen would have been trivial — and that second
+implementation drifts from `finalize:run` the moment either changes. That is the bug class that cost
+four separate days here, most recently a badge naming a folder that did not exist. It asks main.
+`test('the destination comes from MAIN, not from a copy of the rules here')` fails the moment anyone
+re-derives it locally.
+
+Three properties that each have a wrong version which looks fine:
+- **Debounced** — `refreshNames()` runs on every keystroke, so an un-debounced version is an IPC per
+  character.
+- **Re-queries the DOM after the await** — the list re-renders while typing, and writing into cells
+  captured beforehand puts one clip's destination under another clip's name.
+- **Sends only `subject` + `date`** — the fields the ladder reads. Sending the whole clip would ship
+  face descriptors and thumbnails across IPC on every keystroke.
+
+Five breaks proven, one per property plus the drift.
+
+vm **1388/1245/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20aa — Tier 1 item 8: show where each clip WILL go. The blocker was structural.
 
 *"Show, on the card screen, where each clip WILL go before he commits."* The reason it had not been

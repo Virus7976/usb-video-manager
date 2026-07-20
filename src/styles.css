@@ -2533,6 +2533,13 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 /* "→ vlog/2026-03-14" — where this clip WILL file when he presses Run. Quiet on purpose: it is a
    prediction sitting beside facts, and it appears on every row, so it must read as an annotation
    rather than compete with the filename. */
+.final-dest {
+  /* A quiet second line under the final name: it is a PREDICTION sitting beside a fact, so it must
+     read as an annotation rather than compete with the filename it sits under. */
+  margin-top: 2px; font-size: 11.5px; line-height: 1.4; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.final-dest[hidden] { display: none; }
 .fin-src-badge.dest { background: transparent; color: var(--text-3); border-color: color-mix(in srgb, var(--text-3) 30%, transparent); font-variant-numeric: tabular-nums; }
 .fin-meta-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .fin-chip {

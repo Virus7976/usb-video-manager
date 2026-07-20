@@ -2204,6 +2204,11 @@ function buildRenameStep() {
         <div class="meta-row">${organizeFields.map((fld) => `<input type="text" class="f-meta" data-field="${escapeAttr(fld.id)}" data-i="${i}" value="${escapeAttr(clip[fld.id] || '')}" placeholder="${escapeAttr(fld.label.toLowerCase())}" autocomplete="off" />`).join('')}</div>
         <div class="final-row">
           <div class="final-pill" data-final="${i}">${escapeHtml(finalName(clip))}</div>
+          <!-- Where it will FILE, not just what it will be called. The pill above answers "what is
+               this clip"; this answers "where does it end up", which is the question he actually has
+               before committing a card (Tier 1 item 8). Filled in asynchronously by
+               refreshWillFile() — the folder is decided by main's ladder, never guessed here. -->
+          <div class="final-dest" data-dest="${i}" hidden></div>
         </div>
         <div class="clip-people" data-people="${i}">${peopleChipsHTML(clip, i)}</div>
         <div class="clip-tags" data-tags="${i}">${tagChipsHTML(clip, i)}</div>
@@ -2277,8 +2282,48 @@ function buildRenameStep() {
 }
 
 // Update every visible final-name pill + date input from current state.
+// WHERE EACH CLIP WILL FILE, shown while he is still naming it.
+//
+// Asked of MAIN (`organize:previewDest`), which runs the same ladder `finalize:run` files with. The
+// card screen must never compute this itself: a prediction from a second implementation is a promise
+// the app does not keep, and that drift is the bug class that cost four separate days here.
+//
+// Debounced, because it is refreshed on every keystroke through refreshNames().
+let _willFileTimer = null;
+function scheduleWillFileRefresh() {
+  clearTimeout(_willFileTimer);
+  _willFileTimer = setTimeout(refreshWillFile, 400);
+}
+async function refreshWillFile() {
+  const cells = [...document.querySelectorAll('[data-dest]')];
+  if (!cells.length) return;
+  const items = cells.map((el) => {
+    const c = state.scannedFiles[Number(el.dataset.dest)];
+    return c ? { name: c.name, sourcePath: c.sourcePath, meta: { subject: c.subject || '', date: c.date || '' } } : null;
+  }).filter(Boolean);
+  if (!items.length) return;
+  let dests = [];
+  try {
+    const r = await window.api.organizePreviewDest({ items, folderLevels: folderLevels });
+    dests = (r && r.dests) || [];
+  } catch { return; }                       // advisory — naming must work with the AI and main asleep
+  const byName = {};
+  for (const d of dests) if (d && d.name) byName[d.name] = d.rel;
+  // Re-read the cells: a re-render can replace them while this is in flight, and writing a stale
+  // destination into a recycled row is a confident wrong answer.
+  for (const el of [...document.querySelectorAll('[data-dest]')]) {
+    const c = state.scannedFiles[Number(el.dataset.dest)];
+    const rel = c && byName[c.name];
+    if (!rel) { el.hidden = true; continue; }
+    const txt = `→ ${rel}`;
+    if (el.textContent !== txt) el.textContent = txt;
+    el.hidden = false;
+  }
+}
+
 function refreshNames() {
   scheduleVersionRecompute();
+  scheduleWillFileRefresh();
   // Query each element type ONCE (not per-clip), and only write the DOM when the value
   // actually changed — typing in one field used to re-write every clip's pill + date,
   // which got slow with a card full of clips.

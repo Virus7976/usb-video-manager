@@ -73,8 +73,14 @@ test('collectClipFaces does not mark a failed clip scanned either', { skip: !RUN
   const src = await read(app.win, `String(collectClipFaces)`);
   const tail = src.slice(src.indexOf('_facesScanned = true'));
   assert.ok(src.indexOf('_facesScanned = true') > 0, 'it still marks clips scanned');
-  assert.match(src, /if \(!fr\.readError && !fr\.detectError\)|fr\.readError \|\| fr\.detectError/,
-    'but only when the detection actually ran');
+  // ⚠ THREE failure signals, not two. This assertion used to accept `!fr.readError &&
+  // !fr.detectError`, which is what the code said until 2026-07-20 — and it missed the case where
+  // `ensureFaceModels()` fails mid-run: `detectFacesForClip` then returns `{ready:false}` with
+  // NEITHER error flag set, because both are derived from frames that were never fetched. So a dead
+  // face engine looked exactly like "this clip has no faces" and marked every remaining clip
+  // permanently scanned, excluding them from all future scans. The guard now leads with `fr.ready`.
+  assert.match(src, /if \(fr\.ready && !fr\.readError && !fr\.detectError\)/,
+    'but only when the engine was up AND the detection actually ran');
   assert.ok(tail.length > 0, 'and the flag is still reachable on the success path');
 });
 

@@ -10179,12 +10179,36 @@ async function ensureFaceScenes() {
 }
 // One scene per clip — a second scan of the same clip replaces its old group shot rather than
 // stacking another copy of the same faces next to it.
+// ⚠ Face scenes were the store the #8 migration MISSED. Every scope statement in AGENTS.md lists
+// drafts, observations, face clipKeys and copiedLog (later corrected to add aiQueue as "the fifth");
+// faceScenes appears in none of them. `noteFaceScene` simply predates the key change — it landed
+// 2026-07-13, the migration landed 2026-07-19.
+//
+// The cost: `clipKey` is `name__size`, which is NOT unique. Two GoPro clips of identical name and
+// size from different cards — ordinary given his 2-to-6-chapter recordings — produced the same key,
+// so the second scan REPLACED the first clip's group shot in place. `faces:saveScenes` then runs
+// gcFaceCrops, which reference-counts and unlinks the displaced frame. One of his group shots gone,
+// image file included. And because the byKey map holds both key forms with last-write-wins, the
+// surviving scene resolved to whichever clip won — so naming a face in it tagged the WRONG clip.
+//
+// Writes now use clipKeyV2. Reads must stay cross-form: matching only on the exact V2 string would
+// fail to find a clip's pre-existing legacy-keyed scene and PUSH a second record for the same clip —
+// two group shots for one clip in the review grid, with the stale one keeping its crop alive. That
+// is the #8 contract exactly: new writes use V2, every read tries V2 then falls back to legacy, and
+// nothing on disk is ever rewritten or deleted.
+function sceneKeyMatches(stored, clip) {
+  const s = String(stored || '');
+  if (!s) return false;
+  if (s === clipKeyV2(clip)) return true;   // same clip, already migrated
+  if (s === clipKey(clip)) return true;     // same clip, still on the legacy key
+  return false;
+}
 async function noteFaceScene(clip, scene) {
   if (!scene || !Array.isArray(scene.faces) || scene.faces.length < 2) return;
   await ensureFaceScenes();
-  const key = clipKey(clip);
+  const key = clipKeyV2(clip);
   const rec = { clipKey: key, name: clip.name || '', img: scene.img, w: scene.w, h: scene.h, faces: scene.faces };
-  const at = faceScenes.findIndex((s) => s && s.clipKey === key);
+  const at = faceScenes.findIndex((s) => s && sceneKeyMatches(s.clipKey, clip));
   if (at >= 0) faceScenes[at] = rec; else faceScenes.push(rec);
 }
 function saveFaceScenesNow() {
@@ -10257,7 +10281,16 @@ async function collectClipFaces(clip, clusters, keys) {
   }
   // Same rule as the scan loop above, which this path never got: only a detection that actually RAN
   // may mark the clip scanned. Marking it after a read failure excludes it from every future scan.
-  if (!fr.readError && !fr.detectError) {
+  //
+  // ⚠ `fr.ready` is the third way this can fail and the one the original guard missed.
+  // `detectFacesForClip` returns `{ ready: false, error, faces: [], scene: null }` when
+  // ensureFaceModels() fails — with NEITHER readError NOR detectError set, because both are computed
+  // from frames that were never fetched. So a face engine that died mid-run (a GPU/WebGL failure,
+  // exactly what #84 was written for) marked every remaining clip permanently scanned while
+  // detecting nothing. Both callers currently probe ensureFaceModels() before the loop, which is why
+  // this needs a failure DURING a run — but that is a real failure mode, and the cost of hitting it
+  // is that those clips are silently excluded from every future scan.
+  if (fr.ready && !fr.readError && !fr.detectError) {
     r._facesScanned = true;
     persistScannedFlag(r);
   }
@@ -10436,7 +10469,19 @@ function _serializePending(clusters) {
     .map((c) => ({
       thumb: c.thumb || '',
       descriptor: c.descriptor,
-      descriptors: c.descriptors || [],
+      // Cap the descriptor samples PER CLUSTER. Measured on his real store (2026-07-20):
+      // faces-pending.json is 14 MB holding 4715 descriptor vectors across 458 clusters, one cluster
+      // alone holding 318 (~880 KB). Only 37 KB of that 14 MB is thumbnails — the descriptors ARE
+      // the file. It is rewritten on every debounced save during a review, so the whole 14 MB is
+      // re-serialised each time he answers a face.
+      //
+      // 80 is not arbitrary: `capFacesKeepingConfirmed(p.faces, 80)` already truncates to 80 the
+      // moment a cluster is ENROLLED (people:save). So every sample past the 80th is written, saved,
+      // re-saved and then discarded on arrival — pure cost, no effect on matching.
+      //
+      // Keeps the FIRST 80, not the last: the earliest samples are the ones the cluster's own
+      // `descriptor` was formed from, so they are what its identity actually rests on.
+      descriptors: (c.descriptors || []).slice(0, 80),
       clipKeys: [...(c.clipKeys || [])],
       suggest: c.suggest || null,
       rejected: !!c.rejected,
@@ -10499,7 +10544,10 @@ async function loadPendingFaces() {
   return (list || []).filter((c) => c && Array.isArray(c.descriptor)).map((c) => ({
     thumb: c.thumb || '',
     descriptor: c.descriptor,
-    descriptors: c.descriptors || [],
+    // Same 80-sample cap as the save path — applied on LOAD too so an existing store written before
+    // the cap (his has a cluster with 318) is bounded in memory immediately rather than only after
+    // the next save. The cluster's own `descriptor` is unaffected; that is what matching uses.
+    descriptors: (c.descriptors || []).slice(0, 80),
     clipKeys: new Set(c.clipKeys || []),
     suggest: c.suggest || null,
     rejected: !!c.rejected,
@@ -10627,7 +10675,11 @@ async function scanFacesForClips(clipList, opts = {}) {
       // #84: a GPU/WebGL hiccup makes detectAllFaces throw, which used to look identical to "no
       // faces" — so we'd mark the clip scanned and NEVER retry it. When detection actually errored
       // and found nothing, leave the clip UNscanned so a later scan (GPU recovered) tries again.
-      if (res.detectError || res.readError) {
+      // `!res.ready` is the third failure and it belongs here for the same reason as the other two:
+      // ensureFaceModels() failing mid-run returns ready:false with NEITHER error flag set (both are
+      // derived from frames that were never fetched), so the engine dying looked exactly like "this
+      // clip has no faces" and marked it scanned forever. Same gap existed in collectClipFaces.
+      if (!res.ready || res.detectError || res.readError) {
         // Either way we learned NOTHING about this clip, so it must stay scannable. A read failure
         // is usually the card being pulled mid-scan, and it hits every remaining clip at once — so
         // the message says what actually happened rather than claiming 370 clips have no faces.

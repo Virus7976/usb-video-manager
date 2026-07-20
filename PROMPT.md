@@ -831,6 +831,30 @@ The audit's last item was to genericize `"Gourgess Lawns"` in the placement prom
 cost 20 points of accuracy here, 4/4 deterministic ([[usb-app-tool-strings-are-input]]). The prompt
 does say "do not copy its values". Leave it until someone re-measures.
 
+
+## 8h. ⚠ FEATURES.md IS THE ROADMAP — read it before choosing work.
+
+Jake asked (2026-07-20) for "100 things the app should be able to do… build it as a feature into
+everything… like the android app. I would like it to have full functionality once released."
+
+`FEATURES.md` is that list: 100 numbered capabilities, each marked for the surfaces it must reach
+(**D**esktop · **P**hone · **B**ackend) with an honest status. **Pull work from there.** Two things
+in it override any other prioritisation:
+
+1. **Item 29 — a controlled subject vocabulary — is the unblock, not a feature.** Measured on his
+   real store: 4,594 clips, 331 named, **1 filed**. There are **112 distinct subjects for 206 named
+   clips**; 46% describe the SHOT (`talking-head`, `person-sitting-couch`) rather than the job, and
+   20 pairs are fragments of each other (`car` / `car-driving` / `car-parked`). Filing groups by
+   subject, so nothing groups, so nothing files. **Every capability in the filing section is correct,
+   tested, and useless until this is fixed.** Features that add more ways to generate free-text
+   subjects make it worse.
+2. **"Done" means done on every surface listed.** His own Android repo carries a non-negotiable
+   parity rule enforced by a test that parses both repos' shipped source. The phone is currently at
+   roughly 10% parity — exactly one workflow (the face review) is complete end to end.
+
+Also in there: **11 capabilities that are built, shipped, and unreachable** — no preload caller, or
+no UI route. Several are small wiring jobs and each one is something he paid for and cannot use.
+
 ## 8c. Testing traps in THIS repo (each of these cost real time)
 
 - **A STRUCTURAL ASSERTION MUST NAME THE THING THAT WOULD GO MISSING — and you must break each part

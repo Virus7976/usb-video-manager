@@ -89,3 +89,170 @@ nothing" — *"so a crew member with no signal isn't told their data doesn't exi
 - Anything affecting only his own data **queues offline**. Anything that leaves the building (an
   upload to someone else, an email) requires a connection and says so.
 
+---
+
+## The 100
+
+**Legend** — surfaces: **D** desktop · **P** phone · **B** backend/API.
+Status: `done` (works everywhere listed, with a test) · `partial` (works somewhere, not everywhere)
+· `todo` · `dead` (built and shipped, but nothing can reach it).
+
+### A. Get the footage off the device (1–14)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 1 | Detect a card the moment it is inserted | ✓ | – | – | done |
+| 2 | Pick a drive or folder by hand | ✓ | – | – | done |
+| 3 | Notice the card was pulled mid-run and stop cleanly | ✓ | – | – | done |
+| 4 | Scan a card for video and stills | ✓ | – | – | done |
+| 5 | Find a phone over USB (MTP) and list its albums | ✓ | – | – | done |
+| 6 | Fast phone transfer over ADB | ✓ | – | – | done |
+| 7 | **Turn fast transfer back OFF** | ✓ | – | – | **dead** — `adb:disable` has no caller; if ADB flakes he is stuck |
+| 8 | Pair a phone wirelessly (QR / manual code) | ✓ | – | – | done |
+| 9 | Watch a NAS folder a phone app uploads into | ✓ | – | – | done |
+| 10 | **Un-set that watch folder** | ✓ | – | – | **dead** — `phoneBackup:clear` has no caller |
+| 11 | Skip files already pulled from this phone | ✓ | – | – | done |
+| 12 | Upload footage from the phone itself, resumably | – | ✓ | ✓ | partial — backend + core done and tested; **no phone UI yet** |
+| 13 | Resume an upload the phone abandoned when it slept | – | ✓ | ✓ | partial — same |
+| 14 | Ingest what the phone uploaded into the normal flow | ✓ | – | ✓ | todo — uploads land in staging; nothing consumes them yet |
+
+### B. Copy it safely, then clear the card (15–24)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 15 | Copy to the intake folder with live progress | ✓ | – | – | done |
+| 16 | Cancel a copy without leaving a truncated clip | ✓ | – | – | done |
+| 17 | Check free space before starting | ✓ | – | – | done |
+| 18 | Verify every copy byte-for-byte | ✓ | – | – | done |
+| 19 | Remember what was copied and where it landed, across restarts | ✓ | – | – | done |
+| 20 | Mirror to the NAS as a second copy | ✓ | – | – | done |
+| 21 | Delete from the card ONLY after re-verifying each pair | ✓ | – | – | done |
+| 22 | Resume an interrupted session on next launch | ✓ | – | – | done |
+| 23 | Show what is waiting to be dealt with, on Home | ✓ | ✓ | ✓ | partial — desktop only |
+| 24 | Never re-import a clip already imported | ✓ | – | – | done |
+
+### C. Name it — and this is where the pipeline actually stalls (25–42)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 25 | Structured fields: subject · description · location · date | ✓ | ✓ | ✓ | partial — desktop only |
+| 26 | Custom taxonomy fields he defines himself | ✓ | – | – | done |
+| 27 | Autocomplete from everything he has typed before | ✓ | ✓ | – | partial — desktop only |
+| 28 | **Prune a bad autocomplete entry** | ✓ | – | – | **dead** — `fieldHistory:remove` has no caller, so every typo is offered forever |
+| 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — pick from known subjects, add deliberately | ✓ | ✓ | ✓ | **todo — THE UNBLOCK.** 112 subjects for 206 clips is why 1 clip is filed |
+| 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | todo — 20 such pairs in his store today |
+| 31 | ⚠ Refuse a subject that describes the SHOT not the JOB | ✓ | ✓ | – | todo — 46% of his named clips are `talking-head`-style |
+| 32 | Batch-name a selection | ✓ | ✓ | – | partial — desktop only |
+| 33 | Find &amp; replace across names | ✓ | – | – | done |
+| 34 | Apply one clip's name to everything selected | ✓ | ✓ | – | partial — desktop only |
+| 35 | Auto-fill the other chapters of a split take | ✓ | – | – | done |
+| 36 | Select a range, a day, or between two clips | ✓ | – | – | done |
+| 37 | Jump to the next unnamed clip | ✓ | ✓ | – | partial — desktop only |
+| 38 | Live preview of the final filename | ✓ | ✓ | – | partial — desktop only |
+| 39 | Autosave drafts continuously, survive a crash | ✓ | ✓ | ✓ | partial — desktop only |
+| 40 | Restore what he typed last session | ✓ | ✓ | – | partial — desktop only |
+| 41 | Save points he can roll back to | ✓ | – | – | done |
+| 42 | **Rename a clip that is already filed** | ✓ | ✓ | ✓ | **dead** — `rename:apply` is implemented and unreachable; a typo is permanent |
+
+### D. Let the AI help, without letting it decide (43–56)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 43 | Watch a clip and describe what is in it | ✓ | – | ✓ | done (desktop); backend can trigger — todo |
+| 44 | Name from a stored observation, no re-watch | ✓ | – | – | done |
+| 45 | Improve existing descriptions | ✓ | – | – | done |
+| 46 | Auto-name everything in the background | ✓ | – | – | done |
+| 47 | Cancel a run and have it actually stop | ✓ | ✓ | – | partial — desktop only |
+| 48 | Ask once per shoot day, then never again | ✓ | ✓ | ✓ | partial — desktop only, and only fires since 2026-07-20 |
+| 49 | Learn durable rules from his corrections | ✓ | – | – | done |
+| 50 | Plain-English filing rules he can type | ✓ | ✓ | – | partial — desktop only |
+| 51 | Remember where a project was filed, and offer it next time | ✓ | – | – | done |
+| 52 | Tell him when the AI setup is silently wrong | ✓ | ✓ | ✓ | partial — desktop only |
+| 53 | Run the AI on a DIFFERENT machine | ✓ | – | ✓ | partial — endpoint is configurable; 4 known gaps (timeouts, model-store writes, eviction, queue-and-retry) |
+| 54 | Queue AI work when the AI box is asleep | ✓ | – | ✓ | todo |
+| 55 | **Show which model is resident in VRAM** | ✓ | – | – | **dead** — `ai:loaded` has no caller |
+| 56 | **Backfill the ledger from his existing library** | ✓ | – | – | partial — real, but only reachable if the health check happens to flag it |
+
+### E. Faces and people (57–70)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 57 | Detect faces across a clip's frames | ✓ | – | – | done |
+| 58 | Cluster the same face together | ✓ | – | – | done |
+| 59 | Review pending faces and confirm who they are | ✓ | ✓ | ✓ | **done — the one path complete on every surface** |
+| 60 | Reject a face / never ask again | ✓ | ✓ | ✓ | done |
+| 61 | Skip a face for later | ✓ | ✓ | ✓ | done |
+| 62 | Suggest a name from people already enrolled | ✓ | ✓ | ✓ | done |
+| 63 | Merge two spellings of one person | ✓ | ✓ | – | partial — desktop only |
+| 64 | Rename a person and retag their clips | ✓ | – | – | done |
+| 65 | Group shots — name several people on one frame | ✓ | ✓ | – | partial — desktop only |
+| 66 | Browse every clip a person appears in | ✓ | ✓ | ✓ | partial — desktop only |
+| 67 | Undo a face assignment | ✓ | ✓ | – | partial — desktop only |
+| 68 | Put confirmed names into descriptions instantly | ✓ | – | – | done |
+| 69 | Apply answers given on the phone | ✓ | – | ✓ | done |
+| 70 | Show how many phone answers are waiting | ✓ | ✓ | ✓ | done |
+
+### F. File it into the Projects tree (71–84)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 71 | One destination ladder, used by preview and by filing alike | ✓ | – | ✓ | done |
+| 72 | Preview where every clip WOULD go, before moving anything | ✓ | ✓ | ✓ | partial — desktop only |
+| 73 | Drag clips onto a visual map of the tree | ✓ | – | – | done |
+| 74 | Manual placements survive leaving and returning | ✓ | – | – | done |
+| 75 | Standing filing rules by keyword, optionally per-day | ✓ | ✓ | – | partial — desktop only |
+| 76 | Ask the AI where a shoot belongs, searching the real tree | ✓ | – | – | done |
+| 77 | File as a COPY by default, never a move | ✓ | – | – | done |
+| 78 | Refuse to move footage off a removable volume | ✓ | – | – | done |
+| 79 | Embed metadata into the file (XMP, sidecar fallback) | ✓ | – | – | done |
+| 80 | Mirror the filed copy to the NAS | ✓ | – | – | done |
+| 81 | Export a Resolve-compatible CSV | ✓ | – | – | done |
+| 82 | Undo the last filing run, including the ledger | ✓ | ✓ | – | partial — desktop only; single run deep |
+| 83 | File one clip immediately, without a batch | ✓ | ✓ | – | partial — desktop only |
+| 84 | **Read filed metadata back** | ✓ | ✓ | ✓ | **dead** — `finalMeta:get` has no caller |
+
+### G. Compress (85–89)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 85 | Hand off to a watch-folder tool (Tdarr) | ✓ | – | – | done |
+| 86 | Encode locally with ffmpeg + presets | ✓ | – | – | done |
+| 87 | Reject a short encode even when ffmpeg claims success | ✓ | – | – | done |
+| 88 | Cancel an encode and kill the process tree | ✓ | – | – | done |
+| 89 | Tell him ffmpeg is missing instead of failing silently | ✓ | ✓ | ✓ | partial — desktop only (added 2026-07-20) |
+
+### H. Find it again (90–95)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 90 | Search clips by name/subject on the current screen | ✓ | ✓ | ✓ | partial — desktop only |
+| 91 | ⚠ Search the whole LIBRARY, not just the loaded screen | ✓ | ✓ | ✓ | todo — the single biggest gap for a phone client |
+| 92 | Browse the projects index with AI summaries | ✓ | ✓ | ✓ | partial — desktop only |
+| 93 | Find clips by who is in them | ✓ | ✓ | ✓ | partial — backend query exists; no search box |
+| 94 | Thumbnails and inline playback | ✓ | ✓ | ✓ | partial — desktop; phone shows face crops only |
+| 95 | Pop-out grid wall of every clip | ✓ | – | – | done |
+
+### I. Keep it working (96–100)
+
+| # | Capability | D | P | B | Status |
+|---|---|---|---|---|---|
+| 96 | Setup wizard on a fresh machine | ✓ | ✓ | – | partial — desktop only |
+| 97 | In-app changelog, readable offline | ✓ | ✓ | – | partial — desktop only. His Android app ships an 81 KB offline changelog |
+| 98 | Auto-update, with a manual check | ✓ | ✓ | – | partial — desktop only; unsigned (see Q8) |
+| 99 | Activity/issue log he can read and copy | ✓ | – | – | done |
+| 100 | ⚠ **Offline-first everywhere** — optimistic write, idempotent queue, auto-drain | – | ✓ | ✓ | partial — the face queue does this properly; nothing else does |
+
+---
+
+## What this list says
+
+**11 capabilities are built, shipped, and unreachable** (7, 10, 28, 42, 55, 84, plus `faces:image`,
+`feedback:list`, `intake:get`, `ai:visionAdvice`, `ai:recallShoot`). He paid for those and cannot use
+them. Several are small wiring jobs.
+
+**The phone is at ~10% of parity.** Exactly one workflow — the face review — is complete on every
+surface. His own parity rule says that is not "released".
+
+**And #29 is the one that matters.** Every filing capability in section F is correct and tested, and
+files nothing, because 112 competing subject names mean nothing groups. A controlled vocabulary is
+not feature 29 of 100 — it is the precondition for the other 99 mattering.

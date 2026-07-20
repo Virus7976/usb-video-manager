@@ -238,7 +238,17 @@ function capFacesKeepingConfirmed(faces, cap) {
   const keptConf = conf.slice(-cap);
   return keptConf.concat(unconf.slice(-Math.max(0, cap - keptConf.length)));
 }
-ipcMain.handle('people:save', (_e, payload) => {
+// Extracted from the ipcMain handler so it can be CALLED, not just dispatched to.
+//
+// An ipcMain handler cannot be invoked directly from other main-process code — this file already
+// carries one hand-duplicated copy of a handler body for exactly that reason, and duplicating this
+// one would be a second enrolment path that drifts from the first. The phone-queue consumer
+// (11-phone-queue.js) needs the SAME enrolment: the 80-face cap, the confirmed-first shedding and
+// the crop bookkeeping must apply identically whether he answered at the PC or on the couch.
+//
+// This is the pattern ARCHITECTURE.md describes for the ~90 handlers that carry inline logic: lift
+// the body into a function, leave the handler as a one-line adapter.
+function savePersonRecord(payload) {
   // Upsert a person by name; append new faces (descriptor + its thumb). `confirmed`
   // false = a recognized-but-not-yet-confirmed face (shows in the dashboard's
   // Unconfirmed section). Near-duplicate faces are skipped to keep the store diverse.
@@ -283,7 +293,10 @@ ipcMain.handle('people:save', (_e, payload) => {
   if (thumb && confirmed && !p.thumb) p.thumb = thumb;
   saveStore('ai.people');
   return { ok: true, id: p.id, receipt };
-});
+}
+// The handler is now a one-line adapter over the function above. Both the desktop review and the
+// phone-queue consumer go through the same enrolment — there is no second path to drift.
+ipcMain.handle('people:save', (_e, payload) => savePersonRecord(payload));
 
 // The INVERSE of people:save, replaying a receipt backwards. Face-review's Undo reversed the clip
 // tags (#26) but never the enrolment, and enrolment is the half that lasts: only CONFIRMED faces

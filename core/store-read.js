@@ -122,8 +122,17 @@ function pendingFaces({ dir } = {}) {
   const list = Array.isArray(raw) ? raw : [];
   return list
     .filter((c) => c && !c.done && !c.rejected && !c.skipped)
-    .map((c, i) => ({
-      id: String(i),
+    .filter((c) => cropNameFromThumb(c.thumb))   // no crop → not identifiable and not showable
+    .map((c) => ({
+      // ⚠ THE ID MUST BE STABLE ACROSS RESCANS. This was the array index, which is only meaningful
+      // for the exact list that produced it: the desktop merges new clusters into this store on every
+      // scan, so index 7 this evening is a different face tomorrow morning. A phone answer queued
+      // against an index would silently confirm the WRONG person — the same "tagged the wrong clip"
+      // shape already fixed twice in the desktop app.
+      //
+      // The crop filename is generated per cluster, unique, and never rewritten in place, so it
+      // identifies the same face for as long as that face exists.
+      id: cropNameFromThumb(c.thumb),
       crop: cropNameFromThumb(c.thumb),
       suggest: c.suggest ? { name: c.suggest.name || '', dist: Number(c.suggest.dist) || 0 } : null,
       clips: Array.isArray(c.clipKeys) ? c.clipKeys.length : 0,

@@ -232,6 +232,10 @@ contextBridge.exposeInMainWorld('api', {
   getPeople: () => ipcRenderer.invoke('people:get'),
   storePersistFailures: () => ipcRenderer.invoke('stores:persistFailures'),
   storeReadFailures: () => ipcRenderer.invoke('stores:readFailures'),
+  // Answers he gave on his phone. applyQueue mutates his face data, so it is invoked deliberately
+  // (from the People screen) rather than on boot; queueCount is read-only and drives the badge.
+  phoneApplyQueue: () => ipcRenderer.invoke('phone:applyQueue'),
+  phoneQueueCount: () => ipcRenderer.invoke('phone:queueCount'),
   onStorePersistFailed: (cb) => {
     const listener = (_e, info) => cb(info);
     ipcRenderer.on('store:persist-failed', listener);

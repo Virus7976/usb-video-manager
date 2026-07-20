@@ -80,6 +80,25 @@ function append(action, { dir, at, source = 'phone' } = {}) {
   return { ok: true, id: rec.id };
 }
 
+// ⚠⚠ MARKING SOMETHING APPLIED IS ALSO AN APPEND, NEVER A REWRITE.
+//
+// The first version had the desktop rewrite each record with an `appliedAt` field. That is a
+// read-modify-write on the very file the SERVER appends to — the two would race, and a phone answer
+// arriving mid-rewrite would be silently dropped. Exactly the class of bug this queue exists to
+// avoid, reintroduced by the bookkeeping.
+//
+// So the desktop appends a MARKER line instead. Both sides only ever append; neither can lose the
+// other's writes. `read` folds the markers in.
+const APPLIED = '_applied';
+
+function markApplied(ids, { dir, at } = {}) {
+  const list = (Array.isArray(ids) ? ids : [ids]).map(String).filter(Boolean);
+  if (!list.length) return { ok: true, marked: 0 };
+  fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(queuePath(dir), `${JSON.stringify({ type: APPLIED, ids: list, at })}\n`, 'utf8');
+  return { ok: true, marked: list.length };
+}
+
 // Read the queue. A malformed line is SKIPPED rather than throwing — one torn final line must not
 // make every earlier action unreadable, which is the entire reason this is JSONL.
 function read({ dir, includeApplied = false } = {}) {
@@ -88,17 +107,20 @@ function read({ dir, includeApplied = false } = {}) {
     if (err && err.code === 'ENOENT') return [];
     throw err;
   }
-  const out = [];
+  const lines = [];
+  const applied = new Set();
   for (const line of raw.split('\n')) {
     const s = line.trim();
     if (!s) continue;
     let rec;
     try { rec = JSON.parse(s); } catch { continue; }   // torn or truncated — costs this one action
     if (!rec || typeof rec !== 'object') continue;
-    if (!includeApplied && rec.appliedAt) continue;
-    out.push(rec);
+    if (rec.type === APPLIED) { for (const id of (rec.ids || [])) applied.add(String(id)); continue; }
+    lines.push(rec);
   }
-  return out;
+  // Markers may appear before or after the record they refer to (the desktop could mark a batch it
+  // read moments ago), so applied-ness is resolved after the whole file is seen — never positionally.
+  return includeApplied ? lines : lines.filter((r) => !applied.has(String(r.id)));
 }
 
 // Tiny non-cryptographic hash, only to make ids unique within a millisecond. Not security.
@@ -108,4 +130,4 @@ function hash(s) {
   return h;
 }
 
-module.exports = { QUEUE_FILE, ACTIONS, queuePath, validate, append, read };
+module.exports = { QUEUE_FILE, ACTIONS, APPLIED, queuePath, validate, append, read, markApplied };

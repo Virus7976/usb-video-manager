@@ -1373,6 +1373,25 @@ const PEOPLE_ILLUS = `<div class="people-illus">
 // face, set a cover, delete, or scan more clips.
 const PD_IGNORED = '__ignored__';
 async function showPeopleManager() {
+  // ⚠ APPLY ANYTHING HE ANSWERED ON HIS PHONE, before this screen reads the people list — otherwise
+  // it would render the state from before those answers and he would see work he already did still
+  // waiting. The backend only ever QUEUES answers (it never writes a store); this is where they land.
+  //
+  // Deliberately here rather than on boot: it mutates his face data, so it runs when he opens the
+  // screen that shows that data, and it says what happened rather than working silently.
+  try {
+    const q = await window.api.phoneQueueCount();
+    if (q && q.count) {
+      const r = await window.api.phoneApplyQueue();
+      if (r && r.ok && r.applied) {
+        showToast(`Applied ${r.applied} answer${r.applied !== 1 ? 's' : ''} from your phone ✓`, 4000);
+      } else if (r && !r.ok) {
+        // Never silently swallow this: the answers are still queued, and he should know why they
+        // have not landed rather than assuming the phone did nothing.
+        showToast(`Couldn't apply your phone answers — ${r.error || 'unknown problem'}`, 7000);
+      }
+    }
+  } catch { /* the queue is a bonus path; never block the People screen on it */ }
   let people = [];
   let ignoredN = 0;
   try { people = await window.api.getPeople(); } catch { people = []; }

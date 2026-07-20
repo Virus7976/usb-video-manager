@@ -126,13 +126,18 @@ test('the phone can see what is still waiting', async () => {
   assert.equal(b.actions[0].type, 'face.confirm');
 });
 
-test('⚠ an APPLIED instruction drops out of the pending list', async () => {
-  // The desktop marks it applied by appending `appliedAt`; the server only ever adds. Without this
-  // the phone would show every answer he has ever given as still waiting.
+test('⚠⚠ an APPLIED instruction drops out of the pending list', async () => {
+  // ⚠ The mechanism CHANGED, and the reason matters. The first version had the desktop rewrite each
+  // record with an `appliedAt` field — a read-modify-write on the very file the server appends to,
+  // which would race it and silently drop an answer arriving mid-rewrite. Exactly the class of bug
+  // this queue exists to avoid, reintroduced by the bookkeeping. Now BOTH sides only append: the
+  // desktop adds a marker line, and read() folds it in.
   await post({ type: 'face.confirm', clusterId: '0', name: 'Josiah' });
-  const raw = readFileSync(join(dir, queue.QUEUE_FILE), 'utf8').trim();
-  const rec = { ...JSON.parse(raw), appliedAt: Date.now() };
-  writeFileSync(join(dir, queue.QUEUE_FILE), `${JSON.stringify(rec)}\n`, 'utf8');
+  const before = readFileSync(join(dir, queue.QUEUE_FILE), 'utf8');
+  const id = queue.read({ dir })[0].id;
+  queue.markApplied([id], { dir, at: Date.now() });
+  const after = readFileSync(join(dir, queue.QUEUE_FILE), 'utf8');
+  assert.ok(after.startsWith(before), '⚠ every earlier byte is untouched — marking is an append');
   assert.equal(queue.read({ dir }).length, 0, 'applied is no longer pending');
   assert.equal(queue.read({ dir, includeApplied: true }).length, 1, 'but the record is kept');
 });

@@ -322,6 +322,47 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19cc — proving the embed actually works turned up a SECOND silent metadata killer.
+
+`exiftool-constructs` proves the singleton constructs again. That says the door opens, not that
+anything walks through it: every layer above it (`buildEmbedTags`, the already-carrying-it
+short-circuit, the sidecar fallback, `readEmbeddedRecord`) has been running against a dependency that
+threw on first touch, so **none of it has ever executed successfully**. Code that has never once run
+is unproven, however long it has been in the repo.
+
+So `test/e2e/embed-writes-real-tags.e2e.mjs` files a clip with real metadata through the real UI and
+reads the file back with an **independent** exiftool instance — not the app's own reader, which
+shares the singleton and would happily agree with itself. Needed a real `test/fixtures/tiny.mp4`;
+exiftool will not write XMP into a buffer of zeroes, and a test that only proves the SIDECAR fallback
+is not the test worth having.
+
+It failed at the first assertion — the seeded record would not match — which looked like my fixture
+and was not:
+
+    for (const [k, v] of Object.entries(store)) { byName[k] = v; byStem[stemOf(k)] = v; }
+    ...
+    const lc = f.name.toLowerCase();
+    let rec = byName[lc] || byStem[stemOf(lc)] || null;
+
+**The index is built from the RAW store key and looked up LOWERCASED**, so it could only ever match a
+record whose filename was already entirely lowercase. Records are written under `finalName(clip)` —
+the real filename — and his are GoPro clips that keep their capitals (`GX010042.MP4`). Every one
+missed. And the failure mimics a legitimate state: `matched: false` is exactly what a clip the AI
+never described looks like, so the screen said "0 with metadata" over footage he had spent real time
+naming, and the rich record (people, observation, location, the route that decides WHERE it files)
+was silently replaced by the filename ladder.
+
+`test/finalmeta-lookup-case.test.mjs` (6). The half-fix — normalising `byName` and not `byStem` —
+is broken separately, because that is how a half-fix survives a green suite.
+
+**⚠ I ALSO GOT YESTERDAY'S WRITE-UP WRONG and have corrected it above.** I claimed the renderer
+swallowed the exiftool throw and still said "Done". It does not: `et` is obtained ONCE at the top of
+`finalize:run`, outside the per-item loop, so the throw escaped the whole handler and the screen said
+`Failed: … BatchCluster was given invalid options…`. I inferred a mechanism from the per-item catch
+without checking where `et` came from. The real silent one is `readEmbeddedRecord`'s catch-all.
+
+vm **1191/1048/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-19cb — ⚠⚠ ALL OF EXIFTOOL HAS BEEN DEAD SINCE 0.4.15. Found by the e2e for yesterday's feature.
 
 I wrote an e2e for the new one-clip path — real right-click, real menu click, real disk — and it
@@ -337,11 +378,26 @@ validates in the CONSTRUCTOR, and the default `maxProcAgeMillis` is below that. 
 every write goes through, so the app has been structurally unable to touch file metadata for the
 entire life of the modular main process: no embedding at finalize, no reading a record back, nothing.
 
-**Why nothing caught it, which is the part worth keeping:**
+**CORRECTION — I got the mechanism wrong when I first wrote this up, by reading the per-item
+try/catch and not checking where `et` comes from.** It is obtained ONCE, at the top of the run
+(`const et = opts.embed ? getExifTool() : null;`), OUTSIDE the loop. So the throw escaped
+`finalize:run` entirely: the IPC rejected, no clip was filed, and the sidecar fallback never ran
+either (it calls `et.write`, and `et` never existed). The screen did NOT say "Done" — it said
+`Failed: Error invoking remote method 'finalize:run': BatchCluster was given invalid options…`.
+
+Which is worse in the way that matters: **with the embed checkbox at its default (ON), every
+Organize run he ever started died instantly with a cryptic library error.** That is a complete,
+sufficient explanation for a project ledger of 0, and it means the filing UX was never the problem.
+
+The genuinely SILENT half is `readEmbeddedRecord`, which catches everything and returns `null`
+("unreadable / no exiftool / not our record — fall through to the old ladder"). So `finalize:scan`
+reported "no metadata" for every clip in the folder, for years, and looked like a normal empty state.
+
+**Why nothing caught it:**
 - the vm suite loads `main.js` but never spawns exiftool;
 - the one existing filing e2e runs with embedding **off**;
-- **the renderer swallows it.** `finalize:run`'s per-item try/catch turns the throw into an entry in
-  `summary.errors`, so the run still reports `ok` and the screen still says "Done".
+- `readEmbeddedRecord`'s catch-all makes the read failure indistinguishable from "this file has no
+  record", which is a legitimate and common case.
 
 It surfaced only because the new e2e filed with the embed checkbox at its real default (ON) and read
 the TOAST TEXT. A structural test cannot see a constructor that throws.

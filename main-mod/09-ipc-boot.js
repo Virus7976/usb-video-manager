@@ -382,8 +382,14 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
   const store = currentFinalMeta();
   const byName = {}; const byStem = {};
   for (const [k, v] of Object.entries(store)) {
-    byName[k] = v;
-    byStem[stemOf(k)] = v;
+    // LOWERCASE THE KEY. The lookup below is `byName[f.name.toLowerCase()]`, so an index built from
+    // the raw store key could only ever match a record whose filename was already lowercase. Records
+    // are written under `finalName(clip)` — the real filename, and his are GoPro clips that keep
+    // capitals (GX010042.MP4) — so a clip he had named and described came back from finalize:scan as
+    // "no metadata", indistinguishable from one the AI never touched. Both sides normalise now.
+    const lk = String(k).toLowerCase();
+    byName[lk] = v;
+    byStem[stemOf(lk)] = v;
   }
   // Token set of a filename stem (drop version/ext/camera junk) for FUZZY matching —
   // recovers the saved record (incl. observation/people) even if the compressor

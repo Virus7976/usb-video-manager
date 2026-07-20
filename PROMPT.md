@@ -300,6 +300,23 @@ tested and green beats a whole feature that's half-wired.
 
 ## 8. Autonomy rule
 
+### ⚠ LOOP SIZE (Jake, 2026-07-20): EACH LOOP MUST BE BIG
+
+> *"make each loop way bigger. you should be anylizing the app for the 100 biggest things and do big
+> fixes or a lot of small fixes in 1 loop."*
+
+One iteration = a broad ANALYSIS plus a large batch of work. Not one finding, one fix, one deploy.
+
+- **Fan out with subagents.** Audit several subsystems in parallel (they are cheap and they read code
+  I would otherwise read serially), then act on everything worth acting on in the same turn.
+- **Batch the fixes.** Many small fixes, or one large one plus its fallout, before building/deploying.
+- **One build+deploy per loop, at the end**, not per fix.
+- **Still non-negotiable, and the reason the batch must not get sloppy:** every behaviour change lands
+  with a test, and every test is proved by BREAKING it. A big batch multiplies the cost of a silent
+  regression, so the discipline tightens as the batch grows — it does not relax.
+- Changes to the copy/delete/filing paths still ship with their verification (§3, §8b) or not at all.
+
+
 ### ⚠ STANDING ORDER (Jake, 2026-07-20) — NEVER STOP, NEVER ASK
 
 > *"make it so that until I message you you never stop and never ask a question. save all questions to

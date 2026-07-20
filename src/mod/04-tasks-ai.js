@@ -1024,11 +1024,18 @@ async function aiAutoEnhance() {
   if (uiPrefs.autoVersionOnAi !== false) saveVersionPoint('Before AI auto-enhance', true);
   showToast('AI is enhancing your clips in the background…', 3500);
   const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsFor(c) && clipObsFor(c).obs) || '';
+  // Counters live OUT here so the closing message can be honest. They used to be trapped inside the
+  // try, and the toast below said "AI auto-enhance complete ✓" unconditionally — including when the
+  // card was pulled mid-run (reportCardGone breaks the loop), when the whole try threw, when every
+  // model call failed, and when there was nothing to name in the first place. It also repeated the
+  // claim as a desktop notification. The sibling at :909 already reports "Improved N · M failed" vs
+  // "Couldn't improve"; this is that, for the path he actually runs.
+  let done = 0; let planned = 0; let threw = false;
   try {
     // 1) name any clips that have no subject yet
     const unnamed = all.filter((i) => !((state.scannedFiles[i].subject || '').trim()));
+    planned = unnamed.length;
     setAiRunOrder(unnamed);   // drive the live AI processing stage
-    let done = 0;
     for (const i of unnamed) {
       if (aiAborted) break;
       setTask('ai', aiModelLabel(), done + 1, unnamed.length, 'naming', state.scannedFiles[i].name);
@@ -1053,12 +1060,25 @@ async function aiAutoEnhance() {
     // 2) learn durable rules from everything analyzed
     const withObs = all.filter((i) => { const c = state.scannedFiles[i]; return obsOf(c) && (c.subject || c.description); });
     if (withObs.length >= 2) await reflectFromClips(withObs);
-  } catch { /* best-effort */ }
+  } catch { threw = true; }
   clearAllAnalyzing(); clearTask('ai'); maybeFlushEdits(true);
   await releaseGpu();
   autoEnhancing = false;
-  showToast('AI auto-enhance complete ✓', 4000);
-  pcNotify('AI auto-enhance complete', 'Your clips were named and rules were learned.');
+  // Say what actually happened. "complete ✓" over a run that named nothing is the failure mode that
+  // makes him stop trusting the screen — and trusting it is the whole point of the app.
+  const missed = Math.max(0, planned - done);
+  if (aiAborted) {
+    showToast(done ? `Stopped — named ${done} of ${planned}` : 'Stopped before anything was named', 5000);
+    pcNotify('AI auto-enhance stopped', done ? `Named ${done} of ${planned} before it stopped.` : 'Nothing was named.');
+  } else if (!planned) {
+    showToast('Nothing to enhance — every clip already has a subject', 4000);
+  } else if (!done) {
+    showToast(`Couldn’t name any of the ${planned} clip${planned !== 1 ? 's' : ''}${threw ? ' — the run failed' : ''}`, 6000);
+    pcNotify('AI auto-enhance failed', `None of the ${planned} clips could be named.`);
+  } else {
+    showToast(`AI auto-enhance complete ✓ — named ${done}${missed ? `, ${missed} failed` : ''}`, missed ? 6000 : 4000);
+    pcNotify('AI auto-enhance complete', `Named ${done}${missed ? `, ${missed} failed` : ''}.`);
+  }
 }
 
 // Direction the user typed in the Analyze dialog for THIS run — folded into the

@@ -3995,11 +3995,18 @@ async function aiAutoEnhance() {
   if (uiPrefs.autoVersionOnAi !== false) saveVersionPoint('Before AI auto-enhance', true);
   showToast('AI is enhancing your clips in the background…', 3500);
   const obsOf = (c) => (c.observation && c.observation.trim()) || (clipObsFor(c) && clipObsFor(c).obs) || '';
+  // Counters live OUT here so the closing message can be honest. They used to be trapped inside the
+  // try, and the toast below said "AI auto-enhance complete ✓" unconditionally — including when the
+  // card was pulled mid-run (reportCardGone breaks the loop), when the whole try threw, when every
+  // model call failed, and when there was nothing to name in the first place. It also repeated the
+  // claim as a desktop notification. The sibling at :909 already reports "Improved N · M failed" vs
+  // "Couldn't improve"; this is that, for the path he actually runs.
+  let done = 0; let planned = 0; let threw = false;
   try {
     // 1) name any clips that have no subject yet
     const unnamed = all.filter((i) => !((state.scannedFiles[i].subject || '').trim()));
+    planned = unnamed.length;
     setAiRunOrder(unnamed);   // drive the live AI processing stage
-    let done = 0;
     for (const i of unnamed) {
       if (aiAborted) break;
       setTask('ai', aiModelLabel(), done + 1, unnamed.length, 'naming', state.scannedFiles[i].name);
@@ -4024,12 +4031,25 @@ async function aiAutoEnhance() {
     // 2) learn durable rules from everything analyzed
     const withObs = all.filter((i) => { const c = state.scannedFiles[i]; return obsOf(c) && (c.subject || c.description); });
     if (withObs.length >= 2) await reflectFromClips(withObs);
-  } catch { /* best-effort */ }
+  } catch { threw = true; }
   clearAllAnalyzing(); clearTask('ai'); maybeFlushEdits(true);
   await releaseGpu();
   autoEnhancing = false;
-  showToast('AI auto-enhance complete ✓', 4000);
-  pcNotify('AI auto-enhance complete', 'Your clips were named and rules were learned.');
+  // Say what actually happened. "complete ✓" over a run that named nothing is the failure mode that
+  // makes him stop trusting the screen — and trusting it is the whole point of the app.
+  const missed = Math.max(0, planned - done);
+  if (aiAborted) {
+    showToast(done ? `Stopped — named ${done} of ${planned}` : 'Stopped before anything was named', 5000);
+    pcNotify('AI auto-enhance stopped', done ? `Named ${done} of ${planned} before it stopped.` : 'Nothing was named.');
+  } else if (!planned) {
+    showToast('Nothing to enhance — every clip already has a subject', 4000);
+  } else if (!done) {
+    showToast(`Couldn’t name any of the ${planned} clip${planned !== 1 ? 's' : ''}${threw ? ' — the run failed' : ''}`, 6000);
+    pcNotify('AI auto-enhance failed', `None of the ${planned} clips could be named.`);
+  } else {
+    showToast(`AI auto-enhance complete ✓ — named ${done}${missed ? `, ${missed} failed` : ''}`, missed ? 6000 : 4000);
+    pcNotify('AI auto-enhance complete', `Named ${done}${missed ? `, ${missed} failed` : ''}.`);
+  }
 }
 
 // Direction the user typed in the Analyze dialog for THIS run — folded into the
@@ -7839,6 +7859,30 @@ function unplacedCounts(clips, placement) {
 
 let lastDestPlan = null;   // { root, byPath: { [sourcePath]: 'Client/Alps-2026/2026-07-12' } }
 function currentDestPlan() { return lastDestPlan; }
+
+// ⚠ WHERE THE USER PUT A CLIP HIMSELF — survives a rebuild of the map. MODULE level, deliberately.
+//
+// `placement` is a per-invocation local inside showDestinationMap, and renderFinMap() calls that
+// function fresh on every entry to Organize step 2: pressing Back from step 3, clicking a step pill,
+// and toggling either the "Organize" or the "Keep the originals" checkbox. So dragging 40 clips into
+// projects and then pressing Back rebuilt the map from the auto-planner and threw every manual
+// placement away.
+//
+// That was not merely a display bug. render() → publishPlan() overwrites `lastDestPlan`, which is
+// exactly what the Run button files by (10-boot.js:301) — so after a Back, Run filed his footage to
+// the AUTO destinations while the screen had shown his own. Wrong clips into client projects, with a
+// confirm dialog that named the count and not the change.
+//
+// Only HIS placements are kept (moveKeys, the one site tagged 'you placed it here'). The AI planner's
+// placements are deliberately NOT sticky: re-running the plan is cheap, idempotent and expected, and
+// making it sticky would freeze a suggestion he never agreed to.
+const manualPlacements = new Map();   // sourcePath -> rel folder, insertion-ordered
+const MANUAL_CAP = 5000;
+function rememberManual(key, rel) {
+  manualPlacements.delete(key);        // re-insert so the cap sheds the least-recently-placed
+  manualPlacements.set(key, rel);
+  while (manualPlacements.size > MANUAL_CAP) manualPlacements.delete(manualPlacements.keys().next().value);
+}
 // Record successfully-filed clips into the persistent project ledger, then (if AI
 // is on) refresh the AI summary for each touched project in the background.
 async function recordToLedger(clips, placement, results) {
@@ -8158,6 +8202,18 @@ async function showDestinationMap(rawClips, opts = {}) {
     }
   }
 
+  // ⚠ HIS placements win over everything the auto-planner just decided. This runs LAST, after every
+  // rule/route/subject rung above, because that is what "I put it there" means — see the note on
+  // `manualPlacements`. Without this, pressing Back re-planned his footage out from under him and Run
+  // filed it to the auto destinations.
+  for (const c of clips) {
+    const rel = manualPlacements.get(c.key);
+    if (!rel) continue;
+    placement[c.key] = rel;
+    autoKeys.delete(c.key);                                  // no longer auto → rule changes leave it alone
+    setMeta(c.key, 'you placed it here', 1, 'manual');
+  }
+
   const host = opts.host || null;   // when set, render INLINE into this element instead of a modal
   const intro = `Each clip grouped by where it'll be filed, with how sure the AI is. Fix the “Needs you” few, then file. Switch to Folders for the full tree.`;
   const cardInner = `
@@ -8457,7 +8513,7 @@ async function showDestinationMap(rawClips, opts = {}) {
   // Apply a folder to a set of clips (explicit move — they leave their auto group).
   function moveKeys(keys, rel) {
     const clean = String(rel).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim() || 'misc';
-    for (const k of keys) { placement[k] = clean; autoKeys.delete(k); setMeta(k, 'you placed it here', 1, 'manual'); }
+    for (const k of keys) { placement[k] = clean; autoKeys.delete(k); setMeta(k, 'you placed it here', 1, 'manual'); rememberManual(k, clean); }
     renderTree();
   }
   function toggleSel(key) { if (selected.has(key)) selected.delete(key); else selected.add(key); renderTree(); }
@@ -8476,6 +8532,10 @@ async function showDestinationMap(rawClips, opts = {}) {
       for (const k of Object.keys(placement)) {
         if (placement[k] === rel) placement[k] = next;
         else if (placement[k].startsWith(rel + '/')) placement[k] = next + placement[k].slice(rel.length);
+        else continue;
+        // Follow the rename in the sticky record too, or a Back would restore the OLD folder name for
+        // every clip he had placed by hand — re-creating a folder he just renamed away.
+        if (manualPlacements.has(k)) rememberManual(k, placement[k]);
       }
       renderTree();
     });
@@ -10161,6 +10221,13 @@ async function collectClipFaces(clip, clusters, keys) {
     const f = _faces[_i];
     let m = _matches[_i] || null;
     if (!m) { try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ } }
+    // #46, and the sibling of the guard in scanFacesForClips below — this path never got it. A face
+    // in the IGNORE bin (a statue, a TV, a poster, a passer-by he dismissed) is recognised by
+    // matchPerson as {match:null, ignored:true}, but "Ignore" only ever suppressed MATCHING, not
+    // CLUSTERING. Without this line it falls through and re-forms a "New face — name it?" card on
+    // every scan, forever. This is the path the Organize analyze and the phone/finalize analyze both
+    // use — the two screens he actually works in — so #46 was live everywhere that mattered.
+    if (m && m.ignored) continue;
     const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
     const matched = !!(m && m.match);   // backend already applied the strict gate
     // Cluster the face (recognized or not) for the Review grid — never auto-apply.
@@ -12609,8 +12676,20 @@ async function enterRenameWithPhoneFiles(staged) {
   // without this, questions asked about card clips render (and APPLY) against whichever PHONE clip
   // now sits at that index. Silent misnaming of footage, with no error anywhere.
   // Questions whose clip isn't here are dropped; the queue is cleared even if nothing was saved.
-  await restoreAiQuestions();
+  //
+  // ⚠ ORDER MATTERS, and this pair used to be the wrong way round. `restoreAiQuestions` →
+  // `markClipQuestion` does querySelector('.rename-card[data-i="N"]') to put the ⚠ on the card. Run
+  // before buildRenameStep, #renameList still holds the PREVIOUS card's cards, so the marks either
+  // landed on nothing or were stamped on a card whose data-i now means a different clip — and
+  // buildRenameStep then wiped the list anyway. Result: the toast said "3 AI questions still waiting
+  // for you" and not one clip was flagged, so the questions were unreachable from the grid. The card
+  // flow (01-core.js:1137-1139) has always built first; this twin is now the same.
   buildRenameStep();
+  await restoreAiQuestions();
+  // Ticks restored from drafts must be reflected in the batch bar — without this, clips are selected
+  // in state while the bar reads empty, and a batch action then operates on clips it says aren't
+  // there. The card path does this on the next line; this one never did.
+  updateBatchBar();
   // The staged files live on disk in the temp folders — naming + the final copy both run
   // off those, NOT the phone. Remember this as a resumable session so you can carry on
   // WITHOUT plugging the phone back in (relaunch reopens it; Home shows a "continue" card).
@@ -13735,9 +13814,12 @@ function renderFinMap() {
       try { window.api.saveFinalMeta({ [f.name]: { ...f.meta } }); } catch { /* non-fatal */ }
     },
     onApplied: (r) => {
-      const okN = (r.results || []).filter((x) => x.ok).length;
-      const failN = (r.results || []).length - okN;
-      showToast(`Filed ${okN}${failN ? `, ${failN} failed` : ''} into your Projects tree ✓`, failN ? 6000 : 4000);
+      // No toast here. showDestinationMap already reported the outcome before calling us, and it
+      // does so HONESTLY — "Nothing was filed — 12 failed" when nothing landed. This handler used to
+      // show `Filed 0, 12 failed ✓` on top of that, so a total failure ended with a green tick as the
+      // last thing on screen. Its sibling caller (07-organize-map.js:1582) already gets this right by
+      // only pruning. Re-adding a toast here would re-introduce a success claim over a failed run.
+      //
       // Files have moved out of the source — drop them from the scan so re-render is honest.
       if (finScan && Array.isArray(finScan.files)) {
         const moved = new Set((r.results || []).filter((x) => x.ok).map((x) => x.from));
@@ -14140,6 +14222,14 @@ async function finAnalyzeSelected() {
       }
     }
     clearTask('faces');
+    if (faceClusters.length) {
+      // ⚠ PERSIST EVEN IF HE CANCELLED. `collectClipFaces` marks each clip `_facesScanned` durably as
+      // it goes, so a run that detected faces and was then aborted used to discard every cluster
+      // while the clips stayed marked scanned — a re-scan skipped them and the faces were gone for
+      // good. The Organize twin (07-organize-map.js:972) already saves before the grid opens, for
+      // exactly this reason; this path was the one that still gated on `!aiAborted`.
+      try { savePendingNow(faceClusters); saveFaceScenesNow(); } catch { /* best-effort */ }
+    }
     if (faceClusters.length && !aiAborted) {
       if (autoTagFaces) {
         // No-intervention mode: apply each face's best-guess name straight onto its clips

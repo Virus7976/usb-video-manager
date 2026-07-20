@@ -432,7 +432,13 @@ ipcMain.handle('people:merge', (_e, payload) => {
   const into = aiPeople().find((x) => x.id === (payload && payload.intoId));
   const from = aiPeople().find((x) => x.id === (payload && payload.fromId));
   if (!into || !from || into === from) return { ok: false };
-  into.faces = capFacesKeepingConfirmed([...(into.faces || []), ...(from.faces || [])], 60);   // #49 — confirmed-first
+  // 80, matching people:save / reassignFace / unignore. It was 60 here alone, and merge is the ONE
+  // path that combines two already-enrolled sets — so it was the one place most likely to exceed the
+  // cap, applying the tightest limit at the worst moment. `capFacesKeepingConfirmed` sheds unconfirmed
+  // guesses first, but once confirmed faces alone exceed the cap it slices those too: merging a
+  // "Sara" and a "Sarah" with 40 confirmed faces each destroyed 20 hand-confirmed enrolments, with no
+  // undo. Fixing a duplicate person must not make that person harder to recognise.
+  into.faces = capFacesKeepingConfirmed([...(into.faces || []), ...(from.faces || [])], 80);   // #49 — confirmed-first
   config.ai.people = aiPeople().filter((x) => x.id !== from.id);
   saveStore('ai.people');
   gcFaceCrops();
@@ -988,7 +994,34 @@ ipcMain.handle('drafts:get', () => currentDrafts());
 // be clearable may be cleared. That is the safe default — a new field added to the draft record is
 // protected automatically instead of silently unguarded.
 const draftNonEmpty = (val) => (Array.isArray(val) ? val.length > 0 : !!val);
-function draftIsNamed(v) { return !!(v && (v.subject || v.description || v.location)); }
+// ⚠ "Does this draft hold WORK?" — the predicate that decides what the 60-day prune and DRAFTS_CAP
+// are allowed to throw away. It used to read subject/description/location only, which meant a clip
+// whose only content was a CONFIRMED FACE counted as empty and was shed first.
+//
+// Measured on his real store (2026-07-20): 4594 drafts, of which **200 hold `people` and nothing
+// else** — i.e. 200 clips where the only record of his face-tagging was the thing being deleted.
+// `clips:tagPerson` writes `rec.people` without touching `rec.ts`, so those records also carry a
+// stale timestamp and are the FIRST to cross the 60-day line.
+//
+// Why this is an explicit list and NOT "any field that isn't clearable": `facesScanned` is present
+// on all 4594 drafts and `date` on 4588. Both are bookkeeping the app wrote, not work he did, so a
+// generic rule would make every draft permanently unprunable and defeat the cap entirely. Measured,
+// not assumed — the generic version was written first and the numbers rejected it.
+//
+// ⚠ THE FIELD LIST IS INLINE ON PURPOSE — do not lift it to a module `const`.
+//
+// `const` does not hoist across the bundle, and 01-core.js calls this function at MODULE-INIT time
+// (the DRAFTS_CAP boot trim, which fires on his 4594-draft store) — before 08's consts exist. A
+// hoisted `function` is fine; a `const` it closes over is a TDZ crash at launch. The same reason
+// this must not reference DRAFT_CLEARABLE, declared just below.
+function draftIsNamed(v) {
+  if (!v || typeof v !== 'object') return false;
+  for (const k of ['subject', 'description', 'location', 'category', 'tags', 'people', 'shotType', 'observation']) {
+    const val = v[k];
+    if (Array.isArray(val) ? val.length > 0 : !!val) return true;
+  }
+  return false;
+}
 // `selected` is a UI tick, not work: unticking a clip MUST be able to persist. `ts` is bookkeeping.
 const DRAFT_CLEARABLE = new Set(['selected', 'ts']);
 // Merge an incoming draft onto the stored one WITHOUT ever blanking saved content.

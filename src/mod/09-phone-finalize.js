@@ -512,8 +512,20 @@ async function enterRenameWithPhoneFiles(staged) {
   // without this, questions asked about card clips render (and APPLY) against whichever PHONE clip
   // now sits at that index. Silent misnaming of footage, with no error anywhere.
   // Questions whose clip isn't here are dropped; the queue is cleared even if nothing was saved.
-  await restoreAiQuestions();
+  //
+  // ⚠ ORDER MATTERS, and this pair used to be the wrong way round. `restoreAiQuestions` →
+  // `markClipQuestion` does querySelector('.rename-card[data-i="N"]') to put the ⚠ on the card. Run
+  // before buildRenameStep, #renameList still holds the PREVIOUS card's cards, so the marks either
+  // landed on nothing or were stamped on a card whose data-i now means a different clip — and
+  // buildRenameStep then wiped the list anyway. Result: the toast said "3 AI questions still waiting
+  // for you" and not one clip was flagged, so the questions were unreachable from the grid. The card
+  // flow (01-core.js:1137-1139) has always built first; this twin is now the same.
   buildRenameStep();
+  await restoreAiQuestions();
+  // Ticks restored from drafts must be reflected in the batch bar — without this, clips are selected
+  // in state while the bar reads empty, and a batch action then operates on clips it says aren't
+  // there. The card path does this on the next line; this one never did.
+  updateBatchBar();
   // The staged files live on disk in the temp folders — naming + the final copy both run
   // off those, NOT the phone. Remember this as a resumable session so you can carry on
   // WITHOUT plugging the phone back in (relaunch reopens it; Home shows a "continue" card).
@@ -1638,9 +1650,12 @@ function renderFinMap() {
       try { window.api.saveFinalMeta({ [f.name]: { ...f.meta } }); } catch { /* non-fatal */ }
     },
     onApplied: (r) => {
-      const okN = (r.results || []).filter((x) => x.ok).length;
-      const failN = (r.results || []).length - okN;
-      showToast(`Filed ${okN}${failN ? `, ${failN} failed` : ''} into your Projects tree ✓`, failN ? 6000 : 4000);
+      // No toast here. showDestinationMap already reported the outcome before calling us, and it
+      // does so HONESTLY — "Nothing was filed — 12 failed" when nothing landed. This handler used to
+      // show `Filed 0, 12 failed ✓` on top of that, so a total failure ended with a green tick as the
+      // last thing on screen. Its sibling caller (07-organize-map.js:1582) already gets this right by
+      // only pruning. Re-adding a toast here would re-introduce a success claim over a failed run.
+      //
       // Files have moved out of the source — drop them from the scan so re-render is honest.
       if (finScan && Array.isArray(finScan.files)) {
         const moved = new Set((r.results || []).filter((x) => x.ok).map((x) => x.from));
@@ -2043,6 +2058,14 @@ async function finAnalyzeSelected() {
       }
     }
     clearTask('faces');
+    if (faceClusters.length) {
+      // ⚠ PERSIST EVEN IF HE CANCELLED. `collectClipFaces` marks each clip `_facesScanned` durably as
+      // it goes, so a run that detected faces and was then aborted used to discard every cluster
+      // while the clips stayed marked scanned — a re-scan skipped them and the faces were gone for
+      // good. The Organize twin (07-organize-map.js:972) already saves before the grid opens, for
+      // exactly this reason; this path was the one that still gated on `!aiAborted`.
+      try { savePendingNow(faceClusters); saveFaceScenesNow(); } catch { /* best-effort */ }
+    }
     if (faceClusters.length && !aiAborted) {
       if (autoTagFaces) {
         // No-intervention mode: apply each face's best-guess name straight onto its clips

@@ -303,9 +303,17 @@ ipcMain.handle('phone:pull', async (evt, payload) => {
         prog(it.name);
       }
     } else {
-      await mtpCopyToDest(device, list, dest, (name) => prog(name));   // ADB-first; checks phoneAbort
+      const pulled = await mtpCopyToDest(device, list, dest, (name) => prog(name));   // ADB-first; checks phoneAbort
+      // Where each item ACTUALLY landed. claimPullDest renames the second of two same-named items
+      // to "IMG_0001 (1).jpg"; re-deriving join(dest, it.name) below found the FIRST item's file
+      // instead, compared it against the SECOND item's size, called it truncated and deleted a photo
+      // that had transferred fine. Irreplaceable — the phone had already been cleared in his flow.
+      const destByKey = new Map();
+      for (const r of ((pulled && pulled.results) || [])) if (r && r.key && r.dest) destByKey.set(r.key, r.dest);
       for (const it of list) {
-        const p = path.join(dest, it.name);
+        // Falls back to the derived path for the MTP path, whose results carry names only and which
+        // never renames — so behaviour there is unchanged.
+        const p = destByKey.get(pullKey(it)) || path.join(dest, it.name);
         try {
           const st = await fsp.stat(p);
           // Stage on COMPLETENESS, not mere existence. A file present but SHORT of its known source
@@ -516,7 +524,10 @@ async function adbPullToDest(serial, items, dest, onName) {
         if (status === 'FAIL') { try { fs.unlinkSync(destFile); } catch { /* best-effort */ } }
       }
     } catch { status = 'FAIL'; }
-    results.push({ status, name: it.name });
+    // `dest` is the path actually written, which is NOT join(dest, name) when claimPullDest stepped
+    // past a name an earlier item in this run had claimed. The staging loop must use this, not
+    // re-derive the path — re-deriving is what made it delete the first item's photo.
+    results.push({ status, name: it.name, key: pullKey(it), dest: destFile });
     if (onName) { try { onName(it.name); } catch { /* ignore */ } }
   }
   return { ok: true, results };
@@ -848,17 +859,39 @@ ipcMain.handle('wireless:manualPair', async (_evt, { hostport, code, connectAddr
 // "Not mentioned in the results" counts as needing a retry, NOT as done: a crash or an abort
 // mid-batch leaves later items unreported, and treating no-news as success is exactly how a file
 // goes missing quietly.
+// ⚠ THE IDENTITY OF A PULLED ITEM. Folder + filename, never the filename alone.
+//
+// A phone routinely holds two different photos with the same name in different folders
+// (`DCIM/Camera/IMG_0001.jpg` and `Pictures/IMG_0001.jpg`). Everything downstream of a pull used to
+// identify items by `name` alone, which broke three separate ways at once:
+//
+//   • the staging loop re-derived `join(dest, it.name)`, missed the ` (1)` file claimPullDest had
+//     written for the second item, stat'd the FIRST item's photo, judged it truncated against the
+//     second item's size and DELETED a photo that had transferred perfectly;
+//   • mergePullResults did `by.set(r.name, r)`, collapsing two items into one result;
+//   • adbRetryList marked a FAILED item done because its same-named twin succeeded, so it was
+//     never retried over MTP.
+//
+// Two items in the SAME folder cannot share a name, so rel+name is unique by construction.
+function pullKey(it) { return `${String((it && it.rel) || '')}/${String((it && it.name) || '')}`.toLowerCase(); }
 function adbRetryList(items, results) {
-  const done = new Set(((results || []).filter((r) => r && (r.status === 'OK' || r.status === 'SKIP'))).map((r) => r.name));
-  return (items || []).filter((it) => it && !done.has(it.name));
+  const ok = (results || []).filter((r) => r && (r.status === 'OK' || r.status === 'SKIP'));
+  const done = new Set(ok.map((r) => r.key || String(r.name || '').toLowerCase()));
+  // `r.key` is absent on MTP results (the PS script reports names only); falling back to the
+  // lower-cased name there preserves the previous behaviour on that path rather than retrying
+  // everything. The ADB path — the one that renames on collision — always carries a real key.
+  return (items || []).filter((it) => it && !done.has(pullKey(it)) && !done.has(String(it.name || '').toLowerCase()));
 }
 // Combine the ADB pass with the MTP retry — the LATER attempt wins per file, so an item MTP rescued
 // reports OK rather than staying FAIL (which would show up as a phantom loss in the declined count,
 // audit #87).
 function mergePullResults(first, second) {
   const by = new Map();
-  for (const r of (first || [])) if (r && r.name) by.set(r.name, r);
-  for (const r of (second || [])) if (r && r.name) by.set(r.name, r);
+  // Keyed on rel+name (see pullKey) — keying on the bare name collapsed two different photos that
+  // happen to share a filename into a single result, losing one of them from the report entirely.
+  const k = (r) => r.key || String(r.name || '').toLowerCase();
+  for (const r of (first || [])) if (r && (r.key || r.name)) by.set(k(r), r);
+  for (const r of (second || [])) if (r && (r.key || r.name)) by.set(k(r), r);
   return [...by.values()];
 }
 async function mtpCopyToDest(device, items, dest, onName) {

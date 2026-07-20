@@ -43,6 +43,30 @@ function unplacedCounts(clips, placement) {
 
 let lastDestPlan = null;   // { root, byPath: { [sourcePath]: 'Client/Alps-2026/2026-07-12' } }
 function currentDestPlan() { return lastDestPlan; }
+
+// ⚠ WHERE THE USER PUT A CLIP HIMSELF — survives a rebuild of the map. MODULE level, deliberately.
+//
+// `placement` is a per-invocation local inside showDestinationMap, and renderFinMap() calls that
+// function fresh on every entry to Organize step 2: pressing Back from step 3, clicking a step pill,
+// and toggling either the "Organize" or the "Keep the originals" checkbox. So dragging 40 clips into
+// projects and then pressing Back rebuilt the map from the auto-planner and threw every manual
+// placement away.
+//
+// That was not merely a display bug. render() → publishPlan() overwrites `lastDestPlan`, which is
+// exactly what the Run button files by (10-boot.js:301) — so after a Back, Run filed his footage to
+// the AUTO destinations while the screen had shown his own. Wrong clips into client projects, with a
+// confirm dialog that named the count and not the change.
+//
+// Only HIS placements are kept (moveKeys, the one site tagged 'you placed it here'). The AI planner's
+// placements are deliberately NOT sticky: re-running the plan is cheap, idempotent and expected, and
+// making it sticky would freeze a suggestion he never agreed to.
+const manualPlacements = new Map();   // sourcePath -> rel folder, insertion-ordered
+const MANUAL_CAP = 5000;
+function rememberManual(key, rel) {
+  manualPlacements.delete(key);        // re-insert so the cap sheds the least-recently-placed
+  manualPlacements.set(key, rel);
+  while (manualPlacements.size > MANUAL_CAP) manualPlacements.delete(manualPlacements.keys().next().value);
+}
 // Record successfully-filed clips into the persistent project ledger, then (if AI
 // is on) refresh the AI summary for each touched project in the background.
 async function recordToLedger(clips, placement, results) {
@@ -362,6 +386,18 @@ async function showDestinationMap(rawClips, opts = {}) {
     }
   }
 
+  // ⚠ HIS placements win over everything the auto-planner just decided. This runs LAST, after every
+  // rule/route/subject rung above, because that is what "I put it there" means — see the note on
+  // `manualPlacements`. Without this, pressing Back re-planned his footage out from under him and Run
+  // filed it to the auto destinations.
+  for (const c of clips) {
+    const rel = manualPlacements.get(c.key);
+    if (!rel) continue;
+    placement[c.key] = rel;
+    autoKeys.delete(c.key);                                  // no longer auto → rule changes leave it alone
+    setMeta(c.key, 'you placed it here', 1, 'manual');
+  }
+
   const host = opts.host || null;   // when set, render INLINE into this element instead of a modal
   const intro = `Each clip grouped by where it'll be filed, with how sure the AI is. Fix the “Needs you” few, then file. Switch to Folders for the full tree.`;
   const cardInner = `
@@ -661,7 +697,7 @@ async function showDestinationMap(rawClips, opts = {}) {
   // Apply a folder to a set of clips (explicit move — they leave their auto group).
   function moveKeys(keys, rel) {
     const clean = String(rel).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim() || 'misc';
-    for (const k of keys) { placement[k] = clean; autoKeys.delete(k); setMeta(k, 'you placed it here', 1, 'manual'); }
+    for (const k of keys) { placement[k] = clean; autoKeys.delete(k); setMeta(k, 'you placed it here', 1, 'manual'); rememberManual(k, clean); }
     renderTree();
   }
   function toggleSel(key) { if (selected.has(key)) selected.delete(key); else selected.add(key); renderTree(); }
@@ -680,6 +716,10 @@ async function showDestinationMap(rawClips, opts = {}) {
       for (const k of Object.keys(placement)) {
         if (placement[k] === rel) placement[k] = next;
         else if (placement[k].startsWith(rel + '/')) placement[k] = next + placement[k].slice(rel.length);
+        else continue;
+        // Follow the rename in the sticky record too, or a Back would restore the OLD folder name for
+        // every clip he had placed by hand — re-creating a folder he just renamed away.
+        if (manualPlacements.has(k)) rememberManual(k, placement[k]);
       }
       renderTree();
     });

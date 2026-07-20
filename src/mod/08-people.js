@@ -267,6 +267,13 @@ async function collectClipFaces(clip, clusters, keys) {
     const f = _faces[_i];
     let m = _matches[_i] || null;
     if (!m) { try { m = await window.api.matchPerson({ descriptor: f.descriptor, threshold: FACE_SUGGEST_DIST }); } catch { /* offline ok */ } }
+    // #46, and the sibling of the guard in scanFacesForClips below — this path never got it. A face
+    // in the IGNORE bin (a statue, a TV, a poster, a passer-by he dismissed) is recognised by
+    // matchPerson as {match:null, ignored:true}, but "Ignore" only ever suppressed MATCHING, not
+    // CLUSTERING. Without this line it falls through and re-forms a "New face — name it?" card on
+    // every scan, forever. This is the path the Organize analyze and the phone/finalize analyze both
+    // use — the two screens he actually works in — so #46 was live everywhere that mattered.
+    if (m && m.ignored) continue;
     const dist = m && typeof m.dist === 'number' ? m.dist : Infinity;
     const matched = !!(m && m.match);   // backend already applied the strict gate
     // Cluster the face (recognized or not) for the Review grid — never auto-apply.

@@ -4096,6 +4096,26 @@ async function askAboutShoots(clips) {
       if (!v) return;
       groups[i].chosen = v;
       try { window.api.aiRememberShoot({ date: groups[i].date, subject: v }); } catch { /* non-fatal */ }
+      // APPLY IT TO THE WHOLE DAY (Tier 1 item 20). Remembering the answer only fed the AI's naming
+      // context — so on a day the model never got to, or with AI off entirely, he had just told the
+      // app what a 37-clip shoot was and still faced 37 empty subject fields. He shoots in batches:
+      // 20 of his 28 shoot days are a single subject, which is the whole reason one question can
+      // settle a day.
+      //
+      // ⚠ A DEFAULT, NEVER AN OVERWRITE. Only clips whose subject is still empty are filled — a name
+      // he typed himself outranks anything the app infers, and silently replacing it would be the
+      // worst possible reward for answering.
+      let filled = 0;
+      for (const c of groups[i].clips) {
+        if (!c || (c.subject || '').trim()) continue;
+        c.subject = v;
+        filled += 1;
+      }
+      if (filled) {
+        try { refreshNames(); } catch { /* the grid still closes fine */ }
+        try { scheduleDraftSave(); } catch { /* saved on the next edit anyway */ }
+        showToast(`${filled} clip${filled !== 1 ? 's' : ''} from ${groups[i].date} named “${v}” — change any of them if it is wrong.`, 5000);
+      }
       render();
     };
 

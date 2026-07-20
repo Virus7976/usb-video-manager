@@ -322,6 +322,36 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20af — Tier 2 item 20: answering a shoot now names the whole day.
+
+The remaining Tier 1 items are low-value against his ACTUAL data (a delete-step card would never
+render — his copied-log is 0), so I moved to Tier 2, whose premise is the real problem: *4594 clips ×
+any per-clip interaction = abandonment.*
+
+The shoot question already asked once per day and remembered the answer forever (`p`). But
+remembering only fed the AI's naming CONTEXT — so on a day the model never reached, or with AI off
+entirely, **he had just told the app what a 37-clip shoot was and still faced 37 empty subject
+fields.** The question collected the answer and did nothing visible with it.
+
+He shoots in batches: **20 of his 28 shoot days are a single subject.** That is the whole reason one
+question can settle a day.
+
+**⚠ A DEFAULT, NEVER AN OVERWRITE.** Only clips whose subject is still empty are filled. A name he
+typed outranks anything the app infers, and silently replacing it would be the worst possible reward
+for answering — it would teach him that answering costs him work.
+
+Three details that each have a wrong version which looks fine, all tested:
+- the answer is remembered **outside** the "did we fill anything" guard, or a day whose clips were all
+  already named would be asked about again — the one thing he said never to do;
+- the names are **persisted** (`scheduleDraftSave`), since drafts are the only place a name lives
+  until the footage is copied;
+- it **says what it just did** and that he can change it — a silent bulk edit of 37 clips is alarming
+  even when it is right.
+
+`test/shoot-answer-fills-the-day.test.mjs` (8), five breaks proven.
+
+vm **1422/1279/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20ae — Tier 1 item 10: auto mode now says what it is about to do.
 
 The "Do it all" button already existed. **The preview did not.** Auto mode announced itself with

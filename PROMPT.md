@@ -558,12 +558,18 @@ more instances of the original bug — `goToRename` and `openFinalize` never hid
 The three home-rendering paths inside `onDriveOptions` are deliberately left open-coded: they run on
 device DETECTION, so a full screen switch there could yank him off Organize when a card is plugged in.
 
-**Remaining UI: 2 and 14 only.**
+**Batch 4 done 2026-07-20 (commit f1d5ff0):** finding 14's menu half.
+
+**Remaining UI: 2 only.**
 - 2: Compress is a modal while its two siblings are full screens with step pills. This is the biggest
   remaining one and it is a real restructure, not a label change — weigh it against the step-list
   pipeline UI in `ARCHITECTURE.md`, which may absorb it entirely.
-- 14: Settings is both a container and a peer of its own contents (the Edit menu lists 5 of its 8
-  cards as flat siblings); plus colour emoji in a codebase that deliberately moved to monochrome SVG.
+**Left undone ON PURPOSE — `keep-emoji` is a no-op.** It is applied 26 times across the modules and
+has exactly ONE CSS rule, `.ns-tip .keep-emoji { font-size: 18px; }`, so 25 of the 26 do nothing. Two
+honest options, neither taken: give it a real global rule (changes how 26 emoji render in places that
+cannot be verified from WSL), or delete the 25 dead usages (discards a documented intent — the class
+means "this emoji is deliberate, don't swap it for an SVG"). **Ask him which**, or verify visually
+first. Do not silently pick one; a cosmetic change nobody can see is the worst kind to guess at.
 
 **Sequencing note:** he chose "close safety data first, then build new". Data safety is now CLOSED,
 so this list and the AI-pipeline items below are the current front. The UI work should land as

@@ -755,6 +755,32 @@ ipcMain.handle('organize:undo', async () => {
       reopened.push(path.basename(m.from));
     } catch { failed += 1; }
   }
+  // TAKE THE EMPTY FOLDERS BACK TOO.
+  //
+  // Undo removed the clips and left `vlog/2026-03-14/` standing. In his Projects tree an empty dated
+  // folder is not harmless litter — it looks exactly like a real shoot, and the folder-reuse rule
+  // (2026-07-19cg) will then hand later clips to a directory that was never meant to exist.
+  //
+  // Deliberately narrow, because this DELETES inside his archive:
+  //   • only directories we just emptied — the parents of files this undo actually moved back;
+  //   • only if `readdir` says they are genuinely empty, so nothing of his is ever inside;
+  //   • never the destination root, and never above it;
+  //   • walking up only while each parent is also empty, so `vlog/` goes when its last date does.
+  // Best-effort throughout: the footage is already safely back, and a tidy-up must never fail an undo.
+  const emptiedDirs = [...new Set(lo.moves.map((m) => path.dirname(m.to)).filter(Boolean))];
+  const rootStop = path.resolve(config.projectsRoot || config.organizeDest || '');
+  for (let d of emptiedDirs) {
+    for (let hops = 0; hops < 6; hops += 1) {
+      const abs = path.resolve(d);
+      if (!rootStop || abs === rootStop || !abs.startsWith(rootStop + path.sep)) break;
+      let entries;
+      try { entries = await fsp.readdir(abs); } catch { break; }   // gone, or unreadable → leave it
+      if (entries.length) break;                                   // his stuff is in there — stop
+      try { await fsp.rmdir(abs); } catch { break; }
+      d = path.dirname(abs);
+    }
+  }
+
   // The un-filed clips are PENDING again, so their metadata must stop being evictable — finalize:run
   // marked them done, and `done` is the sole gate on the finalMeta prune. Keyed by the source
   // basename, exactly as markFinalMetaDone was called (`filed.push(it.name)`). Like the ledger

@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20v — undo left the folders standing. Found by probing again.
+
+Pointed the round-trip technique at undo (file → undo → look). Everything it REPORTED was true — 1
+undone, ledger reversed, rescan correctly says "not filed" — and `Projects/` still contained
+`vlog/2026-03-14/`.
+
+In his archive an empty dated folder is not litter, it is a decoy: it looks exactly like a real shoot,
+and the folder-reuse rule (cg) prefers a folder that already exists — so a later `vlog` clip would be
+handed to a directory that was never meant to be there. Undo is supposed to leave no trace.
+
+**This DELETES inside his Projects tree**, the direction that cannot be taken back, so the scope is
+narrow and every limit has a test: only directories THIS undo emptied, only when `readdir` says they
+are empty, never the destination root or anything outside it, walking up only while each parent is
+also empty. Best-effort throughout — the footage is already back, so a tidy-up must never fail an undo.
+
+**I checked WHICH guard is load-bearing instead of assuming, and the answer was interesting:**
+- removing the empties check alone → still safe (`rmdir` refuses a non-empty directory);
+- swapping `rmdir` for a recursive `rm` alone → still safe (the empties check stops it);
+- **removing both → the test fails, correctly.**
+
+So neither is redundant: each covers the other's failure, and the explicit check is what stops a
+future "why not use `fs.rm`?" edit being catastrophic. My first write-up called the check
+"defence-in-depth"; that was wrong and is corrected in the test. **When two guards overlap, break them
+separately AND together — "one break didn't fail" is not evidence that a guard is redundant.**
+
+`test/undo-takes-back-empty-folders.test.mjs` (7).
+
+vm **1357/1214/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20u — item 14, the counter that never lies. It lied about WHERE, and I caused it.
 
 Probed the round trip (file → rescan) for Tier 1 item 14. The counts were honest — 2 of 3 filed, the

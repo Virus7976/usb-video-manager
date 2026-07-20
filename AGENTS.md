@@ -322,6 +322,34 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bp — file by the field the record HAS, not the field the config names
+
+Follow-on from `bo`, and it changes where his 310 clips actually land. His clips are app-named by the
+app's own convention `date_subject_description_v#` — so
+`2024-11-29_vlog_josiah-bedroom-timelapse_v1.mp4` parses to **subject "vlog"**, description
+"josiah-bedroom-timelapse", and category/project EMPTY.
+
+His `folderLevels` are `['category','project']` — **fields his workflow never populates.** So after
+`bo` all 310 clips would have filed correctly but uselessly, into `<date>/_unsorted`, despite each
+carrying a perfectly good grouping of his own choosing.
+
+The fallback is now a ladder: **configured levels → the record's own subject → `<date>/_unsorted`.**
+`_unsorted` is for clips with nothing to go on, not for clips whose useful field simply isn't the one
+the config happens to name. His 310 now land in `vlog/…` instead of 100+ dated `_unsorted` folders.
+
+The configured levels still win whenever they have values — this is a fallback, not a new policy,
+and a test guards that.
+
+`test/file-without-a-name.test.mjs` is now 13 tests; the rung proven by breaking it.
+
+**Two of my own tests needed updating, both legitimately**, and it is worth naming the pattern: I had
+pinned assertions to a SPECIFIC RUNG of a ladder that then grew a better rung above it. Test 9
+asserted "lands in the dated bucket" when its real intent was "never the bare root"; test 10 needed a
+subject-less fixture to exercise the date rung at all; and `organize-plan`'s test asserted a dated
+folder when the clip had a subject. **Assert the contract ("a folder, never the root"), not the rung.**
+
+Both tiers green: vm **1091/979/112/0**, e2e **112/111/1/0**.
+
 ### 2026-07-19bo — ⚠ I nearly dumped 310 clips loose in his Projects root. Caught by reading his real folders.
 
 **A risk I introduced in `bm` and shipped.** Checking whether any of today's work was reachable for

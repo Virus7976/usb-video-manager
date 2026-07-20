@@ -174,9 +174,13 @@ test('the shape that used to move nothing now files by date', async () => {
   assert.equal(summary.skipped, 0, 'and no longer reported as a no-op');
   // Filing COPIES by default, so the original stays put — his standing rule.
   assert.equal(existsSync(sourcePath), true, 'the source is untouched');
+  // The contract is "a folder, never the bare root" — WHICH folder depends on the fallback ladder:
+  // the record's own subject first (this clip has subject 'x'), then its date, then `<date>/_unsorted`.
+  // Asserting specifically on a dated folder pinned the wrong rung and broke when the subject rung
+  // landed; the property that matters is that it is no longer sitting loose where it started.
   const filed = readdirSync(src, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
-  assert.ok(filed.some((d) => /^\d{4}-\d{2}-\d{2}$|^undated$/.test(d)),
-    `it landed in a dated folder — found ${JSON.stringify(filed)}`);
+  assert.ok(filed.length > 0, `it landed in a subfolder rather than the root — found ${JSON.stringify(filed)}`);
+  assert.equal(existsSync(join(src, 'x', 'nowhere.mp4')), true, 'under its own subject, which is the best field it has');
 });
 
 // --- the wiring that makes Run see the plan ---------------------------------------------

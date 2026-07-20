@@ -172,8 +172,9 @@ test('a clip with meta but NO folder fields still never lands in the root', asyn
     }]);
     assert.equal(r.moved, 1, 'it was filed');
     assert.ok(!existsSync(join(s.dest, 'GX010099.MP4')), 'and NOT loose in the Projects root');
-    assert.ok(existsSync(join(s.dest, '2026-03-14', '_unsorted', 'GX010099.MP4')),
-      'it fell back to its own date, like any other clip we cannot place');
+    // It carries a subject, so the ladder places it there rather than in the dated bucket — the
+    // point of this test is the ROOT, and any rung of the ladder satisfies it.
+    assert.ok(existsSync(join(s.dest, 'vlog', 'GX010099.MP4')), 'it fell back to a real field it had');
   } finally { s.cleanup(); }
 });
 
@@ -184,9 +185,57 @@ test('the date fallback prefers the clip\'s OWN recorded date over the file mtim
     await runWith(s, [{
       name: 'GX010099.MP4',
       sourcePath: s.clip,
-      meta: { date: '2025-12-25', subject: 'vlog', description: '', category: '', project: '' },
+      // No subject: that is what makes the ladder fall through to the DATE rung, which is what this
+      // test is about. With a subject it would file under the subject instead.
+      meta: { date: '2025-12-25', subject: '', description: '', category: '', project: '' },
     }]);
     assert.ok(existsSync(join(s.dest, '2025-12-25', '_unsorted', 'GX010099.MP4')),
       'filed under the date the record says, not the file timestamp');
+  } finally { s.cleanup(); }
+});
+
+test('a clip with a SUBJECT files under it, not into _unsorted', async () => {
+  // His 310 Compressed clips are app-named `date_subject_description_v#`
+  // (`2024-11-29_vlog_josiah-bedroom-timelapse_v1.mp4`), so parseNamedClip gives them a real subject
+  // — "vlog" — while leaving category and project empty. His folderLevels are [category, project],
+  // which his workflow never populates, so without this every one of those 310 clips would land in
+  // `<date>/_unsorted` despite carrying a perfectly good grouping of his own choosing.
+  //
+  // Falling back to a field the record ACTUALLY HAS beats falling back to a bucket labelled
+  // "unsorted". `_unsorted` is for clips with nothing to go on, not for clips whose useful field
+  // simply isn't the one the config happens to name.
+  const s = stage();
+  try {
+    await runWith(s, [{
+      name: 'GX010099.MP4',
+      sourcePath: s.clip,
+      meta: { date: '2026-03-14', subject: 'vlog', description: 'josiah-bedroom', category: '', project: '' },
+    }]);
+    assert.ok(existsSync(join(s.dest, 'vlog', 'GX010099.MP4')), 'filed under its own subject');
+    assert.ok(!existsSync(join(s.dest, '2026-03-14', '_unsorted', 'GX010099.MP4')), 'not dumped as unsorted');
+  } finally { s.cleanup(); }
+});
+
+test('a clip with NOTHING to go on still gets the dated _unsorted bucket', async () => {
+  // The ladder must still bottom out somewhere findable.
+  const s = stage();
+  try {
+    await runWith(s, [{ name: 'GX010099.MP4', sourcePath: s.clip }]);
+    assert.ok(existsSync(join(s.dest, '2026-03-14', '_unsorted', 'GX010099.MP4')), 'date + _unsorted');
+  } finally { s.cleanup(); }
+});
+
+test('the configured folder levels still win when they have values', async () => {
+  // Guard the other direction: this is a FALLBACK, not a new policy. If his category/project are
+  // filled in, they decide — exactly as before.
+  const s = stage();
+  try {
+    await runWith(s, [{
+      name: 'GX010099.MP4',
+      sourcePath: s.clip,
+      meta: { date: '2026-03-14', subject: 'vlog', category: '2026 - test', project: '' },
+    }]);
+    assert.ok(existsSync(join(s.dest, '2026 - test', 'GX010099.MP4')), 'the configured level wins');
+    assert.ok(!existsSync(join(s.dest, 'vlog', 'GX010099.MP4')), 'the subject fallback stays out of the way');
   } finally { s.cleanup(); }
 });

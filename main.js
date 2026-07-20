@@ -8486,11 +8486,25 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
     //
     // Prefer the date the RECORD carries (the real shoot date) and fall back to the file's mtime.
     if (!relRaw && !parts.length) {
-      let day = String((meta && meta.date) || '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-        try { day = new Date((await fsp.stat(it.sourcePath || it.path)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
+      // FALL BACK TO A FIELD THE RECORD ACTUALLY HAS, before falling back to a bucket.
+      //
+      // His clips are app-named `date_subject_description_v#`, so parseNamedClip fills in a real
+      // SUBJECT ("vlog") and leaves category/project empty — and his folderLevels are
+      // [category, project], fields his workflow never populates. Without this, 310 clips carrying a
+      // perfectly good grouping of his own choosing would all land in `<date>/_unsorted`.
+      //
+      // `_unsorted` is for clips with nothing to go on — not for clips whose useful field simply
+      // isn't the one the config happens to name.
+      const subj = safeFolderName(String((meta && meta.subject) || '').trim());
+      if (subj) {
+        parts = [subj];
+      } else {
+        let day = String((meta && meta.date) || '').trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+          try { day = new Date((await fsp.stat(it.sourcePath || it.path)).mtimeMs).toISOString().slice(0, 10); } catch { day = ''; }
+        }
+        parts = [safeFolderName(day || 'undated'), '_unsorted'].filter(Boolean);
       }
-      parts = [safeFolderName(day || 'undated'), '_unsorted'].filter(Boolean);
     }
     // Under a plan, a clip the user never placed has NO destination. Falling through to
     // subdirParts here would hand it an empty path — i.e. dump it in the ROOT of the Projects

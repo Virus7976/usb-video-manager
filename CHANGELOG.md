@@ -7,6 +7,44 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — two features that had never once worked, and the screens that misled you (2026-07-20)
+
+- **Confirming a face didn't tag any clip you'd already filed.** The face review sends one kind of ID
+  and the filed-clip metadata is stored under another, and the code that was supposed to bridge them
+  couldn't — every comparison came back false. So the half of that feature meant for footage you'd
+  already organized was dead code. Fixed, along with Undo, which had the same gap and would otherwise
+  have left a name stuck on a clip with no way to remove it.
+- **The "what was this shoot?" question could never appear on the Organize screen.** It looked for the
+  date in one place; that screen keeps it in another. So it always found nothing and quietly gave up.
+  That's why the app never remembered anything you told it about a shoot day — the feature was built
+  and wired and had simply never run. Answering now also actually saves, which it didn't before.
+- **The Organize map threw away clips you placed by hand, and then filed them somewhere else.**
+- **A photo that copied off your phone perfectly could be deleted** when two photos shared a filename.
+- **Group shots could overwrite each other** when two clips had the same name and size, deleting one
+  of them and its picture — and naming a face in the survivor tagged the wrong clip.
+- **Cancelling an analyze threw away the faces it had just found**, while marking those clips done.
+- **Confirmed faces were the first thing deleted** when the app trimmed old data.
+- **Merging two spellings of one person destroyed some of their faces.**
+- **Faces you'd dismissed kept coming back** on the two screens you actually use.
+
+### Changed — the app now says one thing consistently
+
+- **"Cancel" on the naming screen no longer walks out mid-copy without warning.** Every other screen
+  asked; this one didn't.
+- **Clicking an SD card in the device list now opens it**, like clicking a phone always did.
+- **One name for the Uncompressed folder** — it had four — and one story about compressing, which had
+  three, including two apps this app never opens.
+- **The phone screens stopped talking about your card.** They said your originals were "safe on the
+  card until Step 3" — the files were already on your computer and Step 3 didn't exist on that flow.
+- **The Done screen points at the thing it tells you to do next.** "Organize & back up" was the
+  faintest button on screen while "Close" — which only hides the window — was the loudest.
+- **The menus stopped disagreeing with themselves.** The Phone screen had no menu entry at all,
+  Settings listed its own contents next to itself, and two menus offered the same thing under
+  different names.
+- **Screens can't stack on top of each other any more.** Clicking the copy indicator from the Organize
+  screen used to draw both at once.
+
+
 ### Fixed — where your clips go, and the photos coming off your phone (found 2026-07-20)
 
 Six audits ran over the app in parallel. These are the ones that were actually costing you work.

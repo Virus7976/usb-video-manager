@@ -680,6 +680,38 @@ async function destinationParts({ relRaw, levels, meta, sourcePath }) {
     return /^\d{4}-\d{2}-\d{2}$/.test(day) ? safeFolderName(day) : '';
   };
 
+  // WHERE HE FILED THIS SHOOT LAST TIME.
+  //
+  // His ledger finally has entries, and it already knows which past project a clip belongs to — but
+  // that knowledge only surfaced during an AI run (`maybeOfferLedgerProject` sits behind
+  // `requireAi()`), so with Ollama asleep his own filing history told him nothing. Third instance of
+  // "value locked behind an unnecessary dependency" this session; the answer is JSON arithmetic.
+  //
+  // ⚠ REQUIRES A CONTENT MATCH, NEVER A BARE DATE. `matchLedgerProjects` scores subject / people /
+  // location overlap and marks a result `related` only when something actually overlaps — because
+  // "unrelated footage shot the same day" is exactly what that scoring exists to reject. A date-only
+  // rung would file a birthday into a client job. `related` is the whole safety of this rung.
+  //
+  // Sits BELOW his explicit placement and his standing rules, and ABOVE the subject/date fallback:
+  // what he just did > what he told us to do > what he did last time > what the filename says.
+  const day = String(m.date || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    let hit = null;
+    try {
+      const matches = matchLedgerProjects({
+        dates: [day],
+        subjects: [m.subject || ''].filter(Boolean),
+        people: Array.isArray(m.people) ? m.people : [],
+        locations: [m.location || ''].filter(Boolean),
+      }) || [];
+      hit = matches.find((x) => x && x.related && x.rel);
+    } catch { hit = null; }
+    if (hit) {
+      const past = String(hit.rel).replace(/\\/g, '/').split('/').map((x) => safeFolderName(x)).filter(Boolean);
+      if (past.length) return past;
+    }
+  }
+
   const subj = safeFolderName(String(m.subject || '').trim());
   if (subj) {
     const dayPart = await dayFrom();

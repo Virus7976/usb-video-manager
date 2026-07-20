@@ -156,7 +156,10 @@ function recordLedgerEntries(list) {
 ipcMain.handle('ledger:record', (_e, payload) => recordLedgerEntries(payload && payload.entries));
 // Find ledger projects whose dates overlap the given dates (a later import from the
 // same shoot). Returns light records the renderer uses to offer "add to this project".
-ipcMain.handle('ledger:matchDates', (_e, payload) => {
+// Which past projects does this footage belong to? Extracted from the IPC handler so the FILING
+// ladder can ask the same question (2026-07-20al) — a second copy of this scoring would let the
+// suggestion he sees and the folder he gets drift apart.
+function matchLedgerProjects(payload) {
   const want = new Set((payload && Array.isArray(payload.dates) ? payload.dates : []).map((d) => String(d || '').trim()).filter(Boolean));
   if (!want.size) return [];
   // Score relatedness by CONTENT (subject / people / location overlap), not just a
@@ -183,7 +186,8 @@ ipcMain.handle('ledger:matchDates', (_e, payload) => {
   // renderer can choose to ignore them).
   out.sort((a, b) => Number(b.related) - Number(a.related) || b.score - a.score || b.clips - a.clips);
   return out;
-});
+}
+ipcMain.handle('ledger:matchDates', (_e, payload) => matchLedgerProjects(payload));
 // Generate (or refresh) the AI summary for one project from its accumulated detail.
 ipcMain.handle('ledger:summarize', async (_e, payload) => {
   const key = ledgerKeyFromRel(payload && payload.rel);

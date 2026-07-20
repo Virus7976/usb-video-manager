@@ -2056,7 +2056,10 @@ function recordLedgerEntries(list) {
 ipcMain.handle('ledger:record', (_e, payload) => recordLedgerEntries(payload && payload.entries));
 // Find ledger projects whose dates overlap the given dates (a later import from the
 // same shoot). Returns light records the renderer uses to offer "add to this project".
-ipcMain.handle('ledger:matchDates', (_e, payload) => {
+// Which past projects does this footage belong to? Extracted from the IPC handler so the FILING
+// ladder can ask the same question (2026-07-20al) — a second copy of this scoring would let the
+// suggestion he sees and the folder he gets drift apart.
+function matchLedgerProjects(payload) {
   const want = new Set((payload && Array.isArray(payload.dates) ? payload.dates : []).map((d) => String(d || '').trim()).filter(Boolean));
   if (!want.size) return [];
   // Score relatedness by CONTENT (subject / people / location overlap), not just a
@@ -2083,7 +2086,8 @@ ipcMain.handle('ledger:matchDates', (_e, payload) => {
   // renderer can choose to ignore them).
   out.sort((a, b) => Number(b.related) - Number(a.related) || b.score - a.score || b.clips - a.clips);
   return out;
-});
+}
+ipcMain.handle('ledger:matchDates', (_e, payload) => matchLedgerProjects(payload));
 // Generate (or refresh) the AI summary for one project from its accumulated detail.
 ipcMain.handle('ledger:summarize', async (_e, payload) => {
   const key = ledgerKeyFromRel(payload && payload.rel);
@@ -8600,6 +8604,38 @@ async function destinationParts({ relRaw, levels, meta, sourcePath }) {
     }
     return /^\d{4}-\d{2}-\d{2}$/.test(day) ? safeFolderName(day) : '';
   };
+
+  // WHERE HE FILED THIS SHOOT LAST TIME.
+  //
+  // His ledger finally has entries, and it already knows which past project a clip belongs to — but
+  // that knowledge only surfaced during an AI run (`maybeOfferLedgerProject` sits behind
+  // `requireAi()`), so with Ollama asleep his own filing history told him nothing. Third instance of
+  // "value locked behind an unnecessary dependency" this session; the answer is JSON arithmetic.
+  //
+  // ⚠ REQUIRES A CONTENT MATCH, NEVER A BARE DATE. `matchLedgerProjects` scores subject / people /
+  // location overlap and marks a result `related` only when something actually overlaps — because
+  // "unrelated footage shot the same day" is exactly what that scoring exists to reject. A date-only
+  // rung would file a birthday into a client job. `related` is the whole safety of this rung.
+  //
+  // Sits BELOW his explicit placement and his standing rules, and ABOVE the subject/date fallback:
+  // what he just did > what he told us to do > what he did last time > what the filename says.
+  const day = String(m.date || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    let hit = null;
+    try {
+      const matches = matchLedgerProjects({
+        dates: [day],
+        subjects: [m.subject || ''].filter(Boolean),
+        people: Array.isArray(m.people) ? m.people : [],
+        locations: [m.location || ''].filter(Boolean),
+      }) || [];
+      hit = matches.find((x) => x && x.related && x.rel);
+    } catch { hit = null; }
+    if (hit) {
+      const past = String(hit.rel).replace(/\\/g, '/').split('/').map((x) => safeFolderName(x)).filter(Boolean);
+      if (past.length) return past;
+    }
+  }
 
   const subj = safeFolderName(String(m.subject || '').trim());
   if (subj) {

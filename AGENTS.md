@@ -322,6 +322,31 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20al — Tier 2 item 29: his filing history now informs filing, with no AI running.
+
+The task specified in `aj`, done to that spec. `maybeOfferLedgerProject` already matched today's card
+against projects he had filed before — behind `requireAi()`. **So his own history only helped while
+Ollama happened to be up**, though the match is JSON arithmetic.
+
+**Extracted, not reimplemented.** `matchLedgerProjects` now backs both the IPC and the ladder; the
+test asserts it is declared once and that the IPC delegates. Two copies of this scoring is exactly how
+the preview starts promising a folder the run does not use (`u`).
+
+**⚠ The safety of this rung is `related`, not the date.** The scoring marks a result related only when
+subject/people/location genuinely overlap — its own comment says why: *"so unrelated footage shot the
+same day isn't pulled into a project."* Accepting a bare date match files **a birthday into a client
+job**: confident, wrong, and buried in a folder he trusts. That break fails the test by design.
+
+Final ladder order, each rung tested against the ones either side:
+**his explicit placement → his standing rules → his filing history → subject/date → dated `_unsorted`.**
+*What he just did > what he told us to do > what he did last time > what the filename says.*
+
+Five breaks proven. **That closes the "value locked behind an unnecessary dependency" axis** — all
+three instances found this session (`ad`, `o`, `al`) are now fixed, and each turned out to be a
+feature he had already configured or answered that simply never reached the moment it mattered.
+
+vm **1456/1313/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20ak — item 26 was already correct, for a reason one "optimisation" would destroy.
 
 Checked rather than assumed: *"never re-ask a face he has already answered."* A scan starts from the

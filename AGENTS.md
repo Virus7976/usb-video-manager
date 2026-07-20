@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20d — the cross-device move: untested, and it is the ONLY path his machine takes.
+
+`moveFileCrossDevice` renames first and falls back on `EXDEV`. `EXDEV` appeared in **zero tests** —
+and it is not an edge case for him: his intake is `L:`, his Projects tree is on `C:`, so **every move
+he makes crosses a device boundary.** The fast path, the one that was covered, is the one he never
+uses.
+
+The safety property is the ORDER of the last two lines: the source is unlinked only after a full
+verified copy has landed. If the verify throws, the unlink is unreachable. Reverse them, or wrap them
+in a `finally`, and a failed move destroys the footage — the one outcome this app must never produce.
+
+`test/cross-device-move-branches.test.mjs` (5), including the one that matters most: **a cross-device
+move whose copy fails verification must leave his original exactly where it was.** Four breaks
+proven, including `finally { unlink }` (which is precisely how someone "tidying" this would break it).
+
+**⚠ MY INJECTION WAS WRONG TWICE, both times making a test pass for the wrong reason.** A blanket
+`fsp.rename` stub also breaks the rename INSIDE `stageVerifiedCopy` (tmp → dest, same directory,
+which on a real cross-device move succeeds):
+- the EXDEV version failed outright — the test caught my fixture, which is the good case;
+- the EACCES version **passed anyway**, because the fallback then threw EACCES from the inner rename
+  and the assertion could not tell that from a rethrow. Replacing the guard with a bare
+  `catch { /* fall through */ }` left it green. Both stubs now fail only the SOURCE rename.
+
+**The general rule this session keeps re-teaching, now from the injection side: a stub that is broader
+than the real failure changes which branch runs.** Simulate the specific failure, not the whole
+operation.
+
+vm **1241/1098/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20c — the integrity throw at the heart of every copy had NO test.
 
 Branch-coverage audit continued into the copy machinery. `stageVerifiedCopy` calls itself *"the one

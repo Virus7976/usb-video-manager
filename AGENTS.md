@@ -322,6 +322,35 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20w — probed the delete gate, found it solid, and updated PROMPT.md instead.
+
+Aimed round-trip probing at the highest-stakes flow: copy → record → verify → delete. Ran four
+scenarios against `delete:source` directly:
+
+| scenario | result |
+|---|---|
+| good copy | deleted ✓ |
+| corrupted copy | **refused** — "size mismatch (1300 vs 9)" |
+| copy missing | **refused** |
+| dest === source | **refused** — "the copy on record IS the source file" |
+
+**It re-verifies rather than trusting the earlier verify step, and it refuses in every bad case.** The
+most-hardened part of the app, as it should be, and `delete-gate.test.mjs` already covers these. **No
+change made** — the honest outcome when a probe finds nothing.
+
+(One fixture flaw worth noting: my "copy missing" case used `require()` inside an ESM probe, so the
+unlink silently failed and the file was still there. The refusal was still correct, but for the wrong
+reason — I only knew because the reason string said "size mismatch" rather than "copy missing". **Read
+the REASON, not just the verdict.**)
+
+So the iteration went to the standing instruction instead — keeping `PROMPT.md` current:
+- **§8b** gains the three techniques that actually produced bugs today: round-trip probing, asking what
+  the screen says when a run achieved nothing, and following data to where it is CONSUMED.
+- **new §8b-2** records **the six ways a green test lied this session**, every one found by breaking
+  rather than reading, plus the overlapping-guards rule.
+
+vm **1357/1214/143/0** (unchanged — no product code touched).
+
 ### 2026-07-20v — undo left the folders standing. Found by probing again.
 
 Pointed the round-trip technique at undo (file → undo → look). Everything it REPORTED was true — 1

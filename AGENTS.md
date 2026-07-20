@@ -322,6 +322,37 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20g — the other half of the corrupt-store chain: getting BACK from it.
+
+`f` covered detection and the block. This covers what happens next, none of which had a test —
+`storeQuarantined` appeared in **zero** test files:
+
+- **Quarantine.** A `.corrupt-<timestamp>` copy is taken **once**, so there is something he can
+  actually hand over or recover from rather than "your data is fine, trust me". Once matters:
+  `freshStore` runs on essentially every store access, and copying a multi-megabyte `people.json`
+  each time would fill his disk while he works.
+- **Recovery.** Restoring a good file re-reads it, clears the latch, and saving works again.
+
+**The recovery direction matters as much as the block.** A latch that never clears turns a transient
+problem — an antivirus lock, a network-share hiccup, a half-finished write from a crash — into a whole
+session where everything he does is silently discarded. That is worse than the corruption, because
+the corruption at least stopped.
+
+`test/corrupt-store-recovery.test.mjs` (6). Five breaks proven, including "re-read clears the latch
+even when the file is still corrupt" (which would hand back exactly the data-loss path `f` closed).
+
+**⚠ A fixture that passed for the wrong reason, and the mechanism is new.** For the size half of the
+change check I rewrote the file and restored its exact mtime — but `utimesSync` does not round-trip
+sub-millisecond precision, so the mtime came back fractionally NEWER and triggered the re-read on its
+own. The test passed with the size check deleted. It now **backdates by 5 seconds and asserts the
+resulting mtime is genuinely not newer**, so only the size branch can explain a pass.
+
+**That is the fourth blind fixture this session** (lowercase-only names, a clean NAS folder, a
+too-small file, now a not-actually-restored mtime). The rule keeps holding: *state the precondition
+your fixture depends on as an assertion, or it is a hope.*
+
+vm **1261/1118/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20f — the corrupt-store guard was tested only from the middle of the chain.
 
 The guard that stops a corrupt store being replaced by an empty one is well covered — but every

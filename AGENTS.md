@@ -322,6 +322,33 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-20an — turned the revert into a permanent test. My FIRST version of it was blind too.
+
+`am` reverted a bad rung. This makes the failure impossible to reintroduce silently: a fixture built
+like a real day of his — one date, a client lawn job AND a personal vlog — filed **twice**, asserting
+idempotence and no cross-project contamination.
+
+**Then I did the thing that mattered: I re-applied the reverted bug to check the test catches it.**
+**It did not. All six passed.** A regression test blind to the regression it was written for is worse
+than none, because it certifies the bug as fixed.
+
+**Finding out WHY produced the real mechanism**, which I had not understood when I reverted:
+
+His rule matches on subject + location + **description**. So `2026-06-01_vlog_dennis-lawn-tour` —
+subject `vlog`, description mentioning the lawn — is routed into the **client project**, and the
+ledger then records that project as containing the subject **"vlog"**. *That* is the bridge. From then
+on every vlog sharing the date overlaps the client job, and the rung drags them all in.
+
+My fixture had the two shoots but not **the clip that connects them**. One filename was the difference
+between a test that proves something and a test that proves nothing. With it added, re-applying the
+bug fails **4 of 6**.
+
+**The lesson, sharper than yesterday's:** "the fixture must fail the way reality fails" is not enough
+— *I did not know how reality failed until I forced the fixture to reproduce it.* Re-applying a
+reverted bug against its own regression test is now the only way I trust one.
+
+vm **1454/1311/143/0**, e2e **143/142/1/0**.
+
 ### 2026-07-20am — ⚠⚠ I REVERTED yesterday's ledger rung. It filed a personal vlog into a client job.
 
 `al` shipped a ledger rung with 8 passing tests, including one asserting a same-date clip with nothing

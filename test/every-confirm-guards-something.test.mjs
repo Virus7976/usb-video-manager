@@ -92,5 +92,16 @@ test('⚠ the count of confirmations has not quietly dropped', () => {
   // clips, so the scale is visible before he commits. A save point is taken BEFORE the rewrite, so
   // Edit → Version history undoes it. And nothing is pre-ticked, so "Apply" on an untouched screen
   // does nothing at all.
-  assert.equal(all, 18, `18 confirmations, each guarding footage, metadata or a long job — found ${all}`);
+  //
+  // 19 since 2026-07-20. The nineteenth is "Stop using this wireless backup folder?" (FEATURES.md
+  // item 10 — the handler existed and nothing could reach it). It is the odd one out on this list
+  // because it destroys NOTHING: it forgets a path. It asks anyway, and the wording is the reason —
+  // the folder it names is a NAS folder full of his footage, so "stop using this folder?" without
+  // further words is a question a careful person answers "no" to. The dialog says "Nothing in the
+  // folder is deleted or moved" precisely so the answer can be yes.
+  //
+  // Its sibling controls landed in the same commit and deliberately do NOT ask: turning fast
+  // transfer off flips a transport flag, and forgetting an autocomplete entry offers an inline Undo.
+  // A confirmation on either would be the app asking permission to do nothing.
+  assert.equal(all, 19, `19 confirmations, each guarding footage, metadata or a long job — found ${all}`);
 });

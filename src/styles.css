@@ -2053,6 +2053,14 @@ input.ai-input::placeholder, textarea.ai-input::placeholder { color: var(--text-
 .flyout-stack { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .flyout-desc { font-size: 11px; color: var(--text-3); line-height: 1.32; max-width: 268px; }
 .flyout-caret { margin-left: auto; padding-left: 14px; color: var(--text-3); font-size: 14px; }
+/* "Forget this suggestion" — deliberately quiet until you're on the row, so the dropdown still reads
+   as a list of values rather than a list of delete buttons. */
+.flyout-forget {
+  margin-left: auto; padding: 0 2px; color: var(--text-3); font-size: 15px; line-height: 1;
+  opacity: 0; border-radius: 4px;
+}
+.flyout-item:hover .flyout-forget, .flyout-item.combo-active .flyout-forget { opacity: 1; }
+.flyout-forget:hover { color: #e5664f; background: color-mix(in srgb, #e5664f 16%, transparent); }
 .flyout-sep { height: 1px; background: var(--divider); margin: 4px 6px; }
 .flyout-item.danger { color: #e5664f; }
 .flyout-item.danger:hover { background: color-mix(in srgb, #e5664f 16%, transparent); }

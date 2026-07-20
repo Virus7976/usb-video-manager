@@ -42,9 +42,18 @@ const preloadMethods = [...preloadSrc.matchAll(/^\s{2}([A-Za-z0-9_]+):\s*\(/gm)]
 // codebase's own lessons warn about. Trimming them is a good deliberate follow-up — each one removed
 // is one less thing an injected script can call in a webSecurity:false renderer.
 const KNOWN_UNUSED = [
-  'adbDisable', 'aiLoaded', 'aiRecallShoot', 'aiVisionAdvice', 'applyRename',
-  'clearPhoneBackupFolder', 'facesImage', 'feedbackList', 'getIntake', 'removeFieldHistory',
+  'aiLoaded', 'aiRecallShoot', 'aiVisionAdvice', 'applyRename',
+  'facesImage', 'feedbackList', 'getIntake',
 ];
+// Three came OFF this list on 2026-07-20 because they now have real UI: `adbDisable` (a "Turn off
+// fast transfer" button — there was previously no route back to MTP except hand-editing config),
+// `clearPhoneBackupFolder` (File → "Stop using the wireless backup folder"), and
+// `removeFieldHistory` (the × on a suggestion row, so a typo is no longer offered forever).
+//
+// ⚠ Note the trap that shaped one of them. `used()` matches `.${m}(`, so a RENDERER-LOCAL function
+// with the same name as the bridge method satisfies this check on its own — the first draft of the
+// backup-folder work named its renderer function `clearPhoneBackupFolder` and would have passed
+// this test while calling nothing. It is `stopWirelessBackupFolder` for exactly that reason.
 // `aiBackfillLedger` WAS on this list, and its entry recorded the check earning its keep: a test
 // mentioned backfilling but called the INTERNAL function directly, never the bridge, so a looser scan
 // had counted it as used. The stricter check was right — nothing in the app could run it.

@@ -124,6 +124,7 @@ const MENUS = {
     { sep: true },
     { label: 'Choose drive…', action: () => $('manualPickBtn').click() },
     { label: 'Phone backup folder (wireless)…', action: () => pickPhoneBackupFolder() },
+    { label: 'Stop using the wireless backup folder', action: () => stopWirelessBackupFolder() },
     { label: 'Open Uncompressed folder', action: () => window.api.openFolder(state.intakeFolder) },
     { label: 'Open Projects folder', action: async () => { try { const r = await window.api.getProjectsRoot(); if (r) window.api.openFolder(r); } catch { /* ignore */ } } },
     { sep: true },

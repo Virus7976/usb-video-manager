@@ -97,11 +97,30 @@ function openComboFlyout(input, list) {
   const menu = document.createElement('div');
   menu.className = 'flyout dropdown-menu subject-combo';
   const items = [];
+  const onRemove = input._comboRemove;   // only set for lists that can be pruned (see attachFieldCombo)
   matches.forEach((s, i) => {
     const item = document.createElement('button');
     item.className = 'flyout-item';
     item.dataset.value = s;
     item.innerHTML = `<span class="flyout-label">${escapeHtml(s)}</span>`;
+    if (onRemove) {
+      // A typo you typed once is otherwise offered back forever. The × is a child of the row
+      // button, so its mousedown MUST stop propagating or the row's own handler fills the field
+      // with the very value being deleted.
+      const x = document.createElement('span');
+      x.className = 'flyout-forget';
+      x.textContent = '×';
+      x.title = `Forget “${s}”`;
+      x.setAttribute('role', 'button');
+      x.setAttribute('aria-label', `Forget ${s}`);
+      x.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closePopover();
+        onRemove(s);
+      });
+      item.appendChild(x);
+    }
     item.addEventListener('mousedown', (e) => {
       e.preventDefault();
       input.value = s;
@@ -136,7 +155,8 @@ function moveComboHighlight(menu, delta) {
   items[idx].scrollIntoView({ block: 'nearest' });
 }
 
-function attachCombo(input, getList, getNext) {
+function attachCombo(input, getList, getNext, onRemove) {
+  if (onRemove) input._comboRemove = onRemove;
   let wrap = input.parentElement;
   let ghost;
   if (!wrap.classList.contains('combo-wrap')) {
@@ -363,6 +383,23 @@ function attachLocationCombo(input) {
   attachCombo(input, locationSuggestions, () => afterLocation(input));
 }
 function attachFieldCombo(input, fieldId) {
-  attachCombo(input, () => fieldHistoryCache[fieldId] || [], () => metaFieldNext(input));
+  attachCombo(input, () => fieldHistoryCache[fieldId] || [], () => metaFieldNext(input),
+    (value) => forgetFieldValue(fieldId, value));
+}
+
+// Drop one remembered value for a custom organizing field. This touches the suggestion list ONLY —
+// no clip, draft or filed record mentions it afterwards any less than it did before — so it asks for
+// no confirmation and offers an immediate Undo instead, which is the right trade for something you
+// reach for mid-typing.
+async function forgetFieldValue(fieldId, value) {
+  let list;
+  try { list = await window.api.removeFieldHistory(fieldId, value); } catch { showToast('Could not forget that.'); return; }
+  fieldHistoryCache[fieldId] = Array.isArray(list)
+    ? list
+    : (fieldHistoryCache[fieldId] || []).filter((v) => v !== value);
+  showToastAction(`Forgot “${value}”.`, 'Undo', async () => {
+    try { await window.api.addFieldHistory(fieldId, value); } catch { /* the toast is gone either way */ }
+    await refreshFields();
+  });
 }
 

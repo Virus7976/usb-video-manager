@@ -600,6 +600,22 @@ async function pickPhoneBackupFolder() {
     refreshDriveList();
   }
 }
+// The way back out of the wireless workflow. This forgets a PATH and nothing else — the NAS folder
+// and everything in it are untouched — so the confirmation says so rather than implying a delete.
+// There is no undo because re-setting it means picking the folder again, which is one menu item away.
+async function stopWirelessBackupFolder() {
+  const cur = (cfg && cfg.phoneBackupSource) || '';
+  if (!cur) { showToast('No wireless backup folder is set.'); return; }
+  const ok = await confirmDialog(
+    'Stop using this wireless backup folder?',
+    `${cur}\n\nIt disappears from Devices. Nothing in the folder is deleted or moved — you can pick it again any time.`,
+    'Stop using it', 'Keep it');
+  if (!ok) return;
+  try { await window.api.clearPhoneBackupFolder(); } catch { showToast('Could not clear it.'); return; }
+  cfg.phoneBackupSource = '';
+  showToast('Wireless backup folder cleared. Your NAS folder was not touched.', 5000);
+  refreshDriveList();
+}
 function refreshDriveList() {
   Promise.all([window.api.listRemovable().catch(() => []), window.api.listPhones().catch(() => [])])
     .then(([d, p]) => { lastDriveList = d || []; lastPhoneList = p || []; renderDevices(); });

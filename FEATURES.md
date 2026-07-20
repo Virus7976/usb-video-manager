@@ -107,10 +107,10 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 4 | Scan a card for video and stills | ✓ | – | – | done |
 | 5 | Find a phone over USB (MTP) and list its albums | ✓ | – | – | done |
 | 6 | Fast phone transfer over ADB | ✓ | – | – | done |
-| 7 | **Turn fast transfer back OFF** | ✓ | – | – | **dead** — `adb:disable` has no caller; if ADB flakes he is stuck |
+| 7 | **Turn fast transfer back OFF** | ✓ | – | – | done (D) — “Turn off fast transfer” on the phone card; there was previously no route back to MTP |
 | 8 | Pair a phone wirelessly (QR / manual code) | ✓ | – | – | done |
 | 9 | Watch a NAS folder a phone app uploads into | ✓ | – | – | done |
-| 10 | **Un-set that watch folder** | ✓ | – | – | **dead** — `phoneBackup:clear` has no caller |
+| 10 | **Un-set that watch folder** | ✓ | – | – | done (D) — File → “Stop using the wireless backup folder”; the dialog says nothing in it is deleted |
 | 11 | Skip files already pulled from this phone | ✓ | – | – | done |
 | 12 | Upload footage from the phone itself, resumably | – | ✓ | ✓ | partial — backend + core done and tested; **no phone UI yet** |
 | 13 | Resume an upload the phone abandoned when it slept | – | ✓ | ✓ | partial — same |
@@ -138,7 +138,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 25 | Structured fields: subject · description · location · date | ✓ | ✓ | ✓ | partial — desktop only |
 | 26 | Custom taxonomy fields he defines himself | ✓ | – | – | done |
 | 27 | Autocomplete from everything he has typed before | ✓ | ✓ | – | partial — desktop only |
-| 28 | **Prune a bad autocomplete entry** | ✓ | – | – | **dead** — `fieldHistory:remove` has no caller, so every typo is offered forever |
+| 28 | **Prune a bad autocomplete entry** | ✓ | – | – | done (D) — a × on the suggestion row, with an inline Undo |
 | 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — snap onto known subjects, add deliberately | ✓ | ✓ | ✓ | partial — engine + AI snapping + ask-on-type done (D); phone/backend todo |
 | 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | done (D) — Edit → “Tidy up subjects…”: 21 merges over 46 clips on his data, save point first, nothing pre-ticked |
 | 31 | ⚠ Flag a subject that describes the SHOT not the JOB | ✓ | ✓ | – | partial — detection done and returned; not yet surfaced in the UI |
@@ -246,9 +246,15 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 
 ## What this list says
 
-**11 capabilities are built, shipped, and unreachable** (7, 10, 28, 42, 55, 84, plus `faces:image`,
+**8 capabilities are built, shipped, and unreachable** (42, 55, 84, plus `faces:image`,
 `feedback:list`, `intake:get`, `ai:visionAdvice`, `ai:recallShoot`). He paid for those and cannot use
 them. Several are small wiring jobs.
+
+Three came off that list on 2026-07-20 — **7, 10 and 28** — and they had a shape worth naming: each
+was the *off switch* for something the app could only turn ON. Fast transfer, the wireless backup
+folder, a remembered autocomplete value. A feature is not finished at the point it can be enabled,
+and a reachability test that only asks "does a handler exist" will never notice, because in all three
+cases the handler was there and correct.
 
 **The phone is at ~10% of parity.** Exactly one workflow — the face review — is complete on every
 surface. His own parity rule says that is not "released".

@@ -85,15 +85,19 @@ async function renderPhFast() {
   // "Pair over Wi-Fi (QR)" button — works whether or not fast transfer is on yet
   // (pairing enables ADB itself), so the whole flow can be done without a cable.
   const wifiBtn = '<button type="button" class="btn ghost" id="phPairWifi">📶 Pair over Wi-Fi (QR)</button>';
+  // The way BACK. ADB is the flakier of the two transports — a phone that stops authorising, a
+  // wireless pairing that drops — and until this existed there was no route to MTP except editing
+  // config by hand, so a bad ADB day blocked every phone transfer.
+  const offBtn = '<button type="button" class="btn ghost" id="phFastOff">Turn off fast transfer</button>';
   if (st.useAdb) {
     if (st.device) {
-      el.innerHTML = st.wireless
-        ? '⚡ Fast transfer on — <b>connected wirelessly</b>. You can unplug the cable. ' + wifiBtn
-        : '⚡ Fast transfer on (USB). ' + wifiBtn;
+      el.innerHTML = (st.wireless
+        ? '⚡ Fast transfer on — <b>connected wirelessly</b>. You can unplug the cable. '
+        : '⚡ Fast transfer on (USB). ') + wifiBtn + ' ' + offBtn;
     } else if (st.unauthorized) {
-      el.innerHTML = '⚡ Fast transfer on — unlock your phone and tap <b>Allow</b> for USB debugging.';
+      el.innerHTML = '⚡ Fast transfer on — unlock your phone and tap <b>Allow</b> for USB debugging. ' + offBtn;
     } else {
-      el.innerHTML = '⚡ Fast transfer on — pair over Wi-Fi, or plug in with <b>USB debugging</b> enabled. ' + wifiBtn;
+      el.innerHTML = '⚡ Fast transfer on — pair over Wi-Fi, or plug in with <b>USB debugging</b> enabled. ' + wifiBtn + ' ' + offBtn;
     }
   } else {
     el.innerHTML = 'Transfers use MTP (slow for big camera rolls). '
@@ -107,6 +111,13 @@ async function renderPhFast() {
     if (r.unauthorized) showToast('Almost there — on your phone tap “Allow” for USB debugging, then back up.', 8000);
     else if (!r.device) showToast('Fast transfer ready. Pair over Wi-Fi, or enable USB debugging and reconnect.', 9000);
     else showToast('⚡ Fast transfer on — your phone will back up much faster now.', 5000);
+    renderPhFast();
+  });
+  const off = el.querySelector('#phFastOff');
+  if (off) off.addEventListener('click', async () => {
+    off.disabled = true;
+    try { await window.api.adbDisable(); } catch { showToast('Could not turn fast transfer off.', 5000); off.disabled = false; return; }
+    showToast('Fast transfer off — transfers use MTP again. Nothing on your phone changed.', 6000);
     renderPhFast();
   });
   const w = el.querySelector('#phPairWifi');

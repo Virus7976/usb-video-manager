@@ -322,6 +322,37 @@ folder names in a public repo.
 
 ## 7a. ⚠ IN PROGRESS
 
+### 2026-07-19bq — ⭐ the app's learning loop had never once run. Now filing teaches the ledger.
+
+`finalize:run` builds ledger entries as `{ rel: relRaw }` — `relRaw` is the destination MAP's path,
+and it is **empty on every run he makes**, because he files from step 3 without a map. And
+`recordLedgerEntries` opens with `const key = ledgerKeyFromRel(en.rel); if (!key) continue;`.
+
+**So every ledger entry from a no-plan run was silently dropped.** That is the mechanical reason his
+project ledger reads 0 — and it would have STAYED 0 after all of today's filing fixes: clips would
+land correctly and the app would learn nothing from having filed them.
+
+**This is the app's core learning loop, and it has never executed.** The ledger is what makes a later
+import from the same shoot offer the same project, and the shoot DATE is the strongest signal this app
+has (`usb-app-shoots-in-batches` — his date predicts his subject ~88% of the time). Filing 129 clips
+into `vlog/` should teach it that "vlog" exists with those dates and subjects. It never has.
+
+Fix: record where the clip ACTUALLY went — `relRaw || parts.join('/')`. An explicit map path still
+wins. `_unsorted`/`misc` are still skipped by `recordLedgerEntries`' own holding-pen rule, which is
+exactly right and now matters more: *"recording them made _Unsorted a first-class ledger project that
+polluted search_projects and date-matching."*
+
+**Verified against his real batch first:** the subject fallback from `bp` yields `vlog` 129,
+`lawn-mowing` 68, `pov` 26, `calisthenics` 17, `timelapse` 13 — real projects worth learning, not one
+bucket. (Noted for later, NOT acted on: `lawn-mowing` and `lawnmowing` are the same shoot spelled two
+ways and will make two folders. That is toolness item 39, and normalising his own text is a
+data-changing decision that needs his say-so.)
+
+`test/ledger-records-real-destination.test.mjs`, 5 tests, guard proven by breaking it. Two guard the
+other direction: an explicit plan path still wins, and holding pens never become projects.
+
+Both tiers green: vm **1096/984/112/0**, e2e **112/111/1/0**.
+
 ### 2026-07-19bp — file by the field the record HAS, not the field the config names
 
 Follow-on from `bo`, and it changes where his 310 clips actually land. His clips are app-named by the

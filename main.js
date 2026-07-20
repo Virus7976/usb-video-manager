@@ -8600,7 +8600,17 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
           // (usb-app-shoots-in-batches). Two filing paths that disagree about learning is exactly the
           // divergence PROMPT.md §2 warns about.
           ledgerEntries.push({
-            rel: relRaw,
+            // WHERE IT ACTUALLY WENT, not where a plan said. `relRaw` is the destination MAP's path,
+            // and it is empty on every run he makes — he files from step 3 without a map — so
+            // recordLedgerEntries dropped the entry outright (`if (!key) continue`). That is why his
+            // project ledger reads 0, and it would have stayed 0 after today's filing fixes: clips
+            // would land correctly and the app would learn nothing from it.
+            //
+            // The ledger is what makes a later import from the same shoot offer the same project,
+            // and the shoot date is the strongest signal this app has. Recording the real folder is
+            // what finally starts that loop. `_unsorted`/`misc` are still skipped by
+            // recordLedgerEntries' own holding-pen rule — a dated holding pen is not a project.
+            rel: relRaw || parts.join('/'),
             name: path.basename(r.path),
             date: meta.date || '',
             subject: meta.subject || '',

@@ -1130,7 +1130,23 @@ async function askAboutShoots(clips) {
   // named clips from — re-asking a settled shoot is the app forgetting, which is the one thing he
   // told us never to do.
   const list = (clips || []).filter(Boolean);
-  const dates = list.map((c) => c && c.date).filter(Boolean);
+  // ⚠ THE DATE LIVES IN TWO DIFFERENT PLACES depending on which screen called us, and reading only
+  // one of them is why this feature has never once fired for him.
+  //
+  // Card-flow clips (state.scannedFiles) carry a TOP-LEVEL `.date` — 09-phone-finalize.js:492 sets
+  // it from captureDateFor(). Organize/Finalize clips do NOT: `finalize:scan` returns
+  // { name, sourcePath, size, isPhoto, matched, matchType, meta, filed, filedIn }
+  // (main-mod/09-ipc-boot.js:447) and the date lives at `f.meta.date`. The mirror at
+  // 09-phone-finalize.js:2023 copies meta.subject and meta.description onto the clip for the
+  // conveyor caption — but NOT the date.
+  //
+  // So on the Organize path `dates` was always empty → ai:shootsToAsk([]) → {shoots:[]} → an early
+  // return before anything rendered. And Organize is the path most of his library goes through.
+  // That is why his shootMemory reads 0 entries while the feature looks wired, and why
+  // `get_shoot_context` never receives `he_told_you_this_shoot_is` — the single strongest naming
+  // signal the AI has.
+  const clipShootDate = (c) => (c && (c.date || (c.meta && c.meta.date))) || '';
+  const dates = list.map(clipShootDate).filter(Boolean);
   let shoots = [];
   try {
     const r = await window.api.aiShootsToAsk(dates);
@@ -1140,7 +1156,9 @@ async function askAboutShoots(clips) {
 
   // One card per shoot, carrying its clips so we can show a real thumbnail and a real count.
   const groups = shoots.map((date) => {
-    const clips = list.filter((c) => c && c.date === date);
+    // Same two-shape read as above — grouping on `c.date` alone would find nothing on the Organize
+    // path even once `dates` was populated, and the function would still return before rendering.
+    const clips = list.filter((c) => clipShootDate(c) === date);
     return { date, clips, chosen: '' };
   }).filter((g) => g.clips.length);
   if (!groups.length) return;
@@ -1209,14 +1227,48 @@ async function askAboutShoots(clips) {
       // he typed himself outranks anything the app infers, and silently replacing it would be the
       // worst possible reward for answering.
       let filled = 0;
+      // ⚠ WRITE TO THE FIELD THAT SCREEN ACTUALLY PERSISTS. On the card flow that is `c.subject`,
+      // carried by the draft store. On Organize it is `f.meta.subject`, persisted via saveFinalMeta —
+      // `f.subject` there is only the conveyor-caption mirror (09-phone-finalize.js:2023), so writing
+      // it alone changed nothing he could see (the row draws from finMetaChips(f.meta)) and nothing
+      // that survived. He would answer, read a toast claiming N clips were named, and find N empty
+      // subject fields.
+      //
+      // Discriminating on `'meta' in c`, not `!!c.meta`: finalize:scan sets `meta: rec` where rec is
+      // NULL on a total miss, so a truthiness test would send an unmatched Organize row down the card
+      // branch. Such a row also has no meta.date, so it can't reach here today — but the key presence
+      // is the honest test and costs nothing.
+      const isOrganizeClip = (c) => !!(c && c.sourcePath && 'meta' in c);
+      let touchedOrganize = false; let touchedCard = false;
       for (const c of groups[i].clips) {
-        if (!c || (c.subject || '').trim()) continue;
-        c.subject = v;
+        if (!c) continue;
+        const organize = isOrganizeClip(c);
+        const cur = organize ? ((c.meta && c.meta.subject) || '') : (c.subject || '');
+        if (cur.trim()) continue;                    // still a default, never an overwrite
+        if (organize) {
+          c.meta = c.meta || {};
+          c.meta.subject = v;
+          c.subject = v;                             // keep the caption mirror in step
+          c.matched = true; c.matchType = 'saved';   // matches what applyNaming records
+          try { window.api.saveFinalMeta({ [c.name]: { ...c.meta } }); } catch { /* non-fatal */ }
+          touchedOrganize = true;
+        } else {
+          c.subject = v;
+          touchedCard = true;
+        }
         filled += 1;
       }
       if (filled) {
-        try { refreshNames(); } catch { /* the grid still closes fine */ }
-        try { scheduleDraftSave(); } catch { /* saved on the next edit anyway */ }
+        // Repaint whichever list is actually on screen. refreshNames/scheduleDraftSave both walk
+        // state.scannedFiles — the CARD array — so on the Organize path they either no-op or re-save
+        // the previous card batch's drafts.
+        if (touchedCard) {
+          try { refreshNames(); } catch { /* the grid still closes fine */ }
+          try { scheduleDraftSave(); } catch { /* saved on the next edit anyway */ }
+        }
+        if (touchedOrganize && typeof finRenderList === 'function') {
+          try { finRenderList(); } catch { /* the Organize list may not be mounted */ }
+        }
         showToast(`${filled} clip${filled !== 1 ? 's' : ''} from ${groups[i].date} named “${v}” — change any of them if it is wrong.`, 5000);
       }
       render();

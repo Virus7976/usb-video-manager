@@ -36,7 +36,12 @@ test('⚠ answering a shoot names that day\'s clips', () => {
 test('⚠⚠ it never overwrites a subject he typed himself', () => {
   // The property that decides whether answering is safe. Without it, one answer could wipe names he
   // had already entered on that day.
-  assert.match(pickFn, /if \(!c \|\| \(c\.subject \|\| ''\)\.trim\(\)\) continue;/,
+  // Read per-path since 2026-07-20: on Organize the authoritative field is c.meta.subject, and
+  // checking c.subject there would compare against a display mirror — i.e. it would think an
+  // already-named clip was empty and overwrite it. The guard is the same; the field it reads is not.
+  assert.match(pickFn, /const cur = organize \? \(\(c\.meta && c\.meta\.subject\) \|\| ''\) : \(c\.subject \|\| ''\);/,
+    'the existing value is read from whichever field that screen persists');
+  assert.match(pickFn, /if \(cur\.trim\(\)\) continue;/,
     'a clip that already has a subject is skipped entirely');
 });
 

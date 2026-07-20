@@ -123,7 +123,7 @@ const MENUS = {
     { sep: true },
     { label: 'Choose drive…', action: () => $('manualPickBtn').click() },
     { label: 'Phone backup folder (wireless)…', action: () => pickPhoneBackupFolder() },
-    { label: 'Open intake folder', action: () => window.api.openFolder(state.intakeFolder) },
+    { label: 'Open Uncompressed folder', action: () => window.api.openFolder(state.intakeFolder) },
     { label: 'Open Projects folder', action: async () => { try { const r = await window.api.getProjectsRoot(); if (r) window.api.openFolder(r); } catch { /* ignore */ } } },
     { sep: true },
     { label: 'Quit', action: () => window.api.quit() }
@@ -199,7 +199,7 @@ const MENUS = {
     { label: 'Show notifications', type: 'check', checked: () => uiPrefs.notifications, action: () => togglePref('notifications') },
     { sep: true },
     { label: 'Back to home', action: goHome },
-    { label: 'Open intake folder', action: () => window.api.openFolder(state.intakeFolder) }
+    { label: 'Open Uncompressed folder', action: () => window.api.openFolder(state.intakeFolder) }
   ],
   help: [
     { label: 'Setup wizard…', action: () => showSetupWizard() },
@@ -762,7 +762,7 @@ function showKeyboardShortcuts() {
 function showSettingsHub() {
   const ov = document.createElement('div'); ov.className = 'modal-overlay';
   const cards = [
-    { ic: '⚙️', title: 'Preferences', sub: 'Drive, intake folder, copy behaviour, text shortcuts', go: showPreferences },
+    { ic: '⚙️', title: 'Preferences', sub: 'Drive, Uncompressed folder, copy behaviour, text shortcuts', go: showPreferences },
     { ic: '✨', title: 'AI', sub: 'Models, analysis, instructions, memory, faces', go: showAiSettings },
     { ic: '⌨️', title: 'Keyboard shortcuts', sub: 'Rebind keys, DaVinci-style', go: showKeyboardShortcuts },
     { ic: '🗂️', title: 'Organizing fields', sub: 'The metadata fields used to file footage', go: showOrganizeFields },
@@ -967,7 +967,7 @@ function showSetupWizard(opts = {}) {
       card.querySelectorAll('.wiz-pick').forEach((b) => { b.onclick = async () => {
         const tgt = b.dataset.tgt;
         const cur = tgt === 'intake' ? wz.intake : tgt === 'projects' ? wz.projects : wz.nas.path;
-        const titles = { intake: 'Choose your intake folder', projects: 'Choose your Projects root', nas: 'Choose a NAS / backup folder' };
+        const titles = { intake: 'Choose your Uncompressed folder', projects: 'Choose your Projects root', nas: 'Choose a NAS / backup folder' };
         const picked = await window.api.pickFolder({ title: titles[tgt], defaultPath: cur || undefined });
         if (!picked) return;
         if (tgt === 'intake') { wz.intake = picked; const el = card.querySelector('#wizIntake'); if (el) el.value = picked; }

@@ -37,13 +37,19 @@ test('⚠ askAboutShoots takes CLIPS, not indices into one screen\'s array', () 
 });
 
 test('the dates come from the clips it was given', () => {
-  assert.match(askFn, /const dates = list\.map\(\(c\) => c && c\.date\)\.filter\(Boolean\);/, 'dates from the list');
+  // Reads BOTH shapes since 2026-07-20. Card clips carry a top-level .date; finalize:scan rows keep
+  // it at .meta.date. Reading c.date alone meant `dates` was always empty on the Organize path, so
+  // this feature returned early and never once fired there — the reason shootMemory reads 0.
+  assert.match(askFn, /const clipShootDate = \(c\) => \(c && \(c\.date \|\| \(c\.meta && c\.meta\.date\)\)\) \|\| '';/,
+    'one accessor for both clip shapes');
+  assert.match(askFn, /const dates = list\.map\(clipShootDate\)\.filter\(Boolean\);/, 'dates from the list');
 });
 
 test('and so do the per-shoot groups', () => {
   // The groups drive the thumbnail and the "N clips" count on each card. Building them from a
   // different source than the dates is how a card ends up saying 0 clips.
-  assert.match(askFn, /const clips = list\.filter\(\(c\) => c && c\.date === date\);/, 'groups from the same list');
+  assert.match(askFn, /list\.filter\(\(c\) => clipShootDate\(c\) === date\)/,
+    'groups from the same list, through the same accessor — otherwise it returns before rendering');
 });
 
 test('⚠ the CARD flow still asks — it maps its indices at the call site', () => {

@@ -377,10 +377,29 @@ function renderDevices() {
     </button>`;
   }).join('');
   host.innerHTML = `<p class="section-label">Devices · ${drives.length + phones.length + (pbSrc ? 1 : 0)}</p>${phoneCards}${pbCard}${driveCards}`;
+  // ⚠ A DEVICE CARD NAVIGATES. All three kinds render identically — same `.settings-card action`,
+  // same `›` chevron — but only the phone one used to go anywhere: `onDrive()` merely set
+  // `state.drive` and then explicitly HID the flow. So clicking the big SD-card row barely changed
+  // the screen, and a first-time user with a card plugged in had to notice a separate "Import, Rename
+  // & Clear card" action above it. Plug a phone in and the identical-looking row jumped straight into
+  // a flow. Same affordance, opposite behaviour.
+  //
+  // Selecting the drive first is still required — startFlow() reads `state.drive` and would
+  // re-prompt for a source without it.
+  const openDrive = async (drive) => {
+    onDrive(drive);
+    // onDrive already redirects to the copy progress screen when a transfer is running; entering the
+    // flow on top of that would stack two screens (the same bug the copy chip has).
+    try {
+      const cs = await window.api.copyStatus();
+      if (cs && cs.active) return;
+    } catch { /* can't tell — fall through and open the flow */ }
+    startFlow();
+  };
   host.querySelectorAll('.dl-card').forEach((b) => b.addEventListener('click', () => {
     if (b.dataset.kind === 'phone') openPhone(phones[Number(b.dataset.i)]);
-    else if (b.dataset.kind === 'pbfolder') onDrive({ mountpoint: pbSrc, description: 'Phone backup folder' });
-    else onDrive(drives[Number(b.dataset.i)]);
+    else if (b.dataset.kind === 'pbfolder') openDrive({ mountpoint: pbSrc, description: 'Phone backup folder' });
+    else openDrive(drives[Number(b.dataset.i)]);
   }));
 }
 // Auto mode: pick a device and the app runs the whole backup itself (scan → pull →
@@ -1213,15 +1232,19 @@ function maybeOfferBatchStart() {
   ov.querySelector('.mob-tour').addEventListener('click', () => { close(); showWorkflowGuide(); });
 }
 
-$('cancelFlowBtn').addEventListener('click', () => {
-  $('flow').classList.add('hidden');
-  $('actionList').classList.remove('hidden'); $('driveList').classList.remove('hidden'); showHomeExtras();
-  // Cancelling is a decision to LEAVE this card. It never cleared the saved session, so the next
-  // launch resumed straight back into the card you had just deliberately backed out of. goHome()
-  // has always done this correctly — Cancel just never did.
-  saveSession({ view: 'home' });
-  state.copied = [];   // the copy→verify→delete session ends here, same as goHome
-});
+// ⚠ Cancel IS going home, so it calls goHome() rather than reimplementing it.
+//
+// It used to be a hand-rolled copy that had drifted from the real thing in five ways, and one of
+// them could cost him footage: it never called `confirmLeaveTransfer()`. So "Back to home" from every
+// other screen warned him mid-copy, and this one button — the one literally labelled Cancel, on the
+// screen where a copy is running — walked out silently. It also skipped `closePopover()`, left
+// `#finalize`/`#phone` visible (so Home could render stacked under another screen), never re-showed
+// `driveBanner`, and never called `refreshDriveList()`/`renderPendingWork()`, so Home came back with
+// a stale device list and stale "footage waiting" counts.
+//
+// This is the same class of bug as the twin screens elsewhere in this app: a second implementation of
+// one behaviour, drifting apart silently. There should be exactly one way to leave.
+$('cancelFlowBtn').addEventListener('click', () => { goHome(); });
 
 // ---------------------------------------------------------------------------
 // Structured naming:  yyyy-mm-dd_subject_description_v#

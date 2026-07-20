@@ -161,11 +161,20 @@ test('a step pill that refuses to open SAYS WHY', () => {
 });
 
 test('Cancel leaves the flow properly — it does not resume you back into the card you just left', () => {
+  // 2026-07-20: Cancel no longer reimplements this — it calls goHome(). It had drifted five ways
+  // from the real thing, and one of them skipped confirmLeaveTransfer(), so the button labelled
+  // Cancel on the screen where a copy runs walked out with no warning. So the property is now
+  // asserted where it LIVES, plus the delegation that carries it.
   const core = mod('01-core.js');
-  const h = core.slice(core.indexOf("$('cancelFlowBtn').addEventListener"));
-  const body = h.slice(0, h.indexOf('\n});'));
+  assert.match(core, /\$\('cancelFlowBtn'\)\.addEventListener\('click', \(\) => \{ goHome\(\); \}\);/,
+    'Cancel delegates instead of reimplementing');
+  const people = mod('08-people.js');
+  const at = people.indexOf('async function goHome');
+  assert.ok(at > -1, 'found goHome');
+  const body = people.slice(at, people.indexOf('\n}', at));
   assert.match(body, /saveSession\(\{ view: 'home' \}\)/, 'the resume session is cleared');
-  assert.match(body, /state\.copied = \[\]/, 'and the delete session ends, as it does in goHome');
+  assert.match(body, /state\.copied = \[\]/, 'and the delete session ends');
+  assert.match(body, /confirmLeaveTransfer\(\)/, 'and leaving mid-copy still warns — what Cancel used to skip');
 });
 
 test('Apply confirms before moving, and offers the undo that already existed', () => {

@@ -281,7 +281,6 @@ $('finNasBrowse').addEventListener('click', async () => {
 
 $('finOpenDestBtn').addEventListener('click', () => window.api.openFolder(finEffectiveDest() || finScan.dir));
 $('finMapBtn').addEventListener('click', showDestinationMapAuto);
-$('finMap2Btn').addEventListener('click', showDestinationMapAuto);
 
 // Step 3 — run
 $('finRunBtn').addEventListener('click', async () => {

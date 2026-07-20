@@ -1450,15 +1450,40 @@ function clipKeyMatches(a, b) {
   return !!sx && sx === sy;
 }
 
+// ⚠ finalMeta IS NOT CLIP-KEYED. It is keyed by lower-cased FILE NAME (`store[name.toLowerCase()]`
+// at :1282), while every key the face code sends is a clipKeyV2 (`name__size__mtime`).
+// `clipKeyMatches` cannot bridge that: a bare filename has no `__`, so `clipKeyStem` returns '' and
+// the function returns false for EVERY comparison. So the finalMeta half of clips:tagPerson and
+// clips:untagPerson was dead code — and the finalMeta half is precisely the case the feature's own
+// comment says it exists for ("a cluster restored from faces-pending.json legitimately references
+// clips from EARLIER sessions — already renamed, already filed").
+//
+// Result: confirming a face tagged nothing durable for any clip he had already filed. The drafts
+// half worked, so it only ever tagged clips still sitting in the draft store.
+//
+// Deliberately NOT folded into clipKeyMatches. That function is also used to DELETE drafts (:1123)
+// and copiedLog entries (:1253); loosening it to accept bare names would widen those deletes, which
+// is a data-loss risk for a tagging fix. Name-only is the finest granularity finalMeta has — the
+// store itself cannot distinguish two same-named clips — so this matcher is as precise as the data.
+function clipKeyFileName(k) {
+  const s = String(k || '');
+  const i = s.indexOf('__');
+  return (i < 0 ? s : s.slice(0, i)).toLowerCase();
+}
+function finalMetaKeyMatches(clipKeyOrName, storeKey) {
+  const a = clipKeyFileName(clipKeyOrName);
+  return !!a && a === clipKeyFileName(storeKey);
+}
+
 ipcMain.handle('clips:tagPerson', (_evt, payload) => {
   const name = String((payload && payload.name) || '').trim();
   const keys = Array.isArray(payload && payload.keys) ? payload.keys.map((k) => String(k || '')).filter(Boolean) : [];
   if (!name || !keys.length) return { ok: false, tagged: 0 };
   let tagged = 0;
-  const apply = (store) => {
+  const apply = (store, matches) => {
     for (const k of Object.keys(store)) {
       // #8: match across key forms, not by exact string — see clipKeyMatches.
-      if (!keys.some((w) => clipKeyMatches(w, k))) continue;
+      if (!keys.some((w) => matches(w, k))) continue;
       const rec = store[k]; if (!rec) continue;
       const cur = Array.isArray(rec.people) ? rec.people : [];
       if (cur.includes(name)) continue;         // idempotent: re-confirming must not duplicate
@@ -1466,8 +1491,8 @@ ipcMain.handle('clips:tagPerson', (_evt, payload) => {
       tagged += 1;
     }
   };
-  apply(currentFinalMeta());
-  apply(currentDrafts());
+  apply(currentFinalMeta(), finalMetaKeyMatches);   // name-keyed store — see the note above
+  apply(currentDrafts(), clipKeyMatches);           // clip-keyed store
   // Sidecar stores — persist directly. A plain saveConfig() would STRIP finalMeta/renameDrafts from
   // config.json and never write the sidecars, losing the tag (same trap as clips:retagPerson).
   if (tagged) { saveStore('finalMeta'); saveStore('renameDrafts'); }
@@ -1487,19 +1512,24 @@ ipcMain.handle('clips:untagPerson', (_evt, payload) => {
   const keys = Array.isArray(payload && payload.keys) ? payload.keys.map((k) => String(k || '')).filter(Boolean) : [];
   if (!name || !keys.length) return { ok: false, untagged: 0 };
   let untagged = 0;
-  const apply = (store) => {
+  const apply = (store, matches) => {
     for (const k of Object.keys(store)) {
       // #8: the SAME cross-form match as its sibling. Undo has to reach whatever tagPerson reached —
       // an exact-match untag against a migrated draft would leave the tag behind permanently.
-      if (!keys.some((w) => clipKeyMatches(w, k))) continue;
+      //
+      // And the same finalMeta caveat: that store is keyed by file NAME, so it needs
+      // finalMetaKeyMatches. Passing clipKeyMatches here matched nothing, which meant Undo could not
+      // reach a filed clip even once tagPerson could — the asymmetry that leaves a tag stuck on
+      // footage forever with no way to remove it from the UI.
+      if (!keys.some((w) => matches(w, k))) continue;
       const rec = store[k]; if (!rec || !Array.isArray(rec.people)) continue;
       if (!rec.people.includes(name)) continue;
       rec.people = rec.people.filter((n) => n !== name);
       untagged += 1;
     }
   };
-  apply(currentFinalMeta());
-  apply(currentDrafts());
+  apply(currentFinalMeta(), finalMetaKeyMatches);
+  apply(currentDrafts(), clipKeyMatches);
   // Sidecar stores — persist directly (saveConfig() would strip them; same trap as clips:tagPerson).
   if (untagged) { saveStore('finalMeta'); saveStore('renameDrafts'); }
   return { ok: true, untagged };

@@ -7,7 +7,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-_(nothing yet)_
+### Filing is the first thing Home offers you (2026-07-23)
+
+Your interaction log covers 1,487 clicks over 14 days: 226 face confirmations, 354 typed fields,
+48 "Select all" — and **zero** visits to the Organize screen. Not few. None.
+
+Meanwhile filing works. Driven directly against your real layout it moved 309 clips into 47 folders
+with no errors. The back half of this app is correct and you have never been on it.
+
+Part of the reason: "footage ready to organize" was the **third** card on Home, behind 458 pending
+faces and 700 staged phone videos. Both of those are preparation. Filing is the payoff. Putting
+preparation first is how you end up doing 267 face decisions and filing nothing.
+
+It's first now. It still only appears when there's actually something to file.
 
 ## [0.6.1] — 2026-07-23
 

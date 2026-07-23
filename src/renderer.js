@@ -467,26 +467,16 @@ async function renderPendingWork() {
   const facesWaiting = (w && w.facesPending) || 0;
 
   const cards = [];
-  if (facesWaiting) {
-    cards.push(`<button type="button" class="settings-card action pw-card" id="pwFaces">
-        <span class="sc-icon accent">${DL_ICON_PEOPLE}</span>
-        <span class="sc-text">
-          <span class="sc-title">Faces waiting to be named</span>
-          <span class="sc-sub"><b>${facesWaiting}</b> face${facesWaiting !== 1 ? 's' : ''} left · answer a few, it remembers the rest</span>
-        </span>
-        <span class="pw-cta">Continue<span class="pw-chev">›</span></span>
-      </button>`);
-  }
-  if (phoneStaged) {
-    cards.push(`<button type="button" class="settings-card action pw-card" id="pwPhone">
-        <span class="sc-icon accent">${DL_ICON_PHONE}</span>
-        <span class="sc-text">
-          <span class="sc-title">Phone media waiting</span>
-          <span class="sc-sub"><b>${phoneStaged}</b> video${phoneStaged !== 1 ? 's' : ''} pulled · name &amp; organize without reconnecting</span>
-        </span>
-        <span class="pw-cta">Continue<span class="pw-chev">›</span></span>
-      </button>`);
-  }
+  // ⚠⚠ FILING GOES FIRST. Measured on his real interaction log: 1,487 clicks over 14 days,
+  // 226 "✓ Yes" face confirmations, 354 typed fields — and 0 clicks on the Organize screen. Ever.
+  //
+  // This card used to sit THIRD, behind 458 pending faces and 700 staged phone videos. Both of those
+  // are preparation; filing is the payoff. Ordering preparation above payoff means he reliably does
+  // the work and reliably never collects — which is the whole diagnosis of this app: a very good
+  // scanner and analyser, and a never-finished filer.
+  //
+  // The filing pipeline itself works (309 clips into 47 folders, 0 errors, when driven directly).
+  // What was missing was a reason to ever be on that screen.
   if (ready || uncompressed || uncPhotos) {
     const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} analysed` : ''}` : '';
     let uncLine = '';
@@ -510,6 +500,27 @@ async function renderPendingWork() {
           <span class="sc-sub">${sub}</span>
         </span>
         <span class="pw-cta">${cta}<span class="pw-chev">›</span></span>
+      </button>`);
+  }
+
+  if (facesWaiting) {
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwFaces">
+        <span class="sc-icon accent">${DL_ICON_PEOPLE}</span>
+        <span class="sc-text">
+          <span class="sc-title">Faces waiting to be named</span>
+          <span class="sc-sub"><b>${facesWaiting}</b> face${facesWaiting !== 1 ? 's' : ''} left · answer a few, it remembers the rest</span>
+        </span>
+        <span class="pw-cta">Continue<span class="pw-chev">›</span></span>
+      </button>`);
+  }
+  if (phoneStaged) {
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwPhone">
+        <span class="sc-icon accent">${DL_ICON_PHONE}</span>
+        <span class="sc-text">
+          <span class="sc-title">Phone media waiting</span>
+          <span class="sc-sub"><b>${phoneStaged}</b> video${phoneStaged !== 1 ? 's' : ''} pulled · name &amp; organize without reconnecting</span>
+        </span>
+        <span class="pw-cta">Continue<span class="pw-chev">›</span></span>
       </button>`);
   }
   // WHAT HE HAS ACTUALLY FINISHED (Tier 1 item 7 — "make the payoff visible, not buried").

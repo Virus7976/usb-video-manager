@@ -362,7 +362,17 @@ ipcMain.handle('pending:work', async () => {
   // 203/203 file cleanly).
   let uncompressedPhotos = 0;
   try { uncompressedPhotos = (await listImagesShallow(intakeDir)).length; } catch { /* ignore */ }
-  if (readyDir && readyDir !== intakeDir) {
+  // ⚠⚠ THE SAME "offline is not empty" RULE, one level up — and here it is worse.
+  //
+  // `finalize:scan` now says plainly when a folder is unreachable. This one fed the Home card, and an
+  // unreachable archive produced `ready: 0` — so the card simply DISAPPEARED. He opens the app with
+  // his `L:` drive unplugged and there is no footage waiting, no explanation, and nothing to click.
+  // A wrong number is bad; a silently missing card is worse, because there is nothing to question.
+  let readyUnreachable = false;
+  if (readyDir) {
+    try { await fsp.access(readyDir); } catch { readyUnreachable = true; }
+  }
+  if (readyDir && !readyUnreachable && readyDir !== intakeDir) {
     try {
       const files = await listVideosShallow(readyDir);
       readyTotal = files.length;
@@ -404,7 +414,7 @@ ipcMain.handle('pending:work', async () => {
     if (Array.isArray(pend)) facesPending = pend.filter((c) => c && !c.done && !c.skipped && !c.rejected).length;
   } catch { facesPending = 0; }
 
-  return { ok: true, intakeDir, readyDir, uncompressed, uncompressedPhotos, ready, readyTotal, readyAnalyzed, facesPending };
+  return { ok: true, intakeDir, readyDir, readyUnreachable, uncompressed, uncompressedPhotos, ready, readyTotal, readyAnalyzed, facesPending };
 });
 
 // Scan the (top level of the) Compressed folder and match each file to a stored
@@ -435,6 +445,28 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     ? (config.compressedFolder ? 'compressed' : (config.intakeFolder ? 'intake' : ''))
     : '';
   if (!dir) return { ok: false, error: 'No folder chosen' };
+
+  // ⚠⚠ "OFFLINE" AND "EMPTY" ARE DIFFERENT STATES — his own rule, from the Android app this one is
+  // measured against: *a fetch that failed must never render as "you have nothing".*
+  //
+  // `listVideosShallow` catches its own errors and returns `[]`, so an unreachable folder produced
+  // `{ ok: true, total: 0 }` — byte-identical to a folder with nothing in it. His archive lives on
+  // `L:`, which is not always connected. Measured: with the folder present, 5 files; with it gone,
+  // `ok:true total:0 error:none`. The app would have told him he had nothing to organize while it
+  // simply could not see 310 clips.
+  //
+  // A missing drive is not a failure to report as an error either — it is a fact to state plainly,
+  // so this returns ok:false with `unreachable` for the UI to word properly.
+  try {
+    await fsp.access(dir);
+  } catch {
+    return {
+      ok: false,
+      unreachable: true,
+      dir,
+      error: `Can’t reach ${dir} right now — if that drive is unplugged or the network share is offline, your footage is still there. Reconnect it and try again.`,
+    };
+  }
   let files;
   // COUNT THE PHOTOS EVEN WHEN WE ARE NOT LISTING THEM. Measured on his real setup: `01 - Uncompressed`
   // holds 203 app-named stills, and photos are never compressed, so they never reach the Compressed

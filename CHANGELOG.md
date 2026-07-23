@@ -7,7 +7,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-_(nothing yet)_
+### An unplugged drive no longer looks like "you have nothing" (2026-07-23)
+
+Your archive lives on `L:`, which isn't always connected. When it wasn't, the app couldn't tell the
+difference between *"that drive is offline"* and *"that folder is empty"* — so Organize said you had
+nothing to file, and Home's card **disappeared entirely**. No footage waiting, no explanation,
+nothing to click.
+
+Now it says so, and leads with the part that matters: **nothing is lost, the app just can't see the
+folder right now.** The card names the folder and takes you somewhere you can reconnect or repoint it.
+
+A folder you've genuinely emptied is still just empty — the warning would be worthless if it cried
+wolf at every cleared folder.
 
 ## [0.7.0] — 2026-07-23
 

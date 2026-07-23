@@ -477,6 +477,26 @@ async function renderPendingWork() {
   //
   // The filing pipeline itself works (309 clips into 47 folders, 0 errors, when driven directly).
   // What was missing was a reason to ever be on that screen.
+  // ⚠⚠ AN UNREACHABLE ARCHIVE GETS ITS OWN CARD — it is not "nothing to do".
+  //
+  // His footage lives on `L:`, which is not always plugged in. Without this the card simply vanished:
+  // `pending:work` reported `ready: 0` for an unreadable folder exactly as it does for an empty one,
+  // so Home showed nothing waiting, no explanation, and nothing to click. His own rule, from the
+  // Android app this one is measured against: *a fetch that failed must never render as "you have
+  // nothing"* — so a crew member with no signal is not told their data does not exist.
+  //
+  // It leads with the reassurance, because that is the actual question in his head: the footage is
+  // fine, the app just cannot see it right now.
+  if (w && w.readyUnreachable) {
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwOffline">
+        <span class="sc-icon">${PW_ICON_FILM}</span>
+        <span class="sc-text">
+          <span class="sc-title">Your footage folder isn’t reachable</span>
+          <span class="sc-sub muted small">Nothing is lost — the app just can’t see <b>${escapeHtml(w.readyDir || '')}</b> right now. Reconnect the drive, or pick a different folder.</span>
+        </span>
+        <span class="sc-chev">${CHEV}</span>
+      </button>`);
+  }
   if (ready || uncompressed || uncPhotos) {
     const readyLine = ready ? `<b>${ready}</b> clip${ready !== 1 ? 's' : ''} ready to organize${analyzed ? ` · ${analyzed} analysed` : ''}` : '';
     let uncLine = '';
@@ -552,6 +572,8 @@ async function renderPendingWork() {
   if (!cards.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
   host.innerHTML = cards.join('');
   host.classList.remove('hidden');
+  const off = host.querySelector('#pwOffline');
+  if (off) off.addEventListener('click', () => { try { showFoldersAndSetup(); } catch { /* non-fatal */ } });
   const go = host.querySelector('#pwGo');
   if (go) go.addEventListener('click', () => openFinalize());
   // Straight to the tree itself — the whole point is that the result is a real folder he can open.

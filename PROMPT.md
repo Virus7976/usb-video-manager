@@ -874,6 +874,22 @@ drifts. See memory `usb-app-defaults-then-presets`.
 
 ---
 
+## 8j. ⚠ LOOP CADENCE (Jake, 2026-07-22): EVERY ITERATION UNDER 2 MINUTES
+
+> *"Also make it a rule for looping that it has to be under 2 minutes."*
+
+`ScheduleWakeup` in dynamic mode must use **`delaySeconds` ≤ 120** (the runtime floor is 60, so the
+usable window is 60–120). This supersedes the tool's own "lean 1200–1800s" guidance and any earlier
+note in this file about long fallback heartbeats.
+
+**This does NOT shrink the work.** §8 still stands: each iteration is a broad analysis plus a large
+batch. The two rules combine to mean *keep the work big and the gaps between check-ins small* — do
+not turn a 2-minute cadence into 2 minutes of work, and do not end a turn early just to hit the
+cadence. Long-running things (subagent audits, e2e runs, builds) keep running across wake-ups and
+notify on completion; the short wake-up is a heartbeat, not a deadline for the batch.
+
+---
+
 ## 8h. ⚠ FEATURES.md IS THE ROADMAP — read it before choosing work.
 
 Jake asked (2026-07-20) for "100 things the app should be able to do… build it as a feature into

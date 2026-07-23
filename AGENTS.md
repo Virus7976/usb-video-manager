@@ -5518,6 +5518,40 @@ assert identity, not size.**
 
 Tests: `test/backfill-never-shrinks-the-ledger.test.mjs` (7), each break-verified.
 
+### 2026-07-23 — A setting the app changed on his behalf silently invalidated a setting he made
+
+His two standing filing rules store `dest = "2026/2026 - Client Work/Gourgess Lawns"` while
+`projectsRoot` is `...\02 - Projects\2026`. So `resolveFolderPath` produced
+`.../02 - Projects/2026/**2026**/2026 - Client Work/...` — the root's own name twice — beside the
+folder he actually uses. **117 of 309 clips** would have filed into that duplicate tree, and the
+other 154 would have created bare top-level folders in his year root (`vlog/`, `pov/`, `delete/`).
+
+**It is the app's fault, and that is the lesson.** The Filing-rules picker offers paths relative to
+`projectsRoot`, so `2026/...` was correct when he saved those rules. Then he clicked the AI health
+card's *"No Projects folder set → Use that folder"*, which called `setProjectsRoot(defaultProjectsRoot())`
+and moved the root one level deeper — and **nothing revalidates a stored path when the setting it was
+relative to changes.** Any setting stored RELATIVE to another setting needs a revalidation path, or a
+convenience click can quietly invalidate work the user did by hand months earlier.
+
+The repair (`stripStaleRootPrefix`, `main-mod/02-media.js`) is deliberately narrow: it fires only
+when the first segment loosely matches the root's own name AND the de-prefixed path exists AND the
+prefixed path does not. It can only ever prefer a folder he already has — the same rule the ladder
+already follows for case and separators — and it declines on a genuinely nested `2026/2026/`.
+
+⚠ **Two fixture/assertion traps caught by breaking, both mine:**
+
+1. **The fixture must be his SHAPE, not just his strings.** The root has to be a folder literally
+   named `2026`; a `mkdtemp` root (`uvd-2026-XvKp2`) cannot reproduce a bug whose whole premise is
+   "the dest's first segment equals the root's own name". The first draft used mkdtemp, the fix
+   "failed", and the fixture was the thing that was wrong. This is the second time in two days a
+   fixture that did not match his real layout produced a misleading result — see the entry below.
+2. **A guard is only tested by the arrangement in which it decides.** The "a real nested folder is
+   left alone" test created only the nested folder, so the repair declined because the de-prefixed
+   path was missing — not because of the guard. Deleting the guard left the test green. It now
+   creates BOTH folders, which is the only arrangement where that guard is what makes the choice.
+
+Tests: `test/route-dest-does-not-fork-his-tree.test.mjs` (7), each break-verified.
+
 ### 2026-07-22 — I shipped a "learn from his data" feature that measured NET NEGATIVE, and reverted it
 
 The reasoning was sound and it was still wrong, which is the point of writing it down.

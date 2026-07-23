@@ -236,9 +236,50 @@ function safeFolderName(s) {
 // `2026 - Client Work`. On Windows those are all one folder — but path.join() would happily create a
 // second one on a case-sensitive volume or a network share, and the name shown in his file browser
 // would be whichever we wrote first. Ask the disk what the folder is really called.
+// ⚠⚠⚠ A STORED DESTINATION CAN OUTLIVE THE ROOT IT WAS RELATIVE TO.
+//
+// Measured on his real config: his two standing filing rules store
+// `dest = "2026/2026 - Client Work/Gourgess Lawns"` while `projectsRoot` is `...\02 - Projects\2026`.
+// So the ladder built `.../02 - Projects/2026/2026/2026 - Client Work/Gourgess Lawns` — the root's
+// own name twice — beside the folder he actually uses. **117 of 309 clips** would have filed into
+// that duplicate tree.
+//
+// It is the app's doing, not his. The Filing-rules picker offers paths relative to `projectsRoot`, so
+// `2026/...` was correct when he saved those rules. Then the AI health card's "Use that folder" set
+// the root one level deeper, and NOTHING revalidates a stored dest when the root moves.
+//
+// The repair is deliberately narrow. All three must hold:
+//   1. the first segment matches the root's own folder name (loosely — same case/separator rule the
+//      ladder already uses everywhere else), and
+//   2. the de-prefixed path EXISTS on disk, and
+//   3. the prefixed path does NOT.
+// So it can only ever prefer a folder he already has — never invent one, and never touch a tree that
+// really is nested `2026/2026/` (there the prefixed path exists, and it declines). Exactly one
+// leading segment is dropped, so a legitimate repeat deeper in the path survives, and a dest that is
+// ONLY the root name is left alone rather than collapsing to nothing and dumping into the root.
+async function stripStaleRootPrefix(root, parts) {
+  const list = (parts || []).filter(Boolean);
+  if (list.length < 2) return list;                 // never reduce a dest to nothing
+  const loose = (x) => String(x || '').toLowerCase().replace(/[\s._-]+/g, '');
+  if (loose(path.basename(String(root || ''))) !== loose(list[0])) return list;
+
+  const exists = async (p) => fsp.stat(p).then((s) => s.isDirectory()).catch(() => false);
+  const asWritten = path.join(root, ...list.map((x) => safeFolderName(x)).filter(Boolean));
+  if (await exists(asWritten)) return list;         // a real nested folder — his tree wins
+
+  const rest = list.slice(1);
+  const dePrefixed = await resolveFolderPath(root, rest);
+  if (await exists(dePrefixed)) return rest;        // the folder he already uses
+  return list;                                      // no evidence it is stale — leave it exactly
+}
+
 async function resolveFolderPath(root, parts) {
   let cur = root;
-  for (const raw of (parts || [])) {
+  // Repair a dest left stale by the root moving under it (see stripStaleRootPrefix). Recursion is
+  // bounded: the helper only recurses on a strictly shorter list, and returns immediately once the
+  // leading segment no longer matches the root's name.
+  const use = await stripStaleRootPrefix(root, parts);
+  for (const raw of (use || [])) {
     const want = safeFolderName(raw);
     if (!want) continue;
     let actual = want;

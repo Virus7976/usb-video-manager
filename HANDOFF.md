@@ -56,6 +56,27 @@ feature must be shaped like HIS data, and check the CONSUMER before optimising t
 
 ## 4. What to do next — in this order
 
+**0. FEATURES.md item 14 — phone uploads land and nothing consumes them. VERIFIED, not started.**
+The facts, probed 2026-07-23 so the next session need not re-derive them:
+
+- Completed uploads land in `UPLOAD_DIR` = `<storeDir>/phone-uploads` (`server/server.js:27`), as
+  `.part` files renamed into place on `finish()`, with a `.json` meta file alongside
+  (`core/upload.js` — `begin/status/appendChunk/finish/sweepStale/finalPath/partPath/metaPath`).
+- **Nothing in `main-mod/`, `preload.js` or `src/mod/` reads that directory.** Grepped for
+  `phone-uploads` and `phoneUploads`: zero hits outside the server. So footage arrives and stops.
+- `sweepStale` deletes abandoned `.part`/`.json` after 48h — completed files are NOT swept, so
+  nothing is being lost today, it is just accumulating unreachable.
+
+**What it needs:** a `uploads:list` + `uploads:ingest` pair that moves completed uploads into
+`intakeFolder` through the app's EXISTING verified copy (never a hand-rolled one — see the
+data-safety rules in PROMPT.md §3), plus a Home pending-work card so it is reachable. It is the same
+never-finished shape the filing corridor had: the hard part is built and nothing walks the last step.
+
+⚠ **Do not start this without room to finish it.** It moves footage that may be the only copy — the
+phone's original may already be gone. Wiring lands with the feature, and the tests need controls.
+
+
+
 **0. ~~The last wall in the filing corridor~~ — CLOSED (`2d16f13`, and the getSource fix).** The whole
 path is now verified end to end in the real app by `test/e2e/home-card-to-filed.e2e.mjs` (4/4): the
 filing card is first on Home, clicking it opens Organize with the footage listed, the run files it

@@ -150,6 +150,29 @@ checking already exists, and packaged Windows builds work fine from here.
 
 ---
 
+### Q9 — a shared preset carries your client folder names
+**The question:** presets (new, 2026-07-23) deliberately exclude every absolute path and all your
+personal data — people, faces, subjects, drafts, the ledger. But they DO include your standing
+filing rules, and a rule is meaningless without its destination folder, so
+`2026 - Client Work/Gourgess Lawns` travels with it. If you send a preset to someone, they learn
+your client names and how you organise them.
+
+**Why it needs you:** filing rules are the single most useful thing in a workflow preset — a preset
+without them is barely worth sharing. But they are also the only part that says anything about *who
+you work for*. Which matters more is yours to weigh, not mine, and it depends on who you would send
+one to.
+
+**What I did in the meantime:** included them, and made the export explicit about it rather than
+quiet. Nothing else about your clients travels — no ledger, no subjects, no filed metadata.
+
+**Options if you want it changed:** (a) leave it; (b) strip rule *destinations* on export, keeping
+the keywords and the on/off state, so the recipient re-points them; (c) ask at export time —
+"include your filing rules?" with the folder names shown.
+
+**To undo:** drop `'ai.routes'` from `ALLOWED` in `core/presets.js`. Tests:
+`test/presets-never-leak-his-data.test.mjs`.
+
+
 ## Answered
 
 _(nothing yet)_

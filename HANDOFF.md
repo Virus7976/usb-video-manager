@@ -13,7 +13,7 @@ commit.
 | **`PROMPT.md`** | Standing instructions for autonomous work. **The source of truth.** §8i is the current direction; §5 is work-selection; §3 is the data-safety rules that outrank everything. |
 | **`AGENTS.md`** | Project memory + dev guide. §8 is the lessons log — append at the top, never delete. Rule zero (issues tab) is at the top. |
 | **`FEATURES.md`** | The 100-capability roadmap with honest status. ⚠ Its headline premise is now known to be WRONG — see §3 below. |
-| **`QUESTIONS.md`** | 8 open questions for Jake. Nothing is blocked on them; each took the safe reversible path. |
+| **`QUESTIONS.md`** | 9 open questions for Jake. Nothing is blocked on them; each took the safe reversible path. |
 | **`CHANGELOG.md`** | User-facing notes, written in Jake's terms, second person. Match that voice. |
 
 Branch: **`integration/preview-ui-everything`**. That is where the work happens.
@@ -22,7 +22,7 @@ Remotes: `github` (Virus7976/usb-video-manager — also the auto-update release 
 
 ## 2. Where we are
 
-- Suite: **1,670 unit tests passing, 0 failing** (`npm run check`). E2E: `npm run test:e2e`
+- Suite: **1,682 unit tests passing, 0 failing** (`npm run check`). E2E: `npm run test:e2e`
   (Playwright drives the real Electron app; works from WSL).
 - **Never edit `main.js` or `src/renderer.js`** — they are generated. Edit `main-mod/*.js` and
   `src/mod/*.js`, then `npm run bundle`.

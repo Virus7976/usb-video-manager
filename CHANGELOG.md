@@ -7,6 +7,36 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### It now learns your subjects from the folders YOU made (2026-07-22)
+
+Last change taught the app to stop inventing new spellings of subjects you already use. It had one
+hole in it, and it was a big one: it only knew the subjects **it** had written.
+
+The names it learned from were your drafts and its own AI-generated names — the same 112 competing
+subjects that caused the problem. So it could tidy one machine-made name into another machine-made
+name, and that was all. Meanwhile the best list of your real subjects has been sitting on your disk
+for years: **the project folders you made by hand.** `2026/dennis-lawn` is a subject you chose and
+put 40 clips into. The app had never once looked at it.
+
+- **Your folder names are now subjects it will reuse.** Shoot more of the same job, and the AI's
+  `dennis-lawn-mowing` becomes `dennis-lawn` — the folder you already have — so the new clips group
+  with the old ones instead of starting a second pile.
+- **It counts what is really in the folder.** When it asks whether to use your name instead, "you
+  have used this on 40 clips" is the real number of clips filed there, not a guess.
+- **It ignores the folders that aren't subjects** — year folders like `2026`, dated folders,
+  `_unsorted`, and names too generic to tell two shoots apart like `vlog` or `misc`. Learning
+  `_unsorted` would have been the app teaching its own failure back to you as your own words.
+- **Edit → Filing & destinations → "Read my Projects folder…"** — new, and you can run it whenever
+  you like. It reads only: nothing in your tree is moved, renamed or deleted. Re-run it after a
+  batch of filing and it says either how many new projects it found or "already up to date" — it
+  will not claim to have done work it did not do.
+
+Previously the only way to trigger that read was a prompt in the AI health check, and it only ever
+appeared while the app knew about **zero** projects. One run closed the door for good — every folder
+you added afterwards was invisible to it.
+
+**Still true, and still deliberate:** it never renames a subject you typed without asking you first.
+
 ### The reason almost nothing gets filed (2026-07-20)
 
 Your library has **4,594 clips. 331 are named. One is filed.** Here is why, and what changed.

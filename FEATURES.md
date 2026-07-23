@@ -139,7 +139,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 26 | Custom taxonomy fields he defines himself | ✓ | – | – | done |
 | 27 | Autocomplete from everything he has typed before | ✓ | ✓ | – | partial — desktop only |
 | 28 | **Prune a bad autocomplete entry** | ✓ | – | – | done (D) — a × on the suggestion row, with an inline Undo |
-| 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — snap onto known subjects, add deliberately | ✓ | ✓ | ✓ | partial — engine + AI snapping + ask-on-type done (D); phone/backend todo |
+| 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — snap onto known subjects, add deliberately | ✓ | ✓ | ✓ | partial — engine + AI snapping + ask-on-type done (D), and it now learns **his own project folder names** (see below); phone/backend todo |
 | 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | done (D) — Edit → “Tidy up subjects…”: 21 merges over 46 clips on his data, save point first, nothing pre-ticked |
 | 31 | ⚠ Flag a subject that describes the SHOT not the JOB | ✓ | ✓ | – | partial — done (D): an inline, advisory note the moment he types one; phone todo |
 | 32 | Batch-name a selection | ✓ | ✓ | – | partial — desktop only |
@@ -171,7 +171,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 53 | Run the AI on a DIFFERENT machine | ✓ | – | ✓ | partial — endpoint is configurable; 4 known gaps (timeouts, model-store writes, eviction, queue-and-retry) |
 | 54 | Queue AI work when the AI box is asleep | ✓ | – | ✓ | todo |
 | 55 | **Show which model is resident in VRAM** | ✓ | – | – | done (D) — badged per row in the Model store, and two-at-once is called out (his card is 6 GB) |
-| 56 | **Backfill the ledger from his existing library** | ✓ | – | – | partial — real, but only reachable if the health check happens to flag it |
+| 56 | **Backfill the ledger from his existing library** | ✓ | – | – | done (D) — Edit → Filing & destinations → “Read my Projects folder…”, re-runnable at any time; the health-check nudge only ever fired while the ledger was completely empty |
 
 ### E. Faces and people (57–70)
 
@@ -262,3 +262,16 @@ surface. His own parity rule says that is not "released".
 **And #29 is the one that matters.** Every filing capability in section F is correct and tested, and
 files nothing, because 112 competing subject names mean nothing groups. A controlled vocabulary is
 not feature 29 of 100 — it is the precondition for the other 99 mattering.
+
+**2026-07-22 — and the vocabulary was being built from the problem.** The snapping engine was real,
+tested, and fed from `config.subjects` + drafts + `finalMeta`: three stores the app wrote, and mostly
+the AI wrote. It could only snap one machine-generated fragment onto another. **His actual subject
+vocabulary is the project folders he made by hand** — `2026/dennis-lawn` is a name he chose and filed
+40 clips into — and those were the one thing snapping could not reach. Measured before the fix, on a
+two-folder ledger holding 62 clips: `canonical: dennis-lawn-mowing | matched: false | known: 0`.
+
+The ledger now feeds the vocabulary, weighted by the real filed-clip count, with year/date folders,
+`_unsorted` and too-generic names filtered out. Which made #56 load-bearing rather than a
+nice-to-have: a vocabulary built from his folders is only as current as the last thing that read
+them, so the backfill needed a permanent route instead of a health-check nudge that fired only while
+the ledger was completely empty. Both landed together.

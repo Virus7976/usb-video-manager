@@ -1440,26 +1440,86 @@ ipcMain.handle('ai:loaded', async () => ({ ok: true, models: await ollamaLoaded(
 // window in which it matters most, since a naming run walks clips seconds apart. Found by a test
 // that seeded a subject and immediately canonicalised against it.
 //
-// The signature is cheap (three counts), so rebuilding only happens when something actually changed.
+// ⚠⚠ AND THE FOURTH SOURCE IS THE ONLY ONE HE WROTE HIMSELF — his project FOLDERS.
+//
+// The three sources above (`config.subjects`, drafts, finalMeta) are all things the app wrote, and
+// mostly things the AI wrote: 112 distinct subjects across 206 named clips, 46% of them describing
+// the shot. Building the vocabulary from only those means the canonicaliser can snap one
+// AI-generated fragment onto another AI-generated fragment and nothing else. It was learning his
+// vocabulary from the one place his vocabulary does not exist.
+//
+// `02 - Projects/2026/dennis-lawn` is a subject he authored, committed to, and filed 40 clips into.
+// The ledger has read those folders since `backfillLedgerFromTree` landed, and the PLACEMENT tool
+// already consults them — they simply never reached the vocabulary. Probed on a two-folder ledger
+// holding 62 clips: `canonical: dennis-lawn-mowing | matched: false | known: 0`.
+//
+// The count contributed is the real filed-clip count, not 1. That is honest (there really are 40
+// clips in that folder) and it is what he is shown when asked to accept a canonical name — and it
+// correctly outranks an AI fragment typed onto three drafts.
+//
+// The signature is cheap (four counts), so rebuilding only happens when something actually changed.
 let _vocabCache = null; let _vocabSig = '';
 function subjectVocabSignature() {
-  let d = 0; let f = 0; let s = 0;
+  let d = 0; let f = 0; let s = 0; let p = 0; let pc = 0;
   try { s = (config.subjects || []).length; } catch { /* ignore */ }
   try { d = Object.keys(currentDrafts() || {}).length; } catch { /* ignore */ }
   try { f = Object.keys(currentFinalMeta() || {}).length; } catch { /* ignore */ }
-  return `${s}:${d}:${f}`;
+  // ⚠ THE LEDGER NEEDS ITS CLIP TOTAL, NOT JUST ITS LENGTH. A backfill re-run over a tree he has
+  // added to ENRICHES existing records (`rec.clips = Math.max(...)`) without pushing a new one, so a
+  // length-only signature would serve a stale vocabulary after a run that really did learn more.
+  try {
+    const led = Array.isArray(config.projectLedger) ? config.projectLedger : [];
+    p = led.length;
+    for (const rec of led) pc += (rec && Number(rec.clips)) || 0;
+  } catch { /* ignore */ }
+  return `${s}:${d}:${f}:${p}:${pc}`;
 }
+
+// Is this folder name one of HIS subjects, or is it tree scaffolding?
+//
+// Three ways a folder earns a record in the ledger without being a subject, and each one does real
+// damage if learned:
+//   · `2026`, `2026-05-31` — a year or date folder with clips sitting directly in it. Learning it
+//     means every shoot of that year is "similar" to it and his whole year files into one folder.
+//   · `_unsorted` — the destination ladder's own fallback (FEATURES.md item 9). It fills up
+//     precisely BECAUSE nothing grouped, so learning it feeds the app's failure back to him as
+//     his own vocabulary.
+//   · `vlog`, `misc` — a real folder name that is too generic to distinguish one shoot from
+//     another. `isMeaningfulCanonical` already refuses these as canonical names; the same rule has
+//     to apply on the way IN, or `bedtime-vlog` and `kitchen-vlog` collapse into `vlog`.
+function ledgerNameIsSubject(raw) {
+  const name = String(raw || '').trim();
+  if (!name || name.startsWith('_') || name.startsWith('.')) return false;
+  const norm = subjects.normalizeSubject(name);
+  if (!norm) return false;
+  // All-numeric tokens: `2026`, `2026-05-31`, `01`. A subject of his never looks like this.
+  if (/^[0-9]+(-[0-9]+)*$/.test(norm)) return false;
+  return subjects.isMeaningfulCanonical(norm);
+}
+
 function subjectVocabulary() {
   const sig = subjectVocabSignature();
   if (_vocabCache && _vocabSig === sig) return _vocabCache;
   const counts = {};
-  const bump = (v) => {
+  const bump = (v, weight = 1) => {
     const s = subjects.normalizeSubject(v);
-    if (s) counts[s] = (counts[s] || 0) + 1;
+    if (s) counts[s] = (counts[s] || 0) + weight;
   };
   try { for (const s of (config.subjects || [])) bump(s); } catch { /* ignore */ }
   try { for (const rec of Object.values(currentDrafts() || {})) if (rec && rec.subject) bump(rec.subject); } catch { /* ignore */ }
   try { for (const rec of Object.values(currentFinalMeta() || {})) if (rec && rec.subject) bump(rec.subject); } catch { /* ignore */ }
+  try {
+    for (const rec of (Array.isArray(config.projectLedger) ? config.projectLedger : [])) {
+      if (!rec || typeof rec !== 'object') continue;
+      const clips = Math.max(1, Number(rec.clips) || 1);
+      if (ledgerNameIsSubject(rec.name)) bump(rec.name, clips);
+      // Where the library WAS named by this app, the backfill parsed real subjects out of the
+      // filenames. Those are as real as the folder name, and the same scaffolding rule applies.
+      for (const s of (Array.isArray(rec.subjects) ? rec.subjects : [])) {
+        if (ledgerNameIsSubject(s)) bump(s, clips);
+      }
+    }
+  } catch { /* ignore */ }
   _vocabCache = subjects.buildVocabulary(counts);
   _vocabSig = sig;
   return _vocabCache;

@@ -1565,6 +1565,47 @@ async function restoreDraftsNow() {
   } else showToast('No saved naming found for these clips');
 }
 
+// ⚠⚠ READ THE FILING HE ALREADY DID BY HAND — and it needed a permanent route, not a one-time offer.
+//
+// `ai:backfillLedger` reads his Projects tree into project memory. It had exactly one caller: the AI
+// health check, behind `if (!ledgerN && treeHasFiles)`. That gate is correct for a nudge and wrong as
+// the only door, in two ways:
+//   · it fires only while the ledger is COMPLETELY empty, so one run of five projects closes the
+//     door forever — the fifty folders he adds over the following year are never read; and
+//   · it is a medium-severity row inside a health card he has to go looking for.
+//
+// That mattered more once the ledger started feeding the SUBJECT VOCABULARY (`subjectVocabulary`,
+// main-mod/10-ai-tools.js). His folder names are the only subjects in the system he wrote himself —
+// so "has the ledger been refreshed lately" is now the difference between snapping a new clip onto
+// `dennis-lawn` and inventing spelling #113.
+//
+// Safe to run at any time and worth saying so: it is pure reading, additive, and idempotent —
+// existing projects are enriched, never duplicated, and nothing in his tree is moved or renamed.
+//
+// ⚠ NAMED DELIBERATELY UNLIKE THE BRIDGE METHOD (`aiBackfillLedger`). `test/ipc-reachability.test.mjs`
+// checks for `` `.${m}(` ``, so a renderer function sharing a bridge method's name satisfies the guard
+// while calling nothing — the trap that nearly shipped the backup-folder work dead (AGENTS §8h).
+async function learnFromProjectsTree() {
+  let root = '';
+  try { root = await window.api.getProjectsRoot(); } catch { /* ignore */ }
+  if (!root) { showToast('Set a Projects folder first — Edit → Settings', 5000); return; }
+
+  showToast('Reading your Projects folder…', 4000);
+  let r = null;
+  try { r = await window.api.aiBackfillLedger(root); }
+  catch (e) { showToast(`Could not read your Projects folder: ${(e && e.message) || e}`, 6000); return; }
+  if (!r || !r.ok) { showToast((r && r.error) || 'Could not read your Projects folder', 6000); return; }
+
+  // Report what CHANGED as well as the total. "Learned 0 new" after a re-run is the honest answer and
+  // tells him the tree has not moved; a bare total would read as if it had done work it did not do.
+  const total = r.projects || 0;
+  const added = r.learned || 0;
+  if (!total) { showToast('No filed projects found in that folder yet.', 5000); return; }
+  showToast(added
+    ? `Learned ${added} new project${added !== 1 ? 's' : ''} — ${total} known now ✓ Your own folder names are subjects the app will reuse.`
+    : `Already up to date — ${total} project${total !== 1 ? 's' : ''} known ✓`, 7000);
+}
+
 // ---------------------------------------------------------------------------
 // Version history / save points. A save point is a full snapshot of every clip's
 // naming (the same map shape as a draft). One is captured automatically before

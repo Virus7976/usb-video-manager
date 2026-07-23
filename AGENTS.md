@@ -5439,6 +5439,50 @@ A running log of non-obvious things we learned the hard way, so nobody (human or
 re-derive them. **Append new entries at the top; never delete.** Format: `### YYYY-MM-DD —
 title`, then what we learned and why it matters.
 
+### 2026-07-22 — The subject vocabulary was built from the problem it was supposed to solve
+
+FEATURES.md item 29 calls a controlled subject vocabulary "the unblock": 4,594 clips, 331 named,
+**1 filed**, because 112 competing subjects across 206 named clips mean filing has nothing to group.
+The engine (`core/subjects.js`) and the snapping (`subjects:canonicalize`) were both built and
+tested. `subjectVocabulary()` (`main-mod/10-ai-tools.js`) fed them from three sources:
+`config.subjects`, the rename drafts, and `finalMeta`.
+
+**All three are things the app wrote, and mostly things the AI wrote.** 46% of those subjects
+describe the shot (`talking-head`, `person-sitting-couch`). So the canonicaliser could snap one
+AI-generated fragment onto another AI-generated fragment and nothing else — it was learning his
+vocabulary from the one place his vocabulary does not exist.
+
+**His real vocabulary has been on disk for years: the project folders he made by hand.**
+`02 - Projects/2026/dennis-lawn` is a subject he authored and filed 40 clips into. The ledger has
+read those folders since `backfillLedgerFromTree` landed, and the PLACEMENT tool already consulted
+them — they simply never reached the vocabulary. Probed on a two-folder ledger holding 62 clips:
+
+    canonical: dennis-lawn-mowing | matched: false | known: 0
+
+Four things this cost, worth carrying forward:
+
+1. **When a feature learns from data, audit WHICH data.** "It learns from what he's used" sounded
+   complete and was 100% machine-authored. The check is not "is there a source" but "did *he* write
+   what's in it".
+2. **A new source needs the cache signature updated in the same edit.** `subjectVocabSignature()`
+   counted three stores; adding a fourth without it means he runs the backfill over his whole
+   library and the very next clip is canonicalised against the vocabulary cached a second earlier.
+   Invisible in any test that seeds before it asks — so there is one that seeds *after*. Breaking
+   the signature fails 7 of the 9 tests in that file; breaking any single filter fails exactly 1.
+3. **Scaffolding is not vocabulary.** A folder earns a ledger record by holding clips, which
+   includes `2026` (year), `2026-05-31` (date), `_unsorted` (the ladder's own fallback) and `vlog` /
+   `misc` (too generic). Learning any of them is worse than learning nothing — `_unsorted` in
+   particular feeds the app's own failure back to him as his own words. `ledgerNameIsSubject()`
+   filters all four, and `isMeaningfulCanonical` is reused rather than re-implemented.
+4. **A one-time nudge is not a route.** The only caller of `ai:backfillLedger` was the AI health
+   check, gated on `!ledgerN && treeHasFiles` — correct for a nudge, wrong as the only door: one run
+   of five projects closes it forever and the fifty folders he adds next year are never read. Now
+   also **Edit → Filing & destinations → "Read my Projects folder…"** (`learnFromProjectsTree`,
+   named unlike the bridge method per the §8h reachability trap). A vocabulary built from his
+   folders is only as current as the last thing that read them.
+
+Tests: `test/subjects-learn-from-his-folders.test.mjs` (14). Every guard break-verified individually.
+
 ### 2026-07-12 — The card→intake copy was the ONE copy path with no staging, no fsync, no verify
 
 This codebase has two well-built verify-before-destroy primitives (`copyFileVerified`,

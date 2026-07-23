@@ -147,6 +147,7 @@ const MENUS = {
     { label: 'Filing & destinations', submenu: () => [
       { label: 'Visualize destinations…', action: showDestinationMapAuto },
       { label: 'Projects index…', desc: 'Browse filed projects + their AI summaries; search people, places, contents.', action: showProjectsIndex },
+      { label: 'Read my Projects folder…', desc: 'Learn the shoots you already filed by hand — their folder names become subjects the app reuses. Reads only; nothing is moved or renamed.', action: learnFromProjectsTree },
       { label: 'Undo last organize…', desc: 'Move the clips from the last Organize back out of the Projects tree.', action: undoLastOrganize },
       { label: 'Filing rules…', action: () => showRoutingRules() },
       { label: 'Restore previous naming…', action: restoreDraftsNow },

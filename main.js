@@ -8803,9 +8803,24 @@ ipcMain.handle('finalize:pickSource', async () => {
 // to organize now. Lets the app greet you on launch with "you've got footage to deal
 // with" and jump straight into organizing — the per-clip AI analysis is already
 // remembered (finalMeta), so nothing re-analyzes.
+// ⚠⚠ ONE ANSWER TO "WHERE IS THE FOOTAGE READY TO FILE?" — used by BOTH the Home card and the
+// screen it opens.
+//
+// These disagreed. `finalize:scan` resolved `finalizeSource || compressedFolder || intakeFolder`;
+// `pending:work` resolved `finalizeSource || organizeDest`. So the counter that decides whether the
+// Home card appears, and the screen that card opens, looked in different places. Measured on a config
+// with `compressedFolder` set and nothing else: the scan found 8 clips, and pending:work reported
+// `readyDir: "", ready: 0` — the card could never appear at all, for footage the app could see.
+//
+// That is PROMPT.md §5.4: an invariant applied to one path and not its sibling. The durable fix is
+// not to copy the ladder into both, it is to have ONE ladder they both call.
+function organizeSourceDir() {
+  return config.finalizeSource || config.compressedFolder || config.intakeFolder || '';
+}
+
 ipcMain.handle('pending:work', async () => {
   const intakeDir = config.intakeFolder || '';
-  const readyDir = config.finalizeSource || config.organizeDest || '';
+  const readyDir = organizeSourceDir();
   let uncompressed = 0; let ready = 0; let readyTotal = 0; let readyAnalyzed = 0;
   try { uncompressed = (await listVideosShallow(intakeDir)).length; } catch { /* ignore */ }
   // STILLS IN THE INTAKE, counted separately — because the advice for them is the opposite.
@@ -8884,7 +8899,7 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
   //
   // `usedDir`/`usedFallback` travel back so the UI can SAY which folder it is showing. Silently
   // scanning somewhere other than the folder he thinks is configured would be its own bug.
-  const dir = opts.dir || config.finalizeSource || config.compressedFolder || config.intakeFolder || '';
+  const dir = opts.dir || organizeSourceDir();
   const usedFallback = !opts.dir && !config.finalizeSource
     ? (config.compressedFolder ? 'compressed' : (config.intakeFolder ? 'intake' : ''))
     : '';

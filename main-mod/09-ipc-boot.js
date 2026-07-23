@@ -384,7 +384,26 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
   // Accept either a plain path (legacy) or { dir, includePhotos } so the Organize screen
   // can opt into listing photos alongside (or instead of) videos.
   const opts = (sourceDir && typeof sourceDir === 'object') ? sourceDir : { dir: sourceDir };
-  const dir = opts.dir || config.finalizeSource;
+  // ⚠⚠ FALL BACK TO WHERE THE FOOTAGE ACTUALLY IS, RATHER THAN DEAD-ENDING.
+  //
+  // This was `opts.dir || config.finalizeSource`, and on a fresh install NOTHING is set — so the
+  // Organize screen answered "No folder chosen" and the app looked broken to anyone who had not
+  // already built Jake's exact folder layout. Measured on a clean profile: `intakeFolder` has a
+  // sensible default (`<Videos>/USB Auto-Action/01 - Uncompressed`), `compressedFolder` and
+  // `finalizeSource` are undefined, and `finalize:scan` refused.
+  //
+  // Jake, 2026-07-22: *"build it as if it was an application that worked without all the compression
+  // folders and stuff and just worked."* Compression is OPTIONAL — plenty of people never encode at
+  // all — so a missing Compressed folder must not mean "you cannot organize". Footage that was never
+  // compressed is sitting in intake, which is exactly where his own 203 photos are: they never get
+  // compressed, so they never reach `02 - Compressed`, so Organize has never been able to see them.
+  //
+  // `usedDir`/`usedFallback` travel back so the UI can SAY which folder it is showing. Silently
+  // scanning somewhere other than the folder he thinks is configured would be its own bug.
+  const dir = opts.dir || config.finalizeSource || config.compressedFolder || config.intakeFolder || '';
+  const usedFallback = !opts.dir && !config.finalizeSource
+    ? (config.compressedFolder ? 'compressed' : (config.intakeFolder ? 'intake' : ''))
+    : '';
   if (!dir) return { ok: false, error: 'No folder chosen' };
   let files;
   // COUNT THE PHOTOS EVEN WHEN WE ARE NOT LISTING THEM. Measured on his real setup: `01 - Uncompressed`
@@ -481,6 +500,9 @@ ipcMain.handle('finalize:scan', async (_evt, sourceDir) => {
     // How many stills are sitting in this folder, listed or not — so an empty result can say WHICH
     // kind of empty it is. See the photosHere comment above.
     photosHere,
+    // Which folder this actually is, when nothing was configured. The UI says so rather than letting
+    // him assume he is looking at a Compressed folder he never set up.
+    usedFallback,
   };
 });
 

@@ -7,7 +7,34 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-_(nothing yet)_
+### Organize works on a fresh install now (2026-07-23)
+
+If the app didn't already have your exact folder setup — `01 - Uncompressed`, `02 - Compressed`, a
+Tdarr hand-off — the Organize screen just said **"No folder chosen"** and stopped. Everything after
+importing was gated on a layout only you have.
+
+Now it looks in the obvious place instead: your saved folder if you set one, otherwise your
+Compressed folder, otherwise the Uncompressed folder your imports land in. It tells you which one it
+picked, so you're never quietly looking at a different folder than you think.
+
+**This is also why your 203 photos were invisible.** They live in `01 - Uncompressed`, photos never
+get compressed, so they never reach `02 - Compressed` — and Organize only ever scanned Compressed.
+
+### Save your setup as a preset, and share it (2026-07-23)
+
+**Edit → "Save this setup as a preset…"** writes a file describing *how you work*: your folder
+shape, your filing rules, your AI settings, your custom fields. **"Load a preset…"** opens one.
+
+It's safe to send to someone. It carries **no folder paths** (they'd name your drives and your
+Windows username), and **none of your data** — not your people, your faces, your subject list, your
+typed names, or anything about your library. What it does carry is your filing rules, and a rule
+needs its folder name to mean anything, so your project folder names travel with it. Worth knowing
+before you send one to a client.
+
+Loading one **shows you every setting it would change before anything changes**, and says plainly
+that your footage, folders, people and typed names aren't touched. A preset also can't set a folder
+path even if someone edits the file by hand — it simply isn't allowed to, and it tells you what it
+ignored.
 
 ## [0.5.0] — 2026-07-22
 

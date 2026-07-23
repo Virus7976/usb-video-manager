@@ -4715,6 +4715,13 @@ ipcMain.handle('config:get', () => ({
   organizeDest: config.organizeDest || '',
   finalizeSource: config.finalizeSource || '',
   projectsRoot: config.projectsRoot || config.organizeDest || defaultProjectsRoot(),
+  // ⚠ THESE TWO WERE MISSING, AND THE GAP WAS INVISIBLE UNTIL A SCREEN ASKED FOR THEM. `config:get`
+  // is a curated shape, not a dump of config — which is right — but a renderer reading a key that is
+  // simply absent gets `undefined` and cannot tell "not configured" from "not exposed". Settings →
+  // "Folders & setup" rendered a configured Compressed folder as *"not set"*, and could never have
+  // shown the NAS row at all. Caught by an e2e reading the live DOM; every structural test passed.
+  compressedFolder: config.compressedFolder || '',
+  nasBackup: { enabled: !!(config.nasBackup && config.nasBackup.enabled), path: (config.nasBackup && config.nasBackup.path) || '' },
   ai: {
     enabled: !!(config.ai && config.ai.enabled),
     endpoint: (config.ai && config.ai.endpoint) || 'http://localhost:11434',

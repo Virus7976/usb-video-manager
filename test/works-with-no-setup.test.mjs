@@ -175,3 +175,23 @@ test('⚠ a broken filing rule offers the fix in place, and re-reads afterwards'
   assert.match(body, /Nothing needed fixing/, 'including when it changed nothing');
   assert.match(body, /close\(\); showFoldersAndSetup\(\);/, '⚠ and the screen re-reads rather than showing stale status');
 });
+
+test('⚠⚠ config:get exposes every folder the setup screen reads', async () => {
+  // The bug an e2e found and every structural test missed. `config:get` returns a CURATED shape, not
+  // a dump of config — which is correct — but a renderer reading a key that is simply absent gets
+  // `undefined` and cannot tell "you have not configured this" from "nobody exposed it". The setup
+  // screen rendered a configured Compressed folder as "not set", and could never have shown the NAS
+  // row at all.
+  //
+  // Pinned as a PAIR: whatever that screen reads off the config object, config:get must return.
+  const cfg = app.get('config');
+  cfg.compressedFolder = '/tmp/some-compressed';
+  cfg.nasBackup = { enabled: true, path: '/tmp/some-nas' };
+
+  const got = app.plain(await app.invoke('config:get'));
+  assert.equal(got.compressedFolder, '/tmp/some-compressed', '⚠⚠ the Compressed folder is exposed');
+  assert.ok(got.nasBackup && got.nasBackup.enabled === true, '⚠⚠ and the NAS backup state');
+  assert.equal(got.nasBackup.path, '/tmp/some-nas');
+  assert.ok(got.intakeFolder !== undefined, 'intake, which already was');
+  assert.ok(got.projectsRoot !== undefined, 'and the projects root');
+});

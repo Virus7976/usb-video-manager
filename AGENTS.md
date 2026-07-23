@@ -5558,6 +5558,37 @@ test could not tell the difference, because it varied the ROOT (which the handle
 instead of `toDir` (which arrives unnormalised from the caller). Caught by breaking the guard down
 to a string compare and watching the test stay green.
 
+### 2026-07-23 — The e2e earned its keep again: a screen that read a key nobody exposed
+
+Settings → "Folders & setup" was built and verified structurally — read `06-menus.js`, assert it
+calls `pathExists`, assert it calls `validateRouteDests`, assert the hub gained a card. All green,
+all true, and the screen was still wrong.
+
+`config:get` returns a CURATED shape, not a dump of `config` — which is right. But `compressedFolder`
+and `nasBackup` were not in it. A renderer reading an absent key gets `undefined`, which is
+indistinguishable from "not configured", so the screen rendered a **configured** Compressed folder as
+*"not set"* and could never have shown the NAS row at all.
+
+No structural test could see this. Both sides are individually correct: the screen reads
+`conf.compressedFolder`, `config:get` returns a sensible object. The bug is only in the gap between
+them, and the only thing that looks at the gap is something that runs both.
+
+Found by an e2e that opened the screen in Electron and read the live DOM:
+
+    Compressed footage   not set
+    —
+
+**The rule: when a screen reads config keys, pin the PAIR.** `test/works-with-no-setup.test.mjs` now
+asserts `config:get` exposes everything that screen consumes, so adding a row without exposing its
+key fails immediately rather than rendering a confident "not set".
+
+⚠ **And a break-verification that lied, same session.** A "remove the disk check" break reported
+`fail 0` — reading as a working guard. The sed had matched nothing (wrong indentation), so the break
+never applied. **A break that does not apply is indistinguishable from a guard that holds.** Diff the
+file, or assert the replacement is present, before believing a clean break result. This is the same
+shape as the probe lesson below: absence of a signal is not evidence unless the signal was shown to
+be producible.
+
 ### 2026-07-23 — A setting the app changed on his behalf silently invalidated a setting he made
 
 His two standing filing rules store `dest = "2026/2026 - Client Work/Gourgess Lawns"` while

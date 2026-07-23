@@ -22,7 +22,7 @@ Remotes: `github` (Virus7976/usb-video-manager — also the auto-update release 
 
 ## 2. Where we are
 
-- Suite: **1,668 unit tests passing, 0 failing** (`npm run check`). E2E: `npm run test:e2e`
+- Suite: **1,670 unit tests passing, 0 failing** (`npm run check`). E2E: `npm run test:e2e`
   (Playwright drives the real Electron app; works from WSL).
 - **Never edit `main.js` or `src/renderer.js`** — they are generated. Edit `main-mod/*.js` and
   `src/mod/*.js`, then `npm run bundle`.
@@ -88,16 +88,11 @@ his first successful filing run forks his tree, and he stops trusting the app.
   not selected gets no nudge.
 - Phone flow: "Send to Uncompressed" discards main's failure report and hides the retry button, so
   failed videos are silently stranded; the done-line counts videos that were never renamed.
-- `phone:applyQueue` guards `ai.facesPending` but not `ai.people`, then marks answers applied anyway.
-  ⚠ **UNVERIFIED — do not treat the audit's repro as confirmed, and do not treat it as disproved.**
-  Two attempts failed to build a probe that reaches the SUCCESS case: with a real
-  `phone-actions.jsonl` in `STORE_DIR` and a seeded `ai.facesPending` cluster, `phone:applyQueue`
-  returns `applied: 1` while `config.ai.people` stays `[]` — so the control never demonstrated a
-  working confirmation, and a failure run therefore proves nothing. Suspect the cluster/action
-  fixture shape (`cropNameOf` reads `thumb`; `savePersonRecord` may need a particular descriptor
-  shape). **Get the control green first** — see the "probe asserting an absence" lesson in AGENTS.md
-  §8. The real repro likely needs a fixture copied from an actual `faces-pending.json` entry rather
-  than a hand-written one.
+- ~~`phone:applyQueue` guards `ai.facesPending` but not `ai.people`~~ — **REAL, and FIXED.** Both
+  stores are guarded now. Settled by reusing the working fixture in
+  `test/phone-answers-actually-land.test.mjs` (it needs `descriptor` AND `descriptors`); two earlier
+  hand-written fixtures matched nothing and made the result unreadable. The file carries an explicit
+  CONTROL test — it asserts enrolment really happens — so the guard test can never pass vacuously.
 - 5 dead IPC bridges are worth deleting rather than wiring (`finalMeta:get`, `intake:get`,
   `feedback:list`, `ai:recallShoot`, `ai:visionAdvice`) — every one is reachable another way.
 

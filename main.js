@@ -11898,8 +11898,17 @@ ipcMain.handle('phone:applyQueue', async () => {
   // that would write a store containing only what the phone happened to mention — i.e. delete the
   // review. saveStore already blocks the write, but failing here means we also do not mark the
   // actions applied, so they survive for the next launch.
-  if (storeReadFailed['ai.facesPending']) {
-    return { ok: false, error: 'faces-pending.json could not be read this launch — nothing applied, your answers are kept.', applied: 0, results: [] };
+  //
+  // ⚠⚠ AND `ai.people` IS THE SIBLING THAT WAS MISSING. Applying a confirmation writes BOTH stores:
+  // the cluster is marked done in faces-pending, and the person is enrolled via `savePersonRecord`
+  // into people.json. Guarding only the first meant that with an unreadable people.json the answer
+  // was marked applied (append-only, irreversible), the cluster was marked done so it never returns
+  // to the review, and the enrolment persisted nowhere — the face he named on his phone destroyed in
+  // all three places at once. Enrolment is the one thing here he cannot regenerate.
+  for (const key of ['ai.facesPending', 'ai.people']) {
+    if (!storeReadFailed[key]) continue;
+    const file = key === 'ai.people' ? 'people.json' : 'faces-pending.json';
+    return { ok: false, error: `${file} could not be read this launch — nothing applied, your answers are kept.`, applied: 0, results: [] };
   }
 
   const clusters = aiFacesPending();

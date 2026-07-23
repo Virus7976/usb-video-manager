@@ -188,3 +188,35 @@ test('⚠ and the desktop does not claim to handle actions the server rejects', 
   }
   assert.deepEqual([...new Set(handled)].sort(), [...queue.ACTIONS].sort(), 'the two lists agree exactly');
 });
+
+// ⚠⚠ THE SIBLING STORE. The guard above covers `ai.facesPending`. Applying a confirmation ALSO
+// writes `ai.people` (via `savePersonRecord`) — and that store has its own read-failure flag, which
+// nothing was checking. If people.json is unreadable this launch, the enrolment cannot persist,
+// while the answer is still marked applied and the cluster is still marked done. The face he named
+// on his phone would be gone from all three places at once, and enrolment is the work he cannot
+// regenerate.
+//
+// ⚠ THE CONTROL IS THE FIRST TEST BELOW, AND IT IS NOT OPTIONAL. Two earlier attempts to probe this
+// used a hand-written cluster fixture that never matched, so `applied: 1` came back with an empty
+// people list and it was impossible to tell a real guard failure from a fixture that exercised
+// nothing. The fixture in this file is the one that demonstrably works — see AGENTS.md §8, "a probe
+// asserting an absence must first be shown to produce the presence".
+test('⚠ CONTROL — a confirmation really does enrol, with this fixture', async () => {
+  queueIt({ type: 'face.confirm', clusterId: CROP_A, name: 'Dennis' });
+  const r = app.plain(await app.invoke('phone:applyQueue'));
+  assert.equal(r.applied, 1, 'the answer applied');
+  assert.equal(app.plain(app.get('config.ai.people')).length, 1,
+    '⚠ and the person really was enrolled — without this, the next test proves nothing');
+});
+
+test('⚠⚠ nothing is applied when the PEOPLE store could not be read', async () => {
+  queueIt({ type: 'face.confirm', clusterId: CROP_A, name: 'Dennis' });
+  app.get('storeReadFailed')['ai.people'] = true;
+  const r = app.plain(await app.invoke('phone:applyQueue'));
+  app.get('storeReadFailed')['ai.people'] = false;
+
+  assert.equal(r.ok, false, '⚠⚠ it must refuse rather than half-apply');
+  assert.match(r.error, /could not be read/i, 'and say why');
+  assert.equal(queue.read({ dir: storeDir() }).length, 1,
+    '⚠⚠ the answer survives for the next launch — this is the work he cannot redo');
+});

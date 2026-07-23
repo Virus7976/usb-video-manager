@@ -139,7 +139,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 26 | Custom taxonomy fields he defines himself | ✓ | – | – | done |
 | 27 | Autocomplete from everything he has typed before | ✓ | ✓ | – | partial — desktop only |
 | 28 | **Prune a bad autocomplete entry** | ✓ | – | – | done (D) — a × on the suggestion row, with an inline Undo |
-| 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — snap onto known subjects, add deliberately | ✓ | ✓ | ✓ | partial — engine + AI snapping + ask-on-type done (D), and it now learns **his own project folder names** (see below); phone/backend todo |
+| 29 | ⚠ **A CONTROLLED SUBJECT VOCABULARY** — snap onto known subjects, add deliberately | ✓ | ✓ | ✓ | partial — engine + AI snapping + ask-on-type done (D); phone/backend todo. ⚠ Learning his project FOLDER names was tried and reverted — measured net negative, see below |
 | 30 | ⚠ Detect and merge near-duplicate subjects (`car` / `car-driving` / `car-parked`) | ✓ | – | ✓ | done (D) — Edit → “Tidy up subjects…”: 21 merges over 46 clips on his data, save point first, nothing pre-ticked |
 | 31 | ⚠ Flag a subject that describes the SHOT not the JOB | ✓ | ✓ | – | partial — done (D): an inline, advisory note the moment he types one; phone todo |
 | 32 | Batch-name a selection | ✓ | ✓ | – | partial — desktop only |
@@ -263,15 +263,31 @@ surface. His own parity rule says that is not "released".
 files nothing, because 112 competing subject names mean nothing groups. A controlled vocabulary is
 not feature 29 of 100 — it is the precondition for the other 99 mattering.
 
-**2026-07-22 — and the vocabulary was being built from the problem.** The snapping engine was real,
-tested, and fed from `config.subjects` + drafts + `finalMeta`: three stores the app wrote, and mostly
-the AI wrote. It could only snap one machine-generated fragment onto another. **His actual subject
-vocabulary is the project folders he made by hand** — `2026/dennis-lawn` is a name he chose and filed
-40 clips into — and those were the one thing snapping could not reach. Measured before the fix, on a
-two-folder ledger holding 62 clips: `canonical: dennis-lawn-mowing | matched: false | known: 0`.
+**2026-07-22 — a measured failure worth recording.** The vocabulary is built from `config.subjects`
++ drafts + `finalMeta`: three stores the app wrote, mostly the AI. His hand-made project folders
+looked like the one subject vocabulary he authored himself, so the ledger was wired in as a fourth
+source. Measured against his real tree (51 records, 764 clips):
 
-The ledger now feeds the vocabulary, weighted by the real filed-clip count, with year/date folders,
-`_unsorted` and too-generic names filtered out. Which made #56 load-bearing rather than a
-nice-to-have: a vocabulary built from his folders is only as current as the last thing that read
-them, so the backfill needed a permanent route instead of a health-check nudge that fired only while
-the ledger was completely empty. Both landed together.
+    drafts (112 subjects)  ->  91 groups empty ledger  ->  91 groups populated.  No change.
+    backlog (8 subjects)   ->   8 groups empty ledger  ->   8 groups populated.  No change.
+    subjects whose canonical CHANGED: 2, and BOTH were wrong —
+        vlog-footage -> 2026-06-11-vlog-footage-from-gopros-v1   (a folder named after a CLIP)
+        timelapse    -> 05-timelapse                             (numbered scaffolding)
+
+**Reverted.** A real Projects tree is workflow scaffolding, not a subject list — his folders include
+`V5`, `Final Videos`, `In Progress`, `Day 1`..`Day 5`, `B-Roll`, `raw footage`,
+`tdarr-workDir2-B73eb1-hG`. And it could not have helped regardless: canonicalisation runs only at
+AI-name time and on-type, while nothing in `destinationParts`, `finalize:run` or `projects:move`
+calls it — so his already-named backlog never passes through it at all.
+
+**#56 was kept**, because the ledger's real consumer is PLACEMENT (`ledgerMatch`, same-shoot recall),
+and it was reachable only through a health-check prompt that fired while the ledger was empty.
+
+**And the bigger correction: the premise above is wrong for the footage that is actually filable.**
+The 112 competing subjects live in `drafts.json` — clips still on cards. The 310 clips in
+`02 - Compressed`, which is what Organize scans, carry **8 distinct subjects**. Driven end to end
+against his real layout: `finalize:run` moved 309 clips into 47 folders, 0 errors, 12.3% to
+`_unsorted`, 0 to the root, and the re-run was idempotent. **Filing is not blocked by the
+vocabulary — it works.** What blocks it is that he has never opened the Organize screen: 1,487
+clicks over 14 days, 0 on `finalize`, because `session.view` resumes him into the phone flow and the
+"ready to organize" card sits third on Home behind 458 faces and 700 phone videos.

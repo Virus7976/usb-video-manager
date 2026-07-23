@@ -7308,6 +7308,27 @@ function confirmedFaceSet() {
   return out;
 }
 
+// ⚠⚠ THE CACHE TAG FOR A CLIP'S EXTRACTED FRAMES — AND IT MUST DEPEND ON THE WHOLE PATH.
+//
+// This was `Buffer.from(srcPath).toString('base64url').…slice(0, 20)`. base64 is 4 characters per 3
+// bytes, so twenty characters is the first ~15 BYTES of the path — the folder prefix, and nothing
+// else. On his real layout every clip in a folder produced an identical tag:
+//
+//     'L:\Video\USB Auto-Action\02 - Compressed\GX010042.MP4' -> TDpcVmlkZW9cVVNCIEF1
+//     'L:\Video\USB Auto-Action\02 - Compressed\GX010099.MP4' -> TDpcVmlkZW9cVVNCIEF1
+//
+// `getFaceFrame` returns an existing file at that path without re-extracting, so the second clip was
+// handed the FIRST clip's frame — and the faces found there are written through `clips:tagPerson`
+// into `finalMeta` AND `renameDrafts`. The wrong person's name, on the wrong footage, persisted.
+// `getFaceFrames` used `slice(0, 16)` for the same job, which is worse.
+//
+// A hash of the FULL path is the fix: fixed length, filename-safe, stable across calls (so the cache
+// still works — randomising it would re-extract every frame of every scan), and it cannot be made
+// blind to the filename by a later "tidy up" of the slice.
+function faceFrameTag(srcPath) {
+  return crypto.createHash('sha1').update(String(srcPath || '')).digest('hex').slice(0, 20);
+}
+
 // Extract a single large frame (960px wide) for face detection — much better than a
 // contact-sheet grid where faces are tiny. Cached separately from the poster.
 async function getFaceFrame(srcPath) {
@@ -7315,14 +7336,17 @@ async function getFaceFrame(srcPath) {
   await acquirePoster();
   try {
     await ensureDir(THUMB_DIR);
-    const tag = Buffer.from(srcPath).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
-    const outPath = path.join(THUMB_DIR, `face_${tag}.jpg`);
+    const outPath = path.join(THUMB_DIR, `face_${faceFrameTag(srcPath)}.jpg`);
     if (await fsp.access(outPath).then(() => true).catch(() => false)) {
       faceFrameCache.set(srcPath, outPath); return outPath;
     }
-    const extract = (ss) => extractFrame(srcPath, ss, outPath, '960:-2');
-    let ok = await extract(1);
-    if (!ok) ok = await extract(0);
+    // ⚠ ffmpeg EXITS 0 WITHOUT WRITING A FILE when `-ss` seeks past the end of a short clip, and
+    // `extractFrame` resolves on the exit code alone. Trusting it cached a path to a file that does
+    // not exist — and made the `extract(0)` fallback below unreachable, since `ok` was already true.
+    const wrote = async (ss) => (await extractFrame(srcPath, ss, outPath, '960:-2'))
+      && await fsp.access(outPath).then(() => true).catch(() => false);
+    let ok = await wrote(1);
+    if (!ok) ok = await wrote(0);
     if (!ok) return null;
     faceFrameCache.set(srcPath, outPath);
     return outPath;
@@ -7334,6 +7358,7 @@ async function getFaceFrame(srcPath) {
 ipcMain.handle('faces:image', async (_e, payload) => {
   const sourcePath = String((payload && payload.sourcePath) || '');
   if (!sourcePath) return { ok: false, error: 'No clip' };
+  if (!isPathAllowed(sourcePath)) { refusePath('faces:image', sourcePath); return { ok: false, error: 'That folder is not allowed' }; }
   try {
     const framePath = await getFaceFrame(sourcePath);
     if (!framePath) return { ok: false, error: 'Could not read frame' };
@@ -7354,7 +7379,7 @@ async function getFaceFrames(srcPath, interval, maxFrames) {
   }
   const N = Math.max(1, Math.min(maxFrames, Math.ceil(durationSec / interval)));
   await ensureDir(THUMB_DIR);
-  const tag = Buffer.from(srcPath).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
+  const tag = faceFrameTag(srcPath);   // see faceFrameTag — this was slice(0, 16) and collided
   const jobs = [];
   for (let i = 0; i < N; i += 1) {
     const ss = durationSec * ((i + 0.5) / N);
@@ -7374,6 +7399,16 @@ async function getFaceFrames(srcPath, interval, maxFrames) {
 ipcMain.handle('faces:frames', async (_e, payload) => {
   const sourcePath = String((payload && payload.sourcePath) || '');
   if (!sourcePath) return { ok: false, error: 'No clip' };
+  // ⚠⚠ THE GUARD GOES HERE, ABOVE THE isImagePath BRANCH — audit #95, which missed this handler.
+  //
+  // The image branch below base64s the file straight back to the renderer, and the renderer runs
+  // with `webSecurity: false` (deliberate: Chromium's file loader seeks HEVC over file://) while
+  // rendering filenames and AI-generated text the app does not control. So this was arbitrary local
+  // image read from one XSS — exactly what `poster:get` three files away already refuses.
+  //
+  // Placed BEFORE the branch, not inside it: the image path returns early, so a guard within it
+  // would leave the video path open, and both reach the disk.
+  if (!isPathAllowed(sourcePath)) { refusePath('faces:frames', sourcePath); return { ok: false, error: 'That folder is not allowed' }; }
   // A PHOTO is its own single "frame" — hand the image straight to face detection
   // (no ffmpeg frame extraction). This is what lets face recognition run on stills.
   if (isImagePath(sourcePath)) {
@@ -11327,86 +11362,57 @@ ipcMain.handle('ai:loaded', async () => ({ ok: true, models: await ollamaLoaded(
 // window in which it matters most, since a naming run walks clips seconds apart. Found by a test
 // that seeded a subject and immediately canonicalised against it.
 //
-// ⚠⚠ AND THE FOURTH SOURCE IS THE ONLY ONE HE WROTE HIMSELF — his project FOLDERS.
+// ⚠⚠ TRIED AND REVERTED (2026-07-22): DO NOT ADD THE PROJECT LEDGER AS A FOURTH SOURCE.
 //
-// The three sources above (`config.subjects`, drafts, finalMeta) are all things the app wrote, and
-// mostly things the AI wrote: 112 distinct subjects across 206 named clips, 46% of them describing
-// the shot. Building the vocabulary from only those means the canonicaliser can snap one
-// AI-generated fragment onto another AI-generated fragment and nothing else. It was learning his
-// vocabulary from the one place his vocabulary does not exist.
+// The reasoning was good and the measurement killed it. The three sources above are all things the
+// APP wrote, mostly the AI — so the canonicaliser can only snap one machine-generated fragment onto
+// another. His hand-made project folders looked like the one vocabulary he authored himself, and the
+// ledger already reads them for placement. It was wired up, tested, and measured against his real
+// tree. The result:
 //
-// `02 - Projects/2026/dennis-lawn` is a subject he authored, committed to, and filed 40 clips into.
-// The ledger has read those folders since `backfillLedgerFromTree` landed, and the PLACEMENT tool
-// already consults them — they simply never reached the vocabulary. Probed on a two-folder ledger
-// holding 62 clips: `canonical: dennis-lawn-mowing | matched: false | known: 0`.
+//     drafts (112 subjects)  ->  91 groups empty ledger  ->  91 groups populated.  No change.
+//     backlog (8 subjects)   ->   8 groups empty ledger  ->   8 groups populated.  No change.
+//     subjects whose canonical CHANGED: 2, and BOTH were wrong —
+//         vlog-footage -> 2026-06-11-vlog-footage-from-gopros-v1   (a folder named after a CLIP)
+//         timelapse    -> 05-timelapse                             (numbered scaffolding)
 //
-// The count contributed is the real filed-clip count, not 1. That is honest (there really are 40
-// clips in that folder) and it is what he is shown when asked to accept a canonical name — and it
-// correctly outranks an AI fragment typed onto three drafts.
+// Because a real Projects tree is WORKFLOW SCAFFOLDING, not a subject list. His 51 folders include
+// `V5`, `Final Videos`, `In Progress`, `Finished`, `Hook`, `Day 1`..`Day 5`, `B-Roll`, `raw footage`,
+// `01 - Uncompressed`, `tdarr-workDir2-B73eb1-hG`. Filtering years/dates/`_unsorted`/`vlog` was not
+// close to enough, and every extra rule is a guess about a folder naming habit that is his to change.
+//
+// It could not have helped anyway, which is the part worth remembering: canonicalisation only runs
+// in the renderer at AI-name time (`04-tasks-ai.js`) and on-type (`03-rename.js`). Nothing in
+// `destinationParts`, `finalize:run` or `projects:move` calls it — so clips that are ALREADY named,
+// which is his entire backlog, never pass through it at all. A better vocabulary cannot move a
+// number that the filing path never consults.
+//
+// **The lesson: measure a "learn from his data" feature against HIS data before believing it.** On a
+// synthetic ledger (`2026/dennis-lawn`) it worked perfectly. On his actual disk it was net negative.
+// The backfill itself is kept and still has its menu route — it feeds PLACEMENT (`ledgerMatch`,
+// same-shoot recall), which is real and measured.
 //
 // The signature is cheap (four counts), so rebuilding only happens when something actually changed.
 let _vocabCache = null; let _vocabSig = '';
 function subjectVocabSignature() {
-  let d = 0; let f = 0; let s = 0; let p = 0; let pc = 0;
+  let d = 0; let f = 0; let s = 0;
   try { s = (config.subjects || []).length; } catch { /* ignore */ }
   try { d = Object.keys(currentDrafts() || {}).length; } catch { /* ignore */ }
   try { f = Object.keys(currentFinalMeta() || {}).length; } catch { /* ignore */ }
-  // ⚠ THE LEDGER NEEDS ITS CLIP TOTAL, NOT JUST ITS LENGTH. A backfill re-run over a tree he has
-  // added to ENRICHES existing records (`rec.clips = Math.max(...)`) without pushing a new one, so a
-  // length-only signature would serve a stale vocabulary after a run that really did learn more.
-  try {
-    const led = Array.isArray(config.projectLedger) ? config.projectLedger : [];
-    p = led.length;
-    for (const rec of led) pc += (rec && Number(rec.clips)) || 0;
-  } catch { /* ignore */ }
-  return `${s}:${d}:${f}:${p}:${pc}`;
-}
-
-// Is this folder name one of HIS subjects, or is it tree scaffolding?
-//
-// Three ways a folder earns a record in the ledger without being a subject, and each one does real
-// damage if learned:
-//   · `2026`, `2026-05-31` — a year or date folder with clips sitting directly in it. Learning it
-//     means every shoot of that year is "similar" to it and his whole year files into one folder.
-//   · `_unsorted` — the destination ladder's own fallback (FEATURES.md item 9). It fills up
-//     precisely BECAUSE nothing grouped, so learning it feeds the app's failure back to him as
-//     his own vocabulary.
-//   · `vlog`, `misc` — a real folder name that is too generic to distinguish one shoot from
-//     another. `isMeaningfulCanonical` already refuses these as canonical names; the same rule has
-//     to apply on the way IN, or `bedtime-vlog` and `kitchen-vlog` collapse into `vlog`.
-function ledgerNameIsSubject(raw) {
-  const name = String(raw || '').trim();
-  if (!name || name.startsWith('_') || name.startsWith('.')) return false;
-  const norm = subjects.normalizeSubject(name);
-  if (!norm) return false;
-  // All-numeric tokens: `2026`, `2026-05-31`, `01`. A subject of his never looks like this.
-  if (/^[0-9]+(-[0-9]+)*$/.test(norm)) return false;
-  return subjects.isMeaningfulCanonical(norm);
+  return `${s}:${d}:${f}`;
 }
 
 function subjectVocabulary() {
   const sig = subjectVocabSignature();
   if (_vocabCache && _vocabSig === sig) return _vocabCache;
   const counts = {};
-  const bump = (v, weight = 1) => {
+  const bump = (v) => {
     const s = subjects.normalizeSubject(v);
-    if (s) counts[s] = (counts[s] || 0) + weight;
+    if (s) counts[s] = (counts[s] || 0) + 1;
   };
   try { for (const s of (config.subjects || [])) bump(s); } catch { /* ignore */ }
   try { for (const rec of Object.values(currentDrafts() || {})) if (rec && rec.subject) bump(rec.subject); } catch { /* ignore */ }
   try { for (const rec of Object.values(currentFinalMeta() || {})) if (rec && rec.subject) bump(rec.subject); } catch { /* ignore */ }
-  try {
-    for (const rec of (Array.isArray(config.projectLedger) ? config.projectLedger : [])) {
-      if (!rec || typeof rec !== 'object') continue;
-      const clips = Math.max(1, Number(rec.clips) || 1);
-      if (ledgerNameIsSubject(rec.name)) bump(rec.name, clips);
-      // Where the library WAS named by this app, the backfill parsed real subjects out of the
-      // filenames. Those are as real as the folder name, and the same scaffolding rule applies.
-      for (const s of (Array.isArray(rec.subjects) ? rec.subjects : [])) {
-        if (ledgerNameIsSubject(s)) bump(s, clips);
-      }
-    }
-  } catch { /* ignore */ }
   _vocabCache = subjects.buildVocabulary(counts);
   _vocabSig = sig;
   return _vocabCache;

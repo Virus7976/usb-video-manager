@@ -4341,7 +4341,14 @@ async function aiAutoEnhance() {
   // model call failed, and when there was nothing to name in the first place. It also repeated the
   // claim as a desktop notification. The sibling at :909 already reports "Improved N · M failed" vs
   // "Couldn't improve"; this is that, for the path he actually runs.
-  let done = 0; let planned = 0; let threw = false;
+  //
+  // ⚠⚠ AND `done` COUNTS SUCCESSES, NOT ATTEMPTS. It was `done += 1` at the bottom of the loop with
+  // no check on the result, so `missed = planned - done` was ALWAYS 0 — which made both honest
+  // branches below (`, N failed` and `Couldn't name any`) unreachable code. Reproduced with every
+  // call stubbed to fail: three clips, all blank afterwards, toast said "complete ✓ — named 3" and
+  // the desktop notification repeated it. `attempted` drives the progress bar so it still advances
+  // past a failure; `done` is what he is told.
+  let done = 0; let attempted = 0; let planned = 0; let threw = false;
   try {
     // 1) name any clips that have no subject yet
     const unnamed = all.filter((i) => !((state.scannedFiles[i].subject || '').trim()));
@@ -4351,7 +4358,8 @@ async function aiAutoEnhance() {
       if (aiAborted) break;
     // The card changed under us — stop rather than write this run's results onto another card's clips.
     if (aiRunStale()) { showToast('Stopped analysing — you switched to a different card.', 5000); break; }
-      setTask('ai', aiModelLabel(), done + 1, unnamed.length, 'naming', state.scannedFiles[i].name);
+      setTask('ai', aiModelLabel(), attempted + 1, unnamed.length, 'naming', state.scannedFiles[i].name);
+      attempted += 1;
       markClipAnalyzing(i, 'naming');
       // eslint-disable-next-line no-await-in-loop
       // Guarded for the same reason as the other two batch loops (audit #23) — this one runs over
@@ -4368,7 +4376,12 @@ async function aiAutoEnhance() {
       // later phase (each opens with `if (aiAborted) break`).
       // eslint-disable-next-line no-await-in-loop
       if (!(r && r.ok) && await cardIsGone()) { reportCardGone(); break; }
-      done += 1;
+      // ⚠⚠ SUCCESSES ONLY. This was unconditional, so `missed` below was always 0 and both honest
+      // branches were dead code. Note the SIBLINGS are different and correctly left alone: the
+      // `done` counters in `aiAnalyzeSelected` and `aiImproveSelected` drive the progress bar only —
+      // those functions report from their own `okCount`/`failCount` pair. Here `done` IS the number
+      // he is shown, which is what makes this one a lie rather than a counter.
+      if (r && r.ok) done += 1;
     }
     // 2) learn durable rules from everything analyzed
     const withObs = all.filter((i) => { const c = state.scannedFiles[i]; return obsOf(c) && (c.subject || c.description); });

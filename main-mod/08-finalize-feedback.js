@@ -605,6 +605,27 @@ function confirmedFaceSet() {
   return out;
 }
 
+// ⚠⚠ THE CACHE TAG FOR A CLIP'S EXTRACTED FRAMES — AND IT MUST DEPEND ON THE WHOLE PATH.
+//
+// This was `Buffer.from(srcPath).toString('base64url').…slice(0, 20)`. base64 is 4 characters per 3
+// bytes, so twenty characters is the first ~15 BYTES of the path — the folder prefix, and nothing
+// else. On his real layout every clip in a folder produced an identical tag:
+//
+//     'L:\Video\USB Auto-Action\02 - Compressed\GX010042.MP4' -> TDpcVmlkZW9cVVNCIEF1
+//     'L:\Video\USB Auto-Action\02 - Compressed\GX010099.MP4' -> TDpcVmlkZW9cVVNCIEF1
+//
+// `getFaceFrame` returns an existing file at that path without re-extracting, so the second clip was
+// handed the FIRST clip's frame — and the faces found there are written through `clips:tagPerson`
+// into `finalMeta` AND `renameDrafts`. The wrong person's name, on the wrong footage, persisted.
+// `getFaceFrames` used `slice(0, 16)` for the same job, which is worse.
+//
+// A hash of the FULL path is the fix: fixed length, filename-safe, stable across calls (so the cache
+// still works — randomising it would re-extract every frame of every scan), and it cannot be made
+// blind to the filename by a later "tidy up" of the slice.
+function faceFrameTag(srcPath) {
+  return crypto.createHash('sha1').update(String(srcPath || '')).digest('hex').slice(0, 20);
+}
+
 // Extract a single large frame (960px wide) for face detection — much better than a
 // contact-sheet grid where faces are tiny. Cached separately from the poster.
 async function getFaceFrame(srcPath) {
@@ -612,14 +633,17 @@ async function getFaceFrame(srcPath) {
   await acquirePoster();
   try {
     await ensureDir(THUMB_DIR);
-    const tag = Buffer.from(srcPath).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
-    const outPath = path.join(THUMB_DIR, `face_${tag}.jpg`);
+    const outPath = path.join(THUMB_DIR, `face_${faceFrameTag(srcPath)}.jpg`);
     if (await fsp.access(outPath).then(() => true).catch(() => false)) {
       faceFrameCache.set(srcPath, outPath); return outPath;
     }
-    const extract = (ss) => extractFrame(srcPath, ss, outPath, '960:-2');
-    let ok = await extract(1);
-    if (!ok) ok = await extract(0);
+    // ⚠ ffmpeg EXITS 0 WITHOUT WRITING A FILE when `-ss` seeks past the end of a short clip, and
+    // `extractFrame` resolves on the exit code alone. Trusting it cached a path to a file that does
+    // not exist — and made the `extract(0)` fallback below unreachable, since `ok` was already true.
+    const wrote = async (ss) => (await extractFrame(srcPath, ss, outPath, '960:-2'))
+      && await fsp.access(outPath).then(() => true).catch(() => false);
+    let ok = await wrote(1);
+    if (!ok) ok = await wrote(0);
     if (!ok) return null;
     faceFrameCache.set(srcPath, outPath);
     return outPath;
@@ -631,6 +655,7 @@ async function getFaceFrame(srcPath) {
 ipcMain.handle('faces:image', async (_e, payload) => {
   const sourcePath = String((payload && payload.sourcePath) || '');
   if (!sourcePath) return { ok: false, error: 'No clip' };
+  if (!isPathAllowed(sourcePath)) { refusePath('faces:image', sourcePath); return { ok: false, error: 'That folder is not allowed' }; }
   try {
     const framePath = await getFaceFrame(sourcePath);
     if (!framePath) return { ok: false, error: 'Could not read frame' };
@@ -651,7 +676,7 @@ async function getFaceFrames(srcPath, interval, maxFrames) {
   }
   const N = Math.max(1, Math.min(maxFrames, Math.ceil(durationSec / interval)));
   await ensureDir(THUMB_DIR);
-  const tag = Buffer.from(srcPath).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 16);
+  const tag = faceFrameTag(srcPath);   // see faceFrameTag — this was slice(0, 16) and collided
   const jobs = [];
   for (let i = 0; i < N; i += 1) {
     const ss = durationSec * ((i + 0.5) / N);
@@ -671,6 +696,16 @@ async function getFaceFrames(srcPath, interval, maxFrames) {
 ipcMain.handle('faces:frames', async (_e, payload) => {
   const sourcePath = String((payload && payload.sourcePath) || '');
   if (!sourcePath) return { ok: false, error: 'No clip' };
+  // ⚠⚠ THE GUARD GOES HERE, ABOVE THE isImagePath BRANCH — audit #95, which missed this handler.
+  //
+  // The image branch below base64s the file straight back to the renderer, and the renderer runs
+  // with `webSecurity: false` (deliberate: Chromium's file loader seeks HEVC over file://) while
+  // rendering filenames and AI-generated text the app does not control. So this was arbitrary local
+  // image read from one XSS — exactly what `poster:get` three files away already refuses.
+  //
+  // Placed BEFORE the branch, not inside it: the image path returns early, so a guard within it
+  // would leave the video path open, and both reach the disk.
+  if (!isPathAllowed(sourcePath)) { refusePath('faces:frames', sourcePath); return { ok: false, error: 'That folder is not allowed' }; }
   // A PHOTO is its own single "frame" — hand the image straight to face detection
   // (no ffmpeg frame extraction). This is what lets face recognition run on stills.
   if (isImagePath(sourcePath)) {

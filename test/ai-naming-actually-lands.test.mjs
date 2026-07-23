@@ -195,3 +195,50 @@ test('⚠⚠ the tool result is routed through applyAiResult at the call site', 
   assert.ok(!/if \(toolResult\) return toolResult;/.test(body),
     '⚠⚠ and must not return it raw — that is the exact line that named 4,263 clips into the void');
 });
+
+// --- AND THE COUNTER THAT REPORTED FAILURES AS NAMES --------------------------------------------
+//
+// `aiAutoEnhance` — "Auto-name everything (background)", the path he actually leaves running — ended
+// its loop with a bare `done += 1`, no check on the result. So `missed = planned - done` was ALWAYS
+// zero, which made BOTH honest branches below it unreachable code: the `, N failed` suffix and the
+// `Couldn't name any of the N clips` message could never print. Reproduced with every model call
+// stubbed to fail: three clips, all blank afterwards, toast said "AI auto-enhance complete ✓ —
+// named 3" and the desktop notification said it again.
+//
+// Compounding with the bug above this is the whole story of his 4,594 clips: the tool path computed
+// a name and dropped it, and the counter then reported every one of those as named.
+
+test('⚠⚠ auto-enhance counts SUCCESSES, not attempts', () => {
+  const src = readSrc('src/mod/04-tasks-ai.js').replace(/\/\/.*$/gm, '');
+  const at = src.indexOf('async function aiAutoEnhance');
+  assert.ok(at > -1, 'aiAutoEnhance exists');
+  const body = src.slice(at, src.indexOf('\nlet aiRunDirection', at));
+
+  assert.match(body, /if \(r && r\.ok\) done \+= 1;/,
+    '⚠⚠ the reported count must be gated on the result');
+  assert.ok(!/^\s*done \+= 1;\s*$/m.test(body),
+    '⚠⚠ no unconditional increment may remain — that is the exact line that reported failures as names');
+});
+
+test('⚠ the progress bar still advances past a failure', () => {
+  // The wrong fix: gate `done` and leave it driving `setTask`, so the progress bar freezes on the
+  // first failure and a long run looks hung — replacing a lie with a different lie.
+  const src = readSrc('src/mod/04-tasks-ai.js').replace(/\/\/.*$/gm, '');
+  const at = src.indexOf('async function aiAutoEnhance');
+  const body = src.slice(at, src.indexOf('\nlet aiRunDirection', at));
+  assert.match(body, /setTask\('ai', aiModelLabel\(\), attempted \+ 1,/,
+    '⚠ progress is driven by an ATTEMPT counter, separate from the success count');
+  assert.match(body, /attempted \+= 1;/, 'which really increments');
+});
+
+test('⚠⚠ the sibling counters that drive progress only were left alone', () => {
+  // The over-correction: `aiAnalyzeSelected` and `aiImproveSelected` also carry `done += 1`, and
+  // theirs are CORRECT — those functions report from their own okCount/failCount pair, and gating
+  // their `done` would stall the progress bar for no gain. A sibling sweep has to check what each
+  // counter is FOR, not pattern-match the line.
+  const src = readSrc('src/mod/04-tasks-ai.js').replace(/\/\/.*$/gm, '');
+  const analyzeAt = src.indexOf('async function aiAnalyzeSelected');
+  assert.ok(analyzeAt > -1);
+  const analyze = src.slice(analyzeAt);
+  assert.match(analyze, /okCount/, 'aiAnalyzeSelected reports from okCount, not from done');
+});

@@ -5518,49 +5518,58 @@ assert identity, not size.**
 
 Tests: `test/backfill-never-shrinks-the-ledger.test.mjs` (7), each break-verified.
 
-### 2026-07-22 — The subject vocabulary was built from the problem it was supposed to solve
+### 2026-07-22 — I shipped a "learn from his data" feature that measured NET NEGATIVE, and reverted it
 
-FEATURES.md item 29 calls a controlled subject vocabulary "the unblock": 4,594 clips, 331 named,
-**1 filed**, because 112 competing subjects across 206 named clips mean filing has nothing to group.
-The engine (`core/subjects.js`) and the snapping (`subjects:canonicalize`) were both built and
-tested. `subjectVocabulary()` (`main-mod/10-ai-tools.js`) fed them from three sources:
-`config.subjects`, the rename drafts, and `finalMeta`.
+The reasoning was sound and it was still wrong, which is the point of writing it down.
 
-**All three are things the app wrote, and mostly things the AI wrote.** 46% of those subjects
-describe the shot (`talking-head`, `person-sitting-couch`). So the canonicaliser could snap one
-AI-generated fragment onto another AI-generated fragment and nothing else — it was learning his
-vocabulary from the one place his vocabulary does not exist.
+`subjectVocabulary()` builds from `config.subjects` + drafts + `finalMeta` — three stores the APP
+wrote, mostly the AI. So the canonicaliser could only snap one machine-generated fragment onto
+another. His hand-made project folders looked like the one subject vocabulary he authored himself,
+and the ledger already read them for placement. I wired them in as a fourth source, with filters for
+years/dates/`_unsorted`/`vlog`, 20 tests, every guard break-verified, and an e2e on a real tree. It
+was, by every check I had, good work.
 
-**His real vocabulary has been on disk for years: the project folders he made by hand.**
-`02 - Projects/2026/dennis-lawn` is a subject he authored and filed 40 clips into. The ledger has
-read those folders since `backfillLedgerFromTree` landed, and the PLACEMENT tool already consulted
-them — they simply never reached the vocabulary. Probed on a two-folder ledger holding 62 clips:
+Then it was measured against **his actual disk**:
 
-    canonical: dennis-lawn-mowing | matched: false | known: 0
+    drafts (112 subjects)  ->  91 groups empty ledger  ->  91 groups populated.  No change.
+    backlog (8 subjects)   ->   8 groups empty ledger  ->   8 groups populated.  No change.
+    subjects whose canonical CHANGED: 2, and BOTH were wrong —
+        vlog-footage -> 2026-06-11-vlog-footage-from-gopros-v1   (a folder named after a CLIP)
+        timelapse    -> 05-timelapse                             (numbered scaffolding)
 
-Four things this cost, worth carrying forward:
+Zero benefit, two regressions. **A real Projects tree is workflow scaffolding, not a subject list.**
+His 51 folders include `V5`, `Final Videos`, `In Progress`, `Finished`, `Hook`, `Day 1`..`Day 5`,
+`B-Roll`, `raw footage`, `01 - Uncompressed`, `tdarr-workDir2-B73eb1-hG`, `Misc B-roal`. My filters
+were nowhere near enough, and every further rule is a guess about a folder habit that is his to
+change whenever he likes.
 
-1. **When a feature learns from data, audit WHICH data.** "It learns from what he's used" sounded
-   complete and was 100% machine-authored. The check is not "is there a source" but "did *he* write
-   what's in it".
-2. **A new source needs the cache signature updated in the same edit.** `subjectVocabSignature()`
-   counted three stores; adding a fourth without it means he runs the backfill over his whole
-   library and the very next clip is canonicalised against the vocabulary cached a second earlier.
-   Invisible in any test that seeds before it asks — so there is one that seeds *after*. Breaking
-   the signature fails 7 of the 9 tests in that file; breaking any single filter fails exactly 1.
-3. **Scaffolding is not vocabulary.** A folder earns a ledger record by holding clips, which
-   includes `2026` (year), `2026-05-31` (date), `_unsorted` (the ladder's own fallback) and `vlog` /
-   `misc` (too generic). Learning any of them is worse than learning nothing — `_unsorted` in
-   particular feeds the app's own failure back to him as his own words. `ledgerNameIsSubject()`
-   filters all four, and `isMeaningfulCanonical` is reused rather than re-implemented.
-4. **A one-time nudge is not a route.** The only caller of `ai:backfillLedger` was the AI health
-   check, gated on `!ledgerN && treeHasFiles` — correct for a nudge, wrong as the only door: one run
-   of five projects closes it forever and the fifty folders he adds next year are never read. Now
-   also **Edit → Filing & destinations → "Read my Projects folder…"** (`learnFromProjectsTree`,
-   named unlike the bridge method per the §8h reachability trap). A vocabulary built from his
-   folders is only as current as the last thing that read them.
+Four things worth keeping:
 
-Tests: `test/subjects-learn-from-his-folders.test.mjs` (14). Every guard break-verified individually.
+1. **A synthetic fixture proved the mechanism and hid the premise.** On `2026/dennis-lawn` it worked
+   perfectly, and `dennis-lawn` does not exist on his disk — I invented a tree that suited the idea.
+   **When a feature learns from HIS data, the test fixture must be shaped like HIS data**, or the
+   test only proves the code does what the code does.
+2. **Check the consumer before optimising the producer.** Canonicalisation runs only at AI-name time
+   and on-type; nothing in `destinationParts`, `finalize:run` or `projects:move` calls it. His
+   already-named backlog never passes through it, so a better vocabulary could not move the number
+   no matter how good it got. One grep for the call sites would have killed this before I started.
+3. **20 green break-verified tests are not evidence of value.** They prove the code does what I
+   intended. Whether what I intended helps is a separate question, and only real data answers it.
+4. **Reverting is cheap; a wrong canonical is not.** It renames his subjects.
+
+The **backfill and its menu route were kept** — the ledger's real consumer is PLACEMENT
+(`ledgerMatch`, same-shoot recall), which is measured and works, and it was previously reachable only
+through a health-check prompt that fired while the ledger was completely empty. The pin against
+re-adding the vocabulary link, with the measurement, is in
+`test/subjects-learn-from-his-folders.test.mjs`.
+
+⚠ **And the premise this was built on is itself wrong**, which is the most useful correction of the
+day. FEATURES.md says filing is blocked by 112 competing subjects. Those live in `drafts.json` —
+clips still on cards. The 310 clips in `02 - Compressed`, which is what Organize actually scans,
+carry **8 distinct subjects**. Driven end to end against his real layout, `finalize:run` moved 309
+clips into 47 folders with 0 errors, 12.3% to `_unsorted`, 0 to the root, and re-ran idempotently.
+**The filing pipeline works.** What stops it is that he has never opened the Organize screen —
+1,487 clicks over 14 days, 0 on `finalize`. Reachability, not correctness.
 
 ### 2026-07-12 — The card→intake copy was the ONE copy path with no staging, no fsync, no verify
 

@@ -5518,6 +5518,35 @@ assert identity, not size.**
 
 Tests: `test/backfill-never-shrinks-the-ledger.test.mjs` (7), each break-verified.
 
+### 2026-07-23 — Two audit findings that did NOT reproduce, and one smaller thing that did
+
+Both came from the 2026-07-22 parallel audit, both were written from READING the code, and neither
+survived a probe. Recorded so nobody spends another iteration on them — PROMPT.md §5.6 says ~1 in 3
+audit entries are already-done or misdescribed, and this round it was 2 of 2.
+
+**1. "The ffmpeg health check is unreachable, nested inside `if (!config.projectsRoot)`" — FALSE.**
+`if (!ffProbeOk)` (`main-mod/10-ai-tools.js`) sits at the same brace depth as the `no-projects-root`
+push directly below it; they are siblings, not parent and child. FEATURES.md #89 is correctly marked
+`done`. ⚠ Note the probe that "confirmed" it first was worthless: `no-ffmpeg` was absent from the
+health output with the root both set AND unset — because ffmpeg *is* installed in this environment,
+so the check was right to stay quiet. **An absent problem proves nothing unless you have forced the
+condition that would produce it.** The nesting had to be read off the actual brace depth.
+
+**2. "`projects:move` will file into the bare root given `rel: ''`, returning `ok:true`" — FALSE.**
+Probed with a real file and an empty `rel`:
+
+    FULL RESULT: {"ok":true,"results":[],"undoable":0}
+    ROOT NOW CONTAINS: []
+
+Nothing is written to the root. The dangerous half of the claim is simply not true.
+
+**3. But the probe found a real, smaller one: the clip is silently DROPPED.** An item with an empty
+`rel` produces no result row, no error, no skip reason — and the caller is told `ok: true`. That is
+the "never silently skip a clip" invariant (`usb-app-toolness-100` Tier 3, item 50): a skipped clip
+must appear in a list with a reason. It is much narrower than the reported bug (nothing is misfiled,
+nothing is lost on disk) and it is still the app quietly deciding not to do something it was asked
+to do. **Logged, not yet fixed** — the honest state, rather than a rushed change to a filing path.
+
 ### 2026-07-23 — A setting the app changed on his behalf silently invalidated a setting he made
 
 His two standing filing rules store `dest = "2026/2026 - Client Work/Gourgess Lawns"` while

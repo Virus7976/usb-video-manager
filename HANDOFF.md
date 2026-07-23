@@ -22,7 +22,7 @@ Remotes: `github` (Virus7976/usb-video-manager — also the auto-update release 
 
 ## 2. Where we are
 
-- Suite: **1,644 unit tests passing, 0 failing** (`npm run check`). E2E: `npm run test:e2e`
+- Suite: **1,662 unit tests passing, 0 failing** (`npm run check`). E2E: `npm run test:e2e`
   (Playwright drives the real Electron app; works from WSL).
 - **Never edit `main.js` or `src/renderer.js`** — they are generated. Edit `main-mod/*.js` and
   `src/mod/*.js`, then `npm run bundle`.
@@ -56,7 +56,7 @@ feature must be shaped like HIS data, and check the CONSUMER before optimising t
 
 ## 4. What to do next — in this order
 
-**1. Repair and validate route destinations. Do this before anything else.**
+**1. ~~Repair and validate route destinations~~ — DONE (`c6a289e`, `2d94e34`).** The resolve-time repair and the health-check surfacing both landed. Historical detail:
 His two standing filing rules store `dest: "2026/2026 - Client Work/Gourgess Lawns"` while
 `projectsRoot` is `...\02 - Projects\2026`. `resolveFolderPath` therefore yields
 `.../2026/2026/2026 - Client Work/...` — **117 of 309 clips fork his tree into a duplicate
@@ -78,10 +78,11 @@ his first successful filing run forks his tree, and he stops trusting the app.
 - `ipc-reachability.test.mjs` has two holes: its regex misses template-literal channels (hiding 6
   genuine orphans in `makeListHandlers`), and its `used()` counts its own `KNOWN_UNUSED` strings as
   usage, so the array is never consulted and deleting it leaves the test green.
-- `projects:move` will file into the bare root given `rel: ''`, returning `ok:true` — its twin
-  `finalize:run` has an explicit guard.
-- The ffmpeg-missing health check is unreachable: it sits inside `if (!config.projectsRoot) {`, and
-  his root is set. FEATURES.md #89 is wrongly marked `done`.
+- ~~`projects:move` files into the bare root given `rel: ''`~~ — **probed, does not reproduce.** It
+  writes nothing to the root. It DOES silently drop the clip (no result row, no reason, `ok:true`),
+  which is a real but much smaller "never silently skip a clip" violation. Not yet fixed.
+- ~~The ffmpeg-missing health check is unreachable~~ — **false.** `if (!ffProbeOk)` is a sibling of
+  the `no-projects-root` push, not nested inside it. FEATURES.md #89 is correctly `done`.
 - `ai:health` ignores `advice.kind === 'unset'`, so a fresh machine with a vision model pulled but
   not selected gets no nudge.
 - Phone flow: "Send to Uncompressed" discards main's failure report and hides the retry button, so

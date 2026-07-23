@@ -4,9 +4,19 @@
 
 Insert an SD card or plug in a phone, and the app walks your footage through the whole pipeline: **import → rename → (compress) → analyze with local AI → organize into your Projects tree → embed metadata → clear the card.** Every "AI" feature runs locally (Ollama vision models + bundled face recognition) — your frames never leave the machine.
 
-![Organize & back up](docs/screenshots/organize-header.png)
+![Home — pick what you're doing](docs/screenshots/home.png)
 
-> ℹ️ More screenshots live in [`docs/screenshots/`](docs/screenshots/). Add your own (drag a PNG in and reference it here) — see [Screenshots](#screenshots).
+**Name a card of footage.** Clips group by shoot day, every field shows the exact filename it will produce, and the destination it will file into is shown before anything moves.
+
+![Naming a card of footage](docs/screenshots/rename.png)
+
+**It offers to name a whole shoot at once.** He shoots in batches, so the shoot *date* predicts the subject far better than any per-clip guess — one decision per day beats 400 per clip.
+
+![Name it as a batch](docs/screenshots/batch-prompt.png)
+
+![Filing and destinations](docs/screenshots/menu-edit.png)
+
+> ℹ️ Screenshots are generated from the **real app** — `node scripts/screenshots.mjs` launches the actual Electron build through the e2e harness, seeds synthetic data, drives the real screens and writes `docs/screenshots/`. Re-run it after a UI change and the README is current again.
 
 ---
 
@@ -179,7 +189,18 @@ Please read **[`CONTRIBUTING.md`](CONTRIBUTING.md)** and **[`AGENTS.md`](AGENTS.
 
 ### Screenshots
 
-Capture the app window and drop PNGs into `docs/screenshots/`, then reference them in this README. On Windows you can grab the focused app window with the snippet in `CONTRIBUTING.md`.
+**Don't capture them by hand — regenerate them:**
+
+```bash
+node scripts/screenshots.mjs      # writes docs/screenshots/*.png
+```
+
+It launches the real Electron app via the e2e harness (`test/e2e/harness.mjs`), seeds synthetic stores, drives the real screens and captures each one. Screenshots therefore cannot drift from the app: after any UI change, re-run it and commit the PNGs.
+
+Two things it knows that are easy to rediscover the hard way:
+
+- **`page.screenshot()` times out against this app** — not only the documented full-page hang. Playwright waits for the page to be visually *stable*, and this UI animates continuously, so that never happens. The script captures through Electron's own `webContents.capturePage()` instead.
+- **Don't force the dark theme in the script.** `applyTheme({dark:true})` flips `data-theme` but leaves the light theme's computed custom properties in place, producing dark-on-dark text. The app follows the Windows system theme at runtime.
 
 ---
 

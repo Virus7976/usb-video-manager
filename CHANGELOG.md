@@ -7,6 +7,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+_(nothing yet)_
+
+## [0.5.0] — 2026-07-22
+
 ### ⚠ The AI was naming your clips and throwing the name away (2026-07-22)
 
 This is the big one, and it explains the number that has bothered you most.
@@ -47,35 +51,28 @@ Nothing on your disk was ever touched — this was the app's own memory of your 
 the read rebuilds most of it. Both writers now use the same limits, and re-running it is a genuine
 no-op rather than something that quietly costs you a little each time.
 
-### It now learns your subjects from the folders YOU made (2026-07-22)
+### You can re-read your Projects folder whenever you like (2026-07-22)
 
-Last change taught the app to stop inventing new spellings of subjects you already use. It had one
-hole in it, and it was a big one: it only knew the subjects **it** had written.
+**Edit → Filing & destinations → "Read my Projects folder…"** — new, and re-runnable any time.
 
-The names it learned from were your drafts and its own AI-generated names — the same 112 competing
-subjects that caused the problem. So it could tidy one machine-made name into another machine-made
-name, and that was all. Meanwhile the best list of your real subjects has been sitting on your disk
-for years: **the project folders you made by hand.** `2026/dennis-lawn` is a subject you chose and
-put 40 clips into. The app had never once looked at it.
+The app keeps a memory of the projects you have filed into, and it uses that memory to work out
+where a new card belongs: it matches the dates on the new shoot against the dates of shoots you have
+filed before. Since you shoot in batches, that is its single best signal.
 
-- **Your folder names are now subjects it will reuse.** Shoot more of the same job, and the AI's
-  `dennis-lawn-mowing` becomes `dennis-lawn` — the folder you already have — so the new clips group
-  with the old ones instead of starting a second pile.
-- **It counts what is really in the folder.** When it asks whether to use your name instead, "you
-  have used this on 40 clips" is the real number of clips filed there, not a guess.
-- **It ignores the folders that aren't subjects** — year folders like `2026`, dated folders,
-  `_unsorted`, and names too generic to tell two shoots apart like `vlog` or `misc`. Learning
-  `_unsorted` would have been the app teaching its own failure back to you as your own words.
-- **Edit → Filing & destinations → "Read my Projects folder…"** — new, and you can run it whenever
-  you like. It reads only: nothing in your tree is moved, renamed or deleted. Re-run it after a
-  batch of filing and it says either how many new projects it found or "already up to date" — it
-  will not claim to have done work it did not do.
+Previously the only way to build that memory was a prompt inside the AI health check, and it only
+appeared while the app knew about **zero** projects. One run closed the door for good, and every
+folder you added afterwards stayed invisible to it.
 
-Previously the only way to trigger that read was a prompt in the AI health check, and it only ever
-appeared while the app knew about **zero** projects. One run closed the door for good — every folder
-you added afterwards was invisible to it.
+It reads only: nothing in your tree is moved, renamed or deleted. Re-run it after a batch of filing
+and it tells you either how many new projects it found or "already up to date" — it will not claim
+to have done work it did not do.
 
-**Still true, and still deliberate:** it never renames a subject you typed without asking you first.
+**Tried and pulled back out:** the same change also made your project folder names feed the subject
+list, so a new clip could snap onto a folder you already had. Measured against your actual tree it
+changed nothing at all (91 groups before, 91 after) and got two subjects *wrong* — `timelapse` became
+`05-timelapse`, and `vlog-footage` became `2026-06-11-vlog-footage-from-gopros-v1`. Your Projects
+tree is a workflow (`V5`, `In Progress`, `Day 1`, `raw footage`), not a list of subjects. Removed
+rather than patched, and there is a test carrying those numbers so it does not come back.
 
 ### The reason almost nothing gets filed (2026-07-20)
 

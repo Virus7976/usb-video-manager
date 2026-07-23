@@ -7,6 +7,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+_(nothing yet)_
+
+## [0.7.1] — 2026-07-23
+
 ### A filing run couldn't overfill your C: drive one folder at a time (2026-07-23)
 
 Filing already refused a run that wouldn't fit — but it checked each destination folder **on its

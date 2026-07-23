@@ -5558,6 +5558,33 @@ test could not tell the difference, because it varied the ROOT (which the handle
 instead of `toDir` (which arrives unnormalised from the caller). Caught by breaking the guard down
 to a string compare and watching the test stay green.
 
+### 2026-07-23 — I shipped a broken card in 0.7.1 and the test passed the whole time
+
+The offline-drive card added in 0.7.1 referenced `CHEV`, an identifier I invented — the real cards
+use a literal `›` inside `pw-chev`. `renderPendingWork()` threw on the FIRST card it tried to build,
+so Home's entire pending-work area rendered **empty**: no offline card, no filing card, nothing.
+
+Its unit test passed the whole time, because the source really does contain the strings it looks for.
+`assert.match(core, /Nothing is lost/)` is true of code that never runs.
+
+Found only when an e2e opened the real app while adding the NEXT card:
+
+    render error : CHEV is not defined
+    cards        : []
+
+**Three things, and the third is the uncomfortable one:**
+
+1. **"The string is present" and "the code runs" are different claims.** Every structural assertion in
+   this repo is the first kind. That is fine for pinning a decision and useless for proving behaviour.
+2. **A throw in a render loop takes out everything after it**, so one bad card is not one missing
+   card — it is a blank screen. The blast radius of a template typo is the whole surface.
+3. **I added this card to warn him about a different silent failure**, and shipped it silently
+   failing. Writing the warning is not the same as the warning working.
+
+`test/offline-is-not-empty.test.mjs` now asserts that every `${IDENT}` interpolated into a card
+template is actually defined — a source check, but of a kind that *can* fail. The previous one could
+not. When a structural test is the only thing available, make it bind to the thing that would break.
+
 ### 2026-07-23 — I nearly reverted a decision Jake made, because a number looked wrong to me
 
 Measured a realistic 310-clip filing run to check the corridor scales. It does: **8 seconds, 0

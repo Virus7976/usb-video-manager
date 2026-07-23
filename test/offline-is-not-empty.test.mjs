@@ -94,3 +94,36 @@ test('⚠⚠ Home renders a card for it, leading with the reassurance', async ()
   assert.match(core, /querySelector\('#pwOffline'\)/, '⚠⚠ the card is clickable');
   assert.match(core, /showFoldersAndSetup\(\)/, 'and leads somewhere he can fix it');
 });
+
+// ⚠⚠⚠ THE CARD I SHIPPED IN 0.7.1 WAS BROKEN, AND THE TEST ABOVE PASSED ANYWAY.
+//
+// The offline card's markup referenced `CHEV`, an identifier I invented — the real cards use a
+// literal `›` inside `pw-chev`. `renderPendingWork()` therefore threw `CHEV is not defined` on the
+// FIRST card it tried to build, so Home's entire pending-work area rendered EMPTY: no offline card,
+// no filing card, nothing. Caught only when an e2e opened the real app:
+//
+//     render error : CHEV is not defined
+//     cards        : []
+//
+// The structural test above passed the whole time, because the source really does contain the words
+// it looks for. That is the exact failure mode this project's e2e harness exists for, and I walked
+// into it while adding a card to warn about a different silent failure.
+//
+// This test binds to the thing that actually broke: every identifier interpolated into a card
+// template must exist. It is a source check, but of a kind that would have failed — the previous one
+// could not, because "the string is present" and "the code runs" are different claims.
+test('⚠⚠⚠ every card template interpolates only identifiers that exist', async () => {
+  const { readFileSync } = await import('node:fs');
+  const core = readFileSync(new URL('../src/mod/01-core.js', import.meta.url), 'utf8');
+  const at = core.indexOf('async function renderPendingWork');
+  assert.ok(at > -1, 'the renderer exists');
+  const body = core.slice(at, core.indexOf('\nfunction ', at + 10));
+
+  // Names interpolated inside the card templates, minus locals the function itself defines.
+  const interpolated = [...body.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)].map((m) => m[1]);
+  assert.ok(interpolated.length, 'setup: the cards do interpolate constants');
+  for (const name of new Set(interpolated)) {
+    assert.match(core, new RegExp(`(const|let|var|function)\\s+${name}\\b`),
+      `⚠⚠⚠ "${name}" is interpolated into a card but never defined — renderPendingWork will throw and Home goes blank`);
+  }
+});

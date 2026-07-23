@@ -499,9 +499,9 @@ async function renderPendingWork() {
         <span class="sc-icon accent">${PW_ICON_FILM}</span>
         <span class="sc-text">
           <span class="sc-title">${uploads.total} clip${uploads.total !== 1 ? 's' : ''} uploaded from your phone</span>
-          <span class="sc-sub muted small">Waiting in staging — bring ${uploads.total !== 1 ? 'them' : 'it'} into Uncompressed and ${uploads.total !== 1 ? 'they' : 'it'} join${uploads.total !== 1 ? '' : 's'} the normal flow. Your originals are copied and verified, never moved blind.</span>
+          <span class="sc-sub">Waiting in staging — bring ${uploads.total !== 1 ? 'them' : 'it'} into Uncompressed and ${uploads.total !== 1 ? 'they' : 'it'} join${uploads.total !== 1 ? '' : 's'} the normal flow. Your originals are copied and verified, never moved blind.</span>
         </span>
-        <span class="sc-chev">${CHEV}</span>
+        <span class="pw-cta"><span class="pw-chev">›</span></span>
       </button>`);
   }
   if (w && w.readyUnreachable) {
@@ -509,9 +509,9 @@ async function renderPendingWork() {
         <span class="sc-icon">${PW_ICON_FILM}</span>
         <span class="sc-text">
           <span class="sc-title">Your footage folder isn’t reachable</span>
-          <span class="sc-sub muted small">Nothing is lost — the app just can’t see <b>${escapeHtml(w.readyDir || '')}</b> right now. Reconnect the drive, or pick a different folder.</span>
+          <span class="sc-sub">Nothing is lost — the app just can’t see <b>${escapeHtml(w.readyDir || '')}</b> right now. Reconnect the drive, or pick a different folder.</span>
         </span>
-        <span class="sc-chev">${CHEV}</span>
+        <span class="pw-cta"><span class="pw-chev">›</span></span>
       </button>`);
   }
   if (ready || uncompressed || uncPhotos) {

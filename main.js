@@ -1880,6 +1880,23 @@ ipcMain.handle('projects:move', async (_e, payload) => {
         // eslint-disable-next-line no-await-in-loop
         try { toDir = await resolveFolderPath(projRoot, parts); } catch { toDir = mv.toDir; }
       }
+      // ⚠⚠ NEVER DUMP INTO THE BARE PROJECTS ROOT. Its twin `finalize:run` refuses this outright
+      // (`skipMove` + an `unplanned` count); this path had no equivalent, so a move whose `rel` was
+      // empty filed the clip straight into the top of his Projects tree and reported `ok: true`.
+      // Reproduced: `{ from, toDir: root, rel: '' }` left `GX010042.MP4` sitting in the root.
+      //
+      // Loose clips in the root of a Projects tree are the shape that makes an archive feel unsafe —
+      // they are not in a shoot, nothing groups them, and the next Organize does not see them as
+      // filed. A clip we cannot place must be REPORTED, not placed somewhere harmless-looking:
+      // "never silently skip a clip" means it appears in the results with a reason.
+      const rootNorm = projRoot ? path.resolve(projRoot) : '';
+      if (rootNorm && path.resolve(toDir) === rootNorm) {
+        results.push({
+          from: mv.from, ok: false, skipped: true,
+          error: 'No destination folder for this clip — it would have gone loose in the top of your Projects folder, so it was left where it is.',
+        });
+        continue;
+      }
       // eslint-disable-next-line no-await-in-loop
       const r = await organizeMove(mv.from, toDir, mv.name || path.basename(mv.from), { copy });
       const out = { from: mv.from, ok: true, action: r.action, path: r.path };

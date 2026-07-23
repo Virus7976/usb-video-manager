@@ -5532,20 +5532,31 @@ health output with the root both set AND unset — because ffmpeg *is* installed
 so the check was right to stay quiet. **An absent problem proves nothing unless you have forced the
 condition that would produce it.** The nesting had to be read off the actual brace depth.
 
-**2. "`projects:move` will file into the bare root given `rel: ''`, returning `ok:true`" — FALSE.**
-Probed with a real file and an empty `rel`:
+**2. ⚠⚠⚠ "`projects:move` will file into the bare root given `rel: ''`" — I MARKED THIS FALSE AND I
+WAS WRONG. The audit was right. Fixed the next iteration.**
 
-    FULL RESULT: {"ok":true,"results":[],"undoable":0}
-    ROOT NOW CONTAINS: []
+The probe that "disproved" it passed `items: [...]`. **The payload key is `moves`.** So nothing was
+passed, the handler did nothing, and the empty result read as a clean bill of health:
 
-Nothing is written to the root. The dangerous half of the claim is simply not true.
+    (wrong probe)  FULL RESULT: {"ok":true,"results":[],"undoable":0}   ROOT: []
+    (right probe)  RESULT: {"ok":true,"results":[{"ok":true,"action":"copied",...}]}
+                   ROOT CONTAINS: ["GX010042.MP4"]
 
-**3. But the probe found a real, smaller one: the clip is silently DROPPED.** An item with an empty
-`rel` produces no result row, no error, no skip reason — and the caller is told `ok: true`. That is
-the "never silently skip a clip" invariant (`usb-app-toolness-100` Tier 3, item 50): a skipped clip
-must appear in a list with a reason. It is much narrower than the reported bug (nothing is misfiled,
-nothing is lost on disk) and it is still the app quietly deciding not to do something it was asked
-to do. **Logged, not yet fixed** — the honest state, rather than a rushed change to a filing path.
+A clip filed loose into the top of his Projects tree, reported as success. Its twin `finalize:run`
+refuses this outright (`skipMove` + an `unplanned` count); this path had no equivalent — §5.4 again.
+
+**The lesson, and it is the expensive one: a probe asserting an ABSENCE must first be shown to
+produce the PRESENCE.** A probe that exercises nothing is indistinguishable from a probe that
+exercises something safely. Both print a clean result. Before writing "does not reproduce", make the
+probe reproduce the bug once — against the unfixed code — or it is not evidence of anything. I wrote
+a *correction* into AGENTS.md and HANDOFF.md striking out a correct finding, which is worse than
+having left it alone: the next session would have skipped it as settled.
+
+Now guarded, with `test/never-file-into-the-bare-root.test.mjs` (6). The guard compares
+`path.resolve(toDir)` against the resolved root, not strings — ⚠ and note the FIRST version of that
+test could not tell the difference, because it varied the ROOT (which the handler already strips)
+instead of `toDir` (which arrives unnormalised from the caller). Caught by breaking the guard down
+to a string compare and watching the test stay green.
 
 ### 2026-07-23 — A setting the app changed on his behalf silently invalidated a setting he made
 

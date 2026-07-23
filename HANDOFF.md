@@ -22,7 +22,7 @@ Remotes: `github` (Virus7976/usb-video-manager — also the auto-update release 
 
 ## 2. Where we are
 
-- Suite: **1,662 unit tests passing, 0 failing** (`npm run check`). E2E: `npm run test:e2e`
+- Suite: **1,668 unit tests passing, 0 failing** (`npm run check`). E2E: `npm run test:e2e`
   (Playwright drives the real Electron app; works from WSL).
 - **Never edit `main.js` or `src/renderer.js`** — they are generated. Edit `main-mod/*.js` and
   `src/mod/*.js`, then `npm run bundle`.
@@ -78,9 +78,10 @@ his first successful filing run forks his tree, and he stops trusting the app.
 - `ipc-reachability.test.mjs` has two holes: its regex misses template-literal channels (hiding 6
   genuine orphans in `makeListHandlers`), and its `used()` counts its own `KNOWN_UNUSED` strings as
   usage, so the array is never consulted and deleting it leaves the test green.
-- ~~`projects:move` files into the bare root given `rel: ''`~~ — **probed, does not reproduce.** It
-  writes nothing to the root. It DOES silently drop the clip (no result row, no reason, `ok:true`),
-  which is a real but much smaller "never silently skip a clip" violation. Not yet fixed.
+- ~~`projects:move` files into the bare root given `rel: ''`~~ — **REAL, and now FIXED.** An earlier
+  iteration wrongly marked this "does not reproduce" because its probe used `items:` instead of the
+  real payload key `moves:`, so nothing was exercised. See AGENTS.md §8 — "a probe asserting an
+  absence must first be shown to produce the presence".
 - ~~The ffmpeg-missing health check is unreachable~~ — **false.** `if (!ffProbeOk)` is a sibling of
   the `no-projects-root` push, not nested inside it. FEATURES.md #89 is correctly `done`.
 - `ai:health` ignores `advice.kind === 'unset'`, so a fresh machine with a vision model pulled but

@@ -118,3 +118,60 @@ test('⚠ with genuinely nowhere to look, it still says so plainly', async () =>
   assert.equal(r.ok, false, '⚠ no folders at all is still an honest refusal');
   assert.match(r.error, /No folder chosen/i);
 });
+
+// --- ONE PLACE THAT ANSWERS "IS THIS SET UP RIGHT?" ----------------------------------------------
+//
+// Settings → "Folders & setup". Its job is not to add settings — they already exist, spread across
+// Preferences, the Setup wizard, Filing rules and an AI health card. Its job is to show every folder
+// the app uses and whether it is REALLY on disk, which none of those screens did. That gap was not
+// cosmetic: both of his filing rules pointed at a folder that was never there and nothing told him.
+
+const readSrc = async (p) => {
+  const { readFileSync } = await import('node:fs');
+  const { join: j } = await import('node:path');
+  return readFileSync(j(process.cwd(), p), 'utf8').replace(/\/\/.*$/gm, '');
+};
+
+test('⚠⚠ the screen exists, is in the Settings hub, and asks the DISK', async () => {
+  const menus = await readSrc('src/mod/06-menus.js');
+  assert.match(menus, /title: 'Folders & setup'/, 'it is a card in the existing hub');
+  assert.match(menus, /go: showFoldersAndSetup/, 'wired to the real function');
+  assert.match(menus, /async function showFoldersAndSetup/, 'which exists');
+
+  const at = menus.indexOf('async function showFoldersAndSetup');
+  const body = menus.slice(at);
+  assert.match(body, /await window\.api\.pathExists\(/,
+    '⚠⚠ it checks whether each folder is really there — a CONFIGURED path proves nothing');
+  assert.match(body, /await window\.api\.validateRouteDests\(\)/,
+    '⚠⚠ and reuses the same validator the health check runs, rather than a second opinion');
+});
+
+test('⚠ it is a NINTH card, not a second settings screen', async () => {
+  // The duplication this codebase warns about: Settings is a container, and a screen that lists its
+  // own siblings makes the same thing reachable two ways with two behaviours.
+  const menus = await readSrc('src/mod/06-menus.js');
+  const at = menus.indexOf('function showSettingsHub');
+  const hub = menus.slice(at, menus.indexOf('function showSetupWizard', at));
+  const count = (hub.match(/\{ ic: /g) || []).length;
+  assert.equal(count, 9, `⚠ the hub gained exactly one card — found ${count}`);
+});
+
+test('⚠⚠ the preset controls are on it, wired to the real functions', async () => {
+  const menus = await readSrc('src/mod/06-menus.js');
+  const at = menus.indexOf('async function showFoldersAndSetup');
+  const body = menus.slice(at);
+  assert.match(body, /savePresetFile\(\)/, 'save is reachable from here');
+  assert.match(body, /loadPresetFile\(\)/, 'and load');
+});
+
+test('⚠ a broken filing rule offers the fix in place, and re-reads afterwards', async () => {
+  // "Make errors actionable in place" — a screen that reports a problem and makes him go elsewhere
+  // to fix it is where the pipeline stalls.
+  const menus = await readSrc('src/mod/06-menus.js');
+  const at = menus.indexOf('async function showFoldersAndSetup');
+  const body = menus.slice(at);
+  assert.match(body, /window\.api\.repairRouteDests\(\)/, 'the fix is on this screen');
+  assert.match(body, /r\.repaired/, 'and it reports the real count');
+  assert.match(body, /Nothing needed fixing/, 'including when it changed nothing');
+  assert.match(body, /close\(\); showFoldersAndSetup\(\);/, '⚠ and the screen re-reads rather than showing stale status');
+});

@@ -538,11 +538,11 @@ async function validateRouteDests() {
   }
   return out;
 }
-// ⚠ NO `routes:validate` IPC HANDLER, DELIBERATELY. `validateRouteDests` is consumed by `ai:health`
-// inside main, so an ipcMain handler for it would be main-side code nothing can invoke — which the
-// app's own reachability guard refuses, correctly. Add the handler and its preload binding in the
-// SAME change as the first renderer caller (the Filing-rules screen showing per-rule status is the
-// obvious one), never before.
+// The handler exists because — and only because — it now has a caller: the Settings hub's
+// "Folders & setup" screen lists every filing rule with its live status. It was deliberately absent
+// until that screen was written, per the rule that a handler with no caller is main-side code nobody
+// can run. If that screen is ever removed, remove this with it.
+ipcMain.handle('routes:validate', () => validateRouteDests());
 
 // Rewrite the stale destinations to what they already resolve to.
 //

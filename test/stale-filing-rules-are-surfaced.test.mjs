@@ -151,12 +151,21 @@ test('⚠ the fix card reports what happened, including nothing', () => {
   assert.match(body, /Nothing needed fixing/, '⚠ and says so when it changed nothing');
 });
 
-test('⚠⚠ there is deliberately no routes:validate IPC handler', () => {
-  // The validator is consumed by ai:health INSIDE main. An ipcMain handler for it would be main-side
-  // code nothing can invoke — which this app's own reachability guard refuses, correctly. Pinned so
-  // nobody "helpfully" adds it back without a renderer caller in the same change.
+test('⚠⚠ routes:validate exists ONLY because it has a caller', () => {
+  // This test used to assert the OPPOSITE — that no `routes:validate` handler existed — because the
+  // validator was consumed by ai:health inside main and a handler with no caller is main-side code
+  // nobody can run. The pin said: add it in the same change as the first renderer caller. That
+  // change is Settings → "Folders & setup", which lists every filing rule with its live status.
+  //
+  // So the rule has not been relaxed, it has been satisfied. What is pinned now is the PAIR: if the
+  // caller is ever removed, this fails and the handler must go with it.
   const ai = src('main-mod/03-ai-ollama.js');
-  assert.ok(!/ipcMain\.handle\('routes:validate'/.test(ai),
-    '⚠⚠ no handler without a caller — add it WITH the Filing-rules screen that uses it');
-  assert.match(ai, /async function validateRouteDests/, 'the function itself exists');
+  const pre = readFileSync(join(process.cwd(), 'preload.js'), 'utf8').replace(/\/\/.*$/gm, '');
+  const menus = src('src/mod/06-menus.js');
+
+  assert.match(ai, /ipcMain\.handle\('routes:validate'/, 'the handler exists');
+  assert.match(pre, /validateRouteDests: \(\) => ipcRenderer\.invoke\('routes:validate'\)/, 'it is bridged');
+  assert.match(menus, /await window\.api\.validateRouteDests\(\)/,
+    '⚠⚠ and something in the renderer really calls it — otherwise delete the handler');
+  assert.match(menus, /Folders & setup/, 'the screen that needs it is in the Settings hub');
 });

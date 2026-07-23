@@ -278,6 +278,7 @@ contextBridge.exposeInMainWorld('api', {
   // it — his two real rules ended up pointing at `2026/...` inside a root already called `2026`.
   // Only the REPAIR is bridged: the validator is consumed by `ai:health` inside main, and a bridge
   // with no renderer caller is dead surface the reachability guard correctly refuses.
+  validateRouteDests: () => ipcRenderer.invoke('routes:validate'),
   repairRouteDests: (ids) => ipcRenderer.invoke('routes:repairDests', ids),
 
   // Presets — save a setup, share it, load someone else's. Import is TWO steps (preview then apply)

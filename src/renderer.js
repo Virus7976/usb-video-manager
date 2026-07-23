@@ -7793,7 +7793,8 @@ function showSettingsHub() {
     { ic: '📂', title: 'Filing rules', sub: 'Where footage goes by subject / descriptor', go: () => showRoutingRules() },
     { ic: '🫥', title: 'People & faces', sub: 'Manage recognized people', go: showPeopleManager },
     { ic: '📶', title: 'Pair phone (Wi-Fi)', sub: 'Scan a QR to back up your phone with no cable', go: () => showWirelessPairModal() },
-    { ic: '🧭', title: 'Setup wizard', sub: 'Re-run guided onboarding (folders, AI, faces)', go: () => showSetupWizard() }
+    { ic: '🧭', title: 'Setup wizard', sub: 'Re-run guided onboarding (folders, AI, faces)', go: () => showSetupWizard() },
+    { ic: '📁', title: 'Folders & setup', sub: 'Every folder in one place, with what is actually there — and presets', go: showFoldersAndSetup }
   ];
   ov.innerHTML = `<div class="modal-card settings-hub">
     <div class="pd-hd"><span class="pd-hd-icon keep-emoji">⚙️</span><div class="pd-hd-tx"><h3>Settings</h3><p class="muted small pd-hd-sub">Everything you can tune, in one place.</p></div></div>
@@ -8436,6 +8437,95 @@ function showFindReplace() {
     });
   });
   setTimeout(() => { try { q('#frFind').focus(); } catch { /* ignore */ } }, 0);
+}
+
+// ⚠⚠ ONE PLACE THAT ANSWERS "IS THIS SET UP RIGHT?" — Settings → Folders & setup.
+//
+// Jake, 2026-07-22: *"I was thinking some kind of UI to organize all this and make it work."* His
+// folders were spread across Preferences, the Setup wizard, Filing rules and an AI health card, and
+// none of them said whether a path actually EXISTS. That is not a cosmetic gap: measured on his real
+// config, both of his filing rules pointed at a folder that was never there, because `projectsRoot`
+// moved under them — and nothing in the app showed him that.
+//
+// So this screen's job is not to add settings. It is to show, in one list, every folder the app uses
+// and whether it is really on disk, plus the filing rules and whether each one resolves. It reuses
+// `routes:validate` (the same validator the health check runs) rather than re-deriving status here —
+// a second opinion about the same question is how two screens start disagreeing.
+async function showFoldersAndSetup() {
+  const ov = document.createElement('div'); ov.className = 'modal-overlay';
+  const card = document.createElement('div'); card.className = 'modal-card settings-hub';
+  card.innerHTML = `<div class="pd-hd"><span class="pd-hd-icon keep-emoji">📁</span><div class="pd-hd-tx">
+      <h3>Folders &amp; setup</h3><p class="muted small pd-hd-sub">Where everything lives, and whether it is really there.</p></div></div>
+    <div class="fs-body"><p class="muted small">Checking…</p></div>
+    <div class="modal-actions">
+      <button type="button" class="btn fs-preset-save">Save this setup as a preset…</button>
+      <button type="button" class="btn fs-preset-load">Load a preset…</button>
+      <button type="button" class="btn fs-close">Close</button>
+    </div>`;
+  ov.appendChild(card); document.body.appendChild(ov);
+  const close = () => ov.remove();
+  card.querySelector('.fs-close').addEventListener('click', close);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  card.querySelector('.fs-preset-save').addEventListener('click', () => { close(); savePresetFile(); });
+  card.querySelector('.fs-preset-load').addEventListener('click', () => { close(); loadPresetFile(); });
+
+  const body = card.querySelector('.fs-body');
+  const rows = [];
+  const add = (label, value, why) => rows.push({ label, value: value || '', why });
+
+  let conf = {};
+  try { conf = (await window.api.getConfig()) || {}; } catch { conf = {}; }
+  add('Footage lands here', conf.intakeFolder, 'Imported clips are copied into this folder.');
+  add('Compressed footage', conf.compressedFolder, 'Optional — only if you encode. Organize falls back to the folder above.');
+  add('Projects folder', conf.projectsRoot, 'Where filed footage ends up.');
+  if (conf.nasBackup && conf.nasBackup.enabled) add('NAS backup', conf.nasBackup.path, 'A second copy is mirrored here.');
+
+  // Ask the disk, one path at a time. A folder that is merely CONFIGURED tells him nothing.
+  await Promise.all(rows.map(async (r) => {
+    if (!r.value) { r.state = 'unset'; return; }
+    try { r.state = (await window.api.pathExists(r.value)) ? 'ok' : 'missing'; }
+    catch { r.state = 'unknown'; }
+  }));
+
+  let rules = null;
+  try { rules = await window.api.validateRouteDests(); } catch { rules = null; }
+
+  const badge = (st) => (st === 'ok' ? '<span class="fs-ok">✓ found</span>'
+    : st === 'missing' ? '<span class="fs-bad">✗ not on disk</span>'
+    : st === 'unset' ? '<span class="fs-muted">not set</span>'
+    : '<span class="fs-muted">could not check</span>');
+
+  const rowHtml = rows.map((r) => `<div class="fs-row">
+      <div class="fs-label">${escapeHtml(r.label)} ${badge(r.state)}</div>
+      <div class="fs-path muted small">${r.value ? escapeHtml(r.value) : '—'}</div>
+      <div class="fs-why muted small">${escapeHtml(r.why)}</div>
+    </div>`).join('');
+
+  let rulesHtml = '';
+  if (rules && rules.ok && rules.routes && rules.routes.length) {
+    const one = (r) => {
+      const st = r.status === 'ok' ? '<span class="fs-ok">✓</span>'
+        : r.status === 'stale' ? '<span class="fs-bad">✗ points at a folder that is not there</span>'
+        : '<span class="fs-muted">will be created</span>';
+      return `<div class="fs-row"><div class="fs-label">${escapeHtml(r.name || r.dest)} ${st}</div>
+        <div class="fs-path muted small">${escapeHtml(r.dest)}</div></div>`;
+    };
+    rulesHtml = `<h4 class="fs-h">Filing rules</h4>${rules.routes.map(one).join('')}`
+      + (rules.stale ? '<button type="button" class="btn fs-fix">Fix the ' + (rules.stale !== 1 ? 'rules' : 'rule') + '</button>' : '');
+  }
+
+  body.innerHTML = rowHtml + rulesHtml;
+  const fix = body.querySelector('.fs-fix');
+  if (fix) {
+    fix.addEventListener('click', async () => {
+      const r = await withBusyBtn(fix, 'Fixing…', () => window.api.repairRouteDests());
+      if (!r || !r.ok) { showToast((r && r.error) || 'Could not fix the rules', 6000); return; }
+      showToast(r.repaired
+        ? `Fixed ${r.repaired} filing rule${r.repaired !== 1 ? 's' : ''} ✓`
+        : 'Nothing needed fixing.', 6000);
+      close(); showFoldersAndSetup();
+    });
+  }
 }
 // Canonicalize a string to alnum-lowercase for loose comparison (distinct from slug()
 // which keeps hyphens). Single source — was declared identically inside two functions.

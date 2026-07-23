@@ -5558,6 +5558,42 @@ test could not tell the difference, because it varied the ROOT (which the handle
 instead of `toDir` (which arrives unnormalised from the caller). Caught by breaking the guard down
 to a string compare and watching the test stay green.
 
+### 2026-07-23 — I nearly reverted a decision Jake made, because a number looked wrong to me
+
+Measured a realistic 310-clip filing run to check the corridor scales. It does: **8 seconds, 0
+errors, 0 decisions required, 0 clips to `_unsorted`, 7 folders on disk.** That is the good news and
+it is worth knowing.
+
+But the ledger recorded **211 projects**, and 211-for-7-folders looked obviously broken. I traced it
+to `ledgerKeyFromRel` taking three segments, which on a `<subject>/<date>` tree means SUBJECT + DAY —
+so every shoot day becomes its own project. I wrote the fix, wrote seven tests, break-verified them
+all, and only then ran the full suite: four existing tests failed, one named *"the ledger learns one
+entry per shoot, not one for the whole archive"*.
+
+That file opens with a measurement and ends with:
+
+> *Jake chose this layout after being shown the measurement. It is his archive; the alternatives
+> (mirroring his year-prefixed folder names, or asking per shoot) were real options, so this is NOT a
+> default to change on a hunch later.*
+
+And the reasoning is right. `vlog` is a broad category in his naming convention, not a per-shoot name
+— 129 of his clips carry it. Collapsing them into one `vlog/` project means the ledger learns exactly
+ONE entry from filing his entire archive, and the app gets no smarter for having done it. **211 is
+not noise; it is 211 real shoots**, which is the unit he works in and the unit the 88% date-predicts-
+subject signal lives at. Reverted.
+
+**Three things to carry:**
+
+1. **A number that looks wrong is a question, not a finding.** I had a fix, tests and
+   break-verification before I checked whether anyone had decided this on purpose. All of that
+   rigour was pointed at the wrong question.
+2. **Run the FULL suite before believing a targeted fix** — not after. The four failures were the
+   only thing that stopped this, and they arrived last.
+3. **When a comment says "this was chosen deliberately, do not change on a hunch", that is exactly
+   the moment it is protecting.** It read as boilerplate right up until it was load-bearing.
+
+The genuinely useful output of the iteration was the scale measurement, not the "fix".
+
 ### 2026-07-23 — THREE TIMES NOW: a break that did not apply read as a guard that held
 
 Same failure, three different disguises, all in one day:

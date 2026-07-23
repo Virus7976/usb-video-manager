@@ -173,6 +173,26 @@ the keywords and the on/off state, so the recipient re-points them; (c) ask at e
 `test/presets-never-leak-his-data.test.mjs`.
 
 
+### Q10 — "310 clips in 211 projects" is technically right and reads oddly
+**The question:** filing a 310-clip batch creates **211 ledger projects**, because a project is a
+SHOOT (subject + date) — which you chose deliberately, and which is right: `vlog` alone covers 129 of
+your clips, so grouping by subject alone would teach the ledger one entry for your whole archive.
+
+But Home's payoff counter says "N clips in M projects", and "310 clips in 211 projects" reads like
+something went wrong, when in fact it is 211 real shoots.
+
+**Why it needs you:** the data model is correct and I am not proposing changing it — I tried, and
+your own note in `test/subject-groups-by-shoot-date.test.mjs` stopped me, correctly. This is purely
+what the counter should SAY.
+
+**What I did in the meantime:** nothing. The counter is unchanged.
+
+**Options:** (a) leave it; (b) count distinct top-level folders instead — "310 clips in 6 projects";
+(c) say "shoots" rather than "projects" — "310 clips across 211 shoots", which is what it means.
+
+**Measured for context:** 310 clips → 7 folders on disk, 211 ledger shoots, 8 seconds, 0 errors,
+0 decisions required from you.
+
 ## Answered
 
 _(nothing yet)_

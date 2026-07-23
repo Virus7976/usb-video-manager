@@ -274,6 +274,11 @@ contextBridge.exposeInMainWorld('api', {
   // Standing filing rules + plain-English rule parsing + per-clip analysis cache
   getRoutes: () => ipcRenderer.invoke('routes:get'),
   saveRoutes: (list) => ipcRenderer.invoke('routes:save', list),
+  // A rule's destination is stored RELATIVE to the Projects folder, and that folder can move under
+  // it — his two real rules ended up pointing at `2026/...` inside a root already called `2026`.
+  // Only the REPAIR is bridged: the validator is consumed by `ai:health` inside main, and a bridge
+  // with no renderer caller is dead surface the reachability guard correctly refuses.
+  repairRouteDests: (ids) => ipcRenderer.invoke('routes:repairDests', ids),
   aiParseRules: (payload) => ipcRenderer.invoke('ai:parseRules', payload),
   getClipObs: () => ipcRenderer.invoke('clipObs:get'),
   saveClipObs: (payload) => ipcRenderer.invoke('clipObs:save', payload),

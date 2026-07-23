@@ -1876,6 +1876,17 @@ async function applyAiHealthFix(p, card) {
         : 'Nothing new to learn from that folder yet.');
       return;
     }
+    if (p.fix === 'repairRouteDests') {
+      // Rewrites his own filing rules, so it says exactly what it will do and reports the real
+      // count back — "Fixed 2 rules" when it fixed none is the failure this app has had before.
+      const r = await withBusyBtn(card, 'Fixing…', () => window.api.repairRouteDests());
+      if (!r || !r.ok) { showToast((r && r.error) || 'Could not check your filing rules', 6000); return; }
+      const n = r.repaired || 0;
+      done(n
+        ? `Fixed ${n} filing rule${n !== 1 ? 's' : ''} ✓ — ${n !== 1 ? 'they' : 'it'} now points at the folder you actually use.`
+        : 'Nothing needed fixing — your rules already point at real folders.');
+      return;
+    }
     if (p.fix === 'useProjects') {
       // The folder was already there — accept it in one click rather than opening a file browser.
       await withBusyBtn(card, 'Setting…', () => window.api.setProjectsRoot(p.arg));

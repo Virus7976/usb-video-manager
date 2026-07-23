@@ -2566,6 +2566,90 @@ ipcMain.handle('ai:answerSubjects', async (_e, payload) => {
 // editor) and they're remembered + applied on every Destination map.
 function aiRoutes() { return (config.ai && Array.isArray(config.ai.routes)) ? config.ai.routes : []; }
 ipcMain.handle('routes:get', () => aiRoutes());
+
+// ⚠⚠ A FILING RULE'S DESTINATION IS STORED RELATIVE TO `projectsRoot` — AND THE ROOT CAN MOVE.
+//
+// Measured on his real config: both his rules store `2026/2026 - Client Work/Gourgess Lawns` while
+// `projectsRoot` is `...\02 - Projects\2026`, because the rules picker offers paths relative to the
+// root as it was WHEN HE SAVED THEM, and the AI health card's "Use that folder" later moved the root
+// one level deeper. 117 of 309 clips would have filed into a duplicate `2026\2026\...` tree.
+//
+// `resolveFolderPath` now repairs that at file time, so nothing forks. This reports it, because a
+// silent repair is still a lie by omission: his stored rule says something that is no longer true,
+// the rules screen shows him the stale text, and the next thing he saves from that screen re-saves
+// the stale value. Fixing the symptom without ever telling him is how a config drifts forever.
+//
+// PURE READ. It resolves and stats; it changes nothing. Status per rule:
+//   ok      — the destination exists as written
+//   stale   — as written it does not exist, but dropping the duplicated root name finds a real folder
+//   missing — neither exists; it will be created on first use, which may well be what he wants
+async function validateRouteDests() {
+  const root = String(config.projectsRoot || '');
+  const out = { ok: true, root, routes: [], stale: 0, missing: 0 };
+  if (!root) return { ...out, ok: false, error: 'No Projects folder set' };
+
+  const isDir = (p) => fsp.stat(p).then((s) => s.isDirectory()).catch(() => false);
+  for (const r of aiRoutes()) {
+    if (!r || r.kind === 'descriptor' || !r.dest) continue;
+    const parts = String(r.dest).split('/').filter(Boolean);
+    // eslint-disable-next-line no-await-in-loop
+    const asWritten = path.join(root, ...parts.map((x) => safeFolderName(x)).filter(Boolean));
+    // eslint-disable-next-line no-await-in-loop
+    const resolved = await resolveFolderPath(root, parts);   // carries the stale-prefix repair
+    // eslint-disable-next-line no-await-in-loop
+    const writtenExists = await isDir(asWritten);
+    // eslint-disable-next-line no-await-in-loop
+    const resolvedExists = await isDir(resolved);
+
+    let status = 'missing';
+    if (writtenExists) status = 'ok';
+    else if (resolvedExists && resolved !== asWritten) status = 'stale';
+    else if (resolvedExists) status = 'ok';
+
+    if (status === 'stale') out.stale += 1;
+    if (status === 'missing') out.missing += 1;
+    // `suggest` is the dest RELATIVE to the root, which is the form the rule stores.
+    const suggest = status === 'stale' ? path.relative(root, resolved).split(path.sep).join('/') : '';
+    out.routes.push({ id: r.id, name: r.name, dest: r.dest, status, resolved, suggest });
+  }
+  return out;
+}
+// ⚠ NO `routes:validate` IPC HANDLER, DELIBERATELY. `validateRouteDests` is consumed by `ai:health`
+// inside main, so an ipcMain handler for it would be main-side code nothing can invoke — which the
+// app's own reachability guard refuses, correctly. Add the handler and its preload binding in the
+// SAME change as the first renderer caller (the Filing-rules screen showing per-rule status is the
+// obvious one), never before.
+
+// Rewrite the stale destinations to what they already resolve to.
+//
+// ⚠ HIS CONFIGURATION, SO HE ASKS FOR IT. This is only ever reached from an explicit control; it is
+// never run as part of a scan, a filing run or a health check. And it only touches rules the
+// validator independently classified `stale` — a rule whose folder is simply missing is left exactly
+// as typed, because "this folder does not exist yet" is a perfectly normal thing for a rule to say.
+ipcMain.handle('routes:repairDests', async (_e, ids) => {
+  const check = await validateRouteDests();
+  if (!check.ok) return check;
+  const wanted = Array.isArray(ids) && ids.length ? new Set(ids.map(String)) : null;
+  // ⚠ TWO CONDITIONS, AND ONLY ONE IS LOAD-BEARING — verified by breaking each. `suggest` is set
+  // ONLY for a route classified `stale`, so an empty `suggest` is what actually stops a `missing`
+  // rule being rewritten (the loop below skips falsy values too). The `status === 'stale'` test is
+  // deliberate redundancy on the operation that edits his configuration, not a second real guard:
+  // removing it alone changes no behaviour and fails no test, and that is worth saying rather than
+  // leaving a future reader to assume both matter.
+  const fixable = check.routes.filter((r) => r.status === 'stale' && r.suggest && (!wanted || wanted.has(String(r.id))));
+  if (!fixable.length) return { ok: true, repaired: 0, routes: check.routes };
+
+  const byId = new Map(fixable.map((r) => [String(r.id), r.suggest]));
+  let repaired = 0;
+  for (const r of aiRoutes()) {
+    const next = r && byId.get(String(r.id));
+    if (!next || next === r.dest) continue;
+    r.dest = next;
+    repaired += 1;
+  }
+  if (repaired) saveConfig();
+  return { ok: true, repaired, routes: (await validateRouteDests()).routes };
+});
 ipcMain.handle('routes:save', (_e, list) => {
   config.ai = config.ai || {};
   config.ai.routes = (Array.isArray(list) ? list : []).map((r) => {
@@ -11644,6 +11728,30 @@ ipcMain.handle('ai:health', async () => {
       arg: config.projectsRoot,
     });
   }
+
+  // 3c. ⚠⚠ A FILING RULE POINTING SOMEWHERE THAT NO LONGER EXISTS.
+  //
+  // A rule's `dest` is stored RELATIVE to `projectsRoot`, and that root can move under it. His two
+  // real rules store `2026/2026 - Client Work/Gourgess Lawns` while the root is already
+  // `...\02 - Projects\2026`, because the rules picker offered paths relative to the root as it was
+  // when he saved them and the "Use that folder" fix below later moved it a level deeper. Filing
+  // repairs this at resolve time so nothing forks — but the stored rule still SAYS the wrong thing,
+  // the rules screen still shows him the stale text, and re-saving from that screen writes it back.
+  // High severity because it is his own configuration silently not meaning what it says.
+  try {
+    const rv = await validateRouteDests();
+    if (rv && rv.ok && rv.stale) {
+      const names = rv.routes.filter((r) => r.status === 'stale').map((r) => r.name || r.dest);
+      problems.push({
+        id: 'stale-route-dest',
+        severity: 'high',
+        title: `${rv.stale} filing rule${rv.stale !== 1 ? 's point' : ' points'} at the wrong folder`,
+        detail: `${names.join(', ')} — the folder named in ${rv.stale !== 1 ? 'these rules' : 'this rule'} doesn't exist, but the folder you actually use does. This happens when the Projects folder moves after a rule was made. Filing already sends the clips to the right place; this fixes what the rule itself says.`,
+        fix: 'repairRouteDests',
+        fixLabel: 'Fix the rule' + (rv.stale !== 1 ? 's' : ''),
+      });
+    }
+  } catch { /* never let a health check throw */ }
 
   // 4. Nowhere to file to.
   if (!config.projectsRoot) {

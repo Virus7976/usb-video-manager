@@ -1712,6 +1712,30 @@ ipcMain.handle('ai:health', async () => {
     });
   }
 
+  // 3c. ⚠⚠ A FILING RULE POINTING SOMEWHERE THAT NO LONGER EXISTS.
+  //
+  // A rule's `dest` is stored RELATIVE to `projectsRoot`, and that root can move under it. His two
+  // real rules store `2026/2026 - Client Work/Gourgess Lawns` while the root is already
+  // `...\02 - Projects\2026`, because the rules picker offered paths relative to the root as it was
+  // when he saved them and the "Use that folder" fix below later moved it a level deeper. Filing
+  // repairs this at resolve time so nothing forks — but the stored rule still SAYS the wrong thing,
+  // the rules screen still shows him the stale text, and re-saving from that screen writes it back.
+  // High severity because it is his own configuration silently not meaning what it says.
+  try {
+    const rv = await validateRouteDests();
+    if (rv && rv.ok && rv.stale) {
+      const names = rv.routes.filter((r) => r.status === 'stale').map((r) => r.name || r.dest);
+      problems.push({
+        id: 'stale-route-dest',
+        severity: 'high',
+        title: `${rv.stale} filing rule${rv.stale !== 1 ? 's point' : ' points'} at the wrong folder`,
+        detail: `${names.join(', ')} — the folder named in ${rv.stale !== 1 ? 'these rules' : 'this rule'} doesn't exist, but the folder you actually use does. This happens when the Projects folder moves after a rule was made. Filing already sends the clips to the right place; this fixes what the rule itself says.`,
+        fix: 'repairRouteDests',
+        fixLabel: 'Fix the rule' + (rv.stale !== 1 ? 's' : ''),
+      });
+    }
+  } catch { /* never let a health check throw */ }
+
   // 4. Nowhere to file to.
   if (!config.projectsRoot) {
     // If the folder we'd guess actually EXISTS, offer it — one click, no file browser. His is

@@ -74,6 +74,15 @@ export async function stubOpenDialog(app, dir) {
   }, dir);
 }
 
+// Stub the OS SAVE dialog so an export writes to a path the test chose. Sibling of
+// stubOpenDialog — anything that saves a file needs this to be drivable without a human.
+export async function stubSaveDialog(app, filePath) {
+  await app.evaluate(({ dialog }, p) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: p });
+    dialog.showSaveDialogSync = () => p;
+  }, filePath);
+}
+
 // Point the source at a fixture folder and run the app's REAL startFlow() (which scans the folder via
 // the main process and builds the rename screen). We enter through the renderer's own entry point with
 // the drive pre-set — more robust than chasing home-screen button visibility, and it still exercises

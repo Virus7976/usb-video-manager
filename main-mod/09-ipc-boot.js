@@ -809,7 +809,22 @@ ipcMain.handle('finalize:run', async (evt, payload) => {
   });
   // Per-run choices come from the payload (the Organize screen), falling back to
   // the saved config.
-  const dest = payload.organizeDest || config.organizeDest || '';
+  // ⚠⚠ FALL BACK TO THE PROJECTS FOLDER — they are one concept stored in two settings.
+  //
+  // `organizeDest` and `projectsRoot` both mean "where filed footage goes", and setting one does not
+  // set the other. Every route that asks him to configure a destination — the AI health card's "Use
+  // that folder", the setup wizard, `projects:setRoot` — writes `projectsRoot`. `finalize:run` read
+  // only `organizeDest`, so the realistic state was:
+  //
+  //     projects:setRoot   -> config.projectsRoot = "…/02 - Projects/2026"
+  //     config.organizeDest = ""
+  //     finalize:run       -> {"ok":false,"error":"No destination folder set. Choose one in
+  //                            Edit → “Organizing & folders…”."}
+  //
+  // He has already told the app where his footage goes, and filing refuses and points him at a
+  // different menu to say it again. `config:get` has always resolved the pair this way round
+  // (`projectsRoot || organizeDest || default`); this is the same resolution on the path that files.
+  const dest = payload.organizeDest || config.organizeDest || config.projectsRoot || '';
   const levels = (Array.isArray(payload.folderLevels) && payload.folderLevels.length)
     ? payload.folderLevels
     : (Array.isArray(config.folderLevels) && config.folderLevels.length ? config.folderLevels : ['category', 'project']);

@@ -7,6 +7,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### You set your Projects folder, and filing said you hadn't (2026-07-23)
+
+"Where filed footage goes" was stored in two different settings, and setting one didn't set the
+other. Every route that asks you to point at your projects — the AI health card, the setup wizard,
+Settings — writes one of them. **Filing read only the other one.**
+
+So you could point the app at your Projects folder, press the button that finishes the job, and be
+told *"No destination folder set — choose one in Edit → Organizing & folders…"*. You'd already said
+where. It just asked in a different place.
+
+Filing now uses your Projects folder when no separate destination is set. If you *have* deliberately
+pointed filing somewhere else, that still wins.
+
 ### Filing is the first thing Home offers you (2026-07-23)
 
 Your interaction log covers 1,487 clicks over 14 days: 226 face confirmations, 354 typed fields,

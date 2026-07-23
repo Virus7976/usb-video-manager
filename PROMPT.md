@@ -832,6 +832,48 @@ cost 20 points of accuracy here, 4/4 deterministic ([[usb-app-tool-strings-are-i
 does say "do not copy its values". Leave it until someone re-measures.
 
 
+## 8i. ⚠⚠ DIRECTION FROM JAKE, 2026-07-22 — DEFAULTS FIRST, THEN PRESETS
+
+> *"I have a specific setup with the app right now that I like, but you should build it as if it was
+> an application that worked without all the compression folders and stuff and just worked and then
+> can be mega customized to the point where I have it. I was thinking some kind of UI to organize all
+> this and make it work. I should also be able to have presets, and save my setups as a preset and
+> then share it."*
+
+Four requirements, in his order:
+
+1. **It works with NO setup.** A fresh install must ingest → name → file with zero configuration.
+   Today the pipeline is gated on HIS layout: `01 - Uncompressed` / `02 - Compressed`, a Tdarr
+   hand-off, an `L:` archive, `C:\...\02 - Projects\2026`. Organize scans `02 - Compressed`
+   specifically — a user without that folder sees an empty screen and concludes the app is broken.
+2. **Then customizable "to the point where I have it."** His rig is the far end of the slider, not
+   the baseline. Nothing may be REMOVED to achieve #1.
+3. **One UI that organises the configuration**, replacing settings scattered across screens plus a
+   wizard he ran once and cannot find again (item 64).
+4. **Presets he can save and SHARE.** Sharing is what changes the design: a preset leaves his
+   machine, so it must carry no absolute paths and no personal data (people, faces, subjects,
+   ledger), and importing one must never touch footage. **Treat an imported preset as untrusted
+   input** — it is the first thing in this app that arrives from outside.
+
+**Why this is not cosmetic, measured 2026-07-22.** His two standing filing rules store
+`dest: "2026/2026 - Client Work/Gourgess Lawns"` while `projectsRoot` is `...\02 - Projects\2026`.
+So `resolveFolderPath` produces `.../2026/2026/2026 - Client Work/...` — **117 of 309 clips would
+fork his tree into a duplicate `2026\2026\...` beside the real one**, and the other 154 create bare
+top-level folders in his year root (`vlog/`, `pov/`, `delete/`). Cause: he clicked the health card's
+"Use that folder", which set `projectsRoot` one level deeper than his rules assumed, and **nothing
+revalidates a route dest when the root moves.**
+
+**Order matters, and this is the one hard sequencing rule here:** fix and validate route
+destinations BEFORE shipping anything that makes filing easier to reach. Reachability is the real
+stall (0 Organize visits in 14 days of use), so the obvious next move is a "File these 310" action
+where he already lives — but shipping that first means his first successful filing run forks his
+tree, and he undoes it and trusts the app less.
+
+Every path-shaped setting needs validation against the tree it points at, and a repair offer when it
+drifts. See memory `usb-app-defaults-then-presets`.
+
+---
+
 ## 8h. ⚠ FEATURES.md IS THE ROADMAP — read it before choosing work.
 
 Jake asked (2026-07-20) for "100 things the app should be able to do… build it as a feature into

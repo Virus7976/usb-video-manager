@@ -7,6 +7,46 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### ⚠ The AI was naming your clips and throwing the name away (2026-07-22)
+
+This is the big one, and it explains the number that has bothered you most.
+
+Your library has 4,594 clips and 331 named. **1,084 of them have been watched by the AI** — it loaded
+the footage, looked at it, and wrote down what it saw. 716 of those clips have a completely blank
+name. Not a bad name. Blank.
+
+The naming step had two routes: an older one, and a newer one that uses a second model to pick from
+subjects you already use. The newer route switched itself on as soon as you had a suitable model
+configured, and it worked — it produced the right subject and description every time. Then it handed
+the answer to a function that had never been connected to anything. **Every name it generated was
+computed correctly and discarded.**
+
+- The run then told you it had named them.
+- Because a clip only counts as "analyzed" once it has both a subject and a description, none of
+  those clips ever counted as done — so the **next** run watched them all over again. That is where
+  your GPU time has been going.
+- Every name generated since roughly 2026-07-14 was lost this way. Your 331 named clips are the ones
+  named before it.
+
+Fixed. The names now land on the clips. If you re-run analysis on the blank ones, they will keep
+their names this time — the observations are all still saved, so it does not need to re-watch them.
+
+### One click could shrink the app's memory of your projects (2026-07-22)
+
+"Read my Projects folder" (and the older prompt that offered the same thing) was written to only ever
+*add* to what the app knows. It did — and it also quietly trimmed everything already there, because
+it used different limits from the code that writes that memory normally.
+
+On a project the app had filed 60 clips into, one click removed 16 subjects, 36 shoot dates, and 52
+of the 60 stored descriptions. **The dates are the ones that hurt**: matching a new card against the
+dates of past shoots is how the app knows where a shoot belongs, and you shoot in batches, so that is
+its best signal. Trimming to the most recent 24 days meant re-importing anything older matched
+nothing at all.
+
+Nothing on your disk was ever touched — this was the app's own memory of your tree, and re-running
+the read rebuilds most of it. Both writers now use the same limits, and re-running it is a genuine
+no-op rather than something that quietly costs you a little each time.
+
 ### It now learns your subjects from the folders YOU made (2026-07-22)
 
 Last change taught the app to stop inventing new spellings of subjects you already use. It had one

@@ -703,12 +703,20 @@ async function backfillLedgerFromTree(root, onProgress) {
     // What do the filenames actually say? parseNamedClip understands this app's own naming scheme,
     // and returns nothing for a file that doesn't follow it — which is fine, the clip count alone is
     // still real information.
-    const subjects = new Set(); const dates = new Set(); const samples = [];
+    const subjects = new Set(); const dates = new Set(); const newSamples = [];
     for (const c of clips) {
       const meta = parseNamedClip(c.name);
       if (meta && meta.subject) subjects.add(meta.subject);
       if (meta && meta.date) dates.add(meta.date);
-      if (samples.length < 6) samples.push(c.name);
+      // ⚠ A SAMPLE IS AN OBJECT, NOT A FILENAME. `ledger:summarize` reads `.subject`/`.description`/
+      // `.observation` off every sample, so the filenames this used to push in produced blank
+      // numbered lines in the summary prompt. Build the same shape `recordLedgerEntries` writes.
+      if (newSamples.length < 6 && meta && (meta.subject || meta.description)) {
+        newSamples.push({
+          subject: meta.subject || '', description: meta.description || '',
+          observation: '', people: [], date: meta.date || '',
+        });
+      }
     }
 
     const key = rel;
@@ -725,11 +733,33 @@ async function backfillLedgerFromTree(root, onProgress) {
       config.projectLedger.push(rec);
       learned += 1;
     }
-    // ENRICH, never clobber: a project we have really filed into knows more than a filename parse.
+    // ⚠⚠⚠ ENRICH, NEVER CLOBBER — AND IT USED TO CLOBBER, HARD.
+    //
+    // This wrote its own caps, and every one of them disagreed with the ledger's OTHER writer,
+    // `recordLedgerEntries` (main-mod/03-ai-ollama.js:113-137):
+    //
+    //   subjects  200 (newest, via ledgerMerge)  vs  slice(0, 24)  ← kept the OLDEST
+    //   dates     400                            vs  .sort().slice(-24)
+    //   samples   60 objects                     vs  8, with filenames merged in
+    //
+    // Measured on a record the app had really filed 60 clips into: one run destroyed 16 subjects,
+    // 36 dates and 52 of the 60 samples. The worse the project — the more the app knew about it —
+    // the more it lost. `dates` is the expensive one: `ledger:matchDates` is the strongest placement
+    // signal there is, because he shoots in batches, so truncating to the 24 most recent days meant
+    // a re-import from any older shoot matched no project at all.
+    //
+    // This is PROMPT.md §5 item 4: when you find a cap on a store, grep for the second one before
+    // trusting either. Both writers now go through `ledgerMerge` with the SAME caps, so there is one
+    // rule per field rather than two — the only shape that cannot drift again.
     rec.clips = Math.max(rec.clips || 0, clips.length);
-    rec.subjects = [...new Set([...(rec.subjects || []), ...subjects])].slice(0, 24);
-    rec.dates = [...new Set([...(rec.dates || []), ...dates])].sort().slice(-24);
-    rec.samples = [...new Set([...(rec.samples || []), ...samples])].slice(0, 8);
+    rec.subjects = ledgerMerge(rec.subjects, [...subjects], 200);
+    rec.dates = ledgerMerge(rec.dates, [...dates], 400);
+    // ⚠ DEDUPE, because unlike `recordLedgerEntries` this can run repeatedly over the same tree —
+    // and now has a menu item inviting exactly that. Appending blindly would push 6 duplicates per
+    // click until every real sample had been evicted. Keyed on content, so a re-run is a no-op.
+    const seen = new Set((rec.samples || []).map((s) => `${s && s.subject}|${s && s.description}|${s && s.date}`));
+    const add = newSamples.filter((s) => !seen.has(`${s.subject}|${s.description}|${s.date}`));
+    if (add.length) rec.samples = [...(rec.samples || []), ...add].slice(-60);
   }
 
   // projectLedger is a SIDECAR store, and saveConfig() runs stripStoresForWrite(), which deletes

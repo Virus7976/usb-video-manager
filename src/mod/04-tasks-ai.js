@@ -1528,8 +1528,20 @@ async function aiSuggestClip(i, mode = 'all', opts = {}) {
   // The tool path first. It only runs when there is a model that can actually call tools AND we know
   // his real subjects — otherwise there is nothing to constrain the choice to, and the old path is
   // genuinely no worse.
+  //
+  // ⚠⚠⚠ AND ITS RESULT MUST GO THROUGH `applyAiResult`, EXACTLY AS THE LEGACY PATH BELOW DOES.
+  //
+  // This read `if (toolResult) return toolResult;`. `applyAiResult` is the ONLY place an AI answer is
+  // ever assigned to `clip.subject` / `clip.description` (:805, :814), so the tool path — the default
+  // for anyone with a tool-capable text model — named every clip perfectly and wrote the name
+  // NOWHERE. Measured on his store: 1084 clips watched by the vision model, 716 of them with a
+  // completely blank draft, all observed after this path went in. The run still reported them named.
+  //
+  // `mode` has to travel with it, not just the result: `applyAiResult` gates the subject on
+  // `startOver || aiCfg.updateSubject || !clip.subject`, and his `updateSubject` is false — so
+  // dropping the mode would make "start over" silently keep the old subject.
   const toolResult = await aiNameWithTools(i, opts);
-  if (toolResult) return toolResult;
+  if (toolResult) return applyAiResult(i, toolResult, mode);
 
   try {
     const res = await window.api.aiSuggest({

@@ -5439,6 +5439,85 @@ A running log of non-obvious things we learned the hard way, so nobody (human or
 re-derive them. **Append new entries at the top; never delete.** Format: `### YYYY-MM-DD —
 title`, then what we learned and why it matters.
 
+### 2026-07-22 — The AI named 4,263 clips into the void, and 36 green tests watched it happen
+
+**The single worst bug found in this project.** `aiSuggestClip` has two paths. The legacy one ends
+`return applyAiResult(i, res, mode)` — and `applyAiResult` is the ONLY place in the renderer where an
+AI answer is ever assigned to `clip.subject`/`clip.description` (`04-tasks-ai.js:805,:814`). The tool
+path, which becomes the default the moment a tool-capable text model is configured, ended:
+
+```js
+const toolResult = await aiNameWithTools(i, opts);
+if (toolResult) return toolResult;          // ← never went through applyAiResult
+```
+
+The comment immediately above the return inside `aiNameWithTools` reads *"Shaped exactly like the old
+aiSuggest result, so applyAiResult and everything downstream is untouched."* It was shaped perfectly
+and handed to nobody.
+
+Measured on his real store:
+
+    clip-observations.json   1084 clips WATCHED by the vision model
+      → matching draft named   331   (all observed 2026-07-05 … 07-15)
+      → matching draft BLANK   716   (all observed 2026-07-14 … 07-17)
+
+331 is precisely the "331 of 4,594 named" number the entire roadmap is built on. **Naming produced
+zero new names after the tool path went in.** The vision model still burned GPU on every clip and
+still saved the observation; the name was then dropped. Every run reported those clips as named, and
+because `aiAlreadyAnalyzed()` requires a subject AND a description, none of them ever counted as
+done — so the next run re-watched all of them, forever, on a 6 GB card.
+
+**The fix is one line** (`if (toolResult) return applyAiResult(i, toolResult, mode);`) and `mode` has
+to travel with it: `applyAiResult` gates the subject on `startOver || aiCfg.updateSubject ||
+!clip.subject`, and his `updateSubject` is false, so dropping the mode makes "start over" silently
+keep the old subject.
+
+**⚠⚠ WHY 36 TESTS MISSED IT — the rule worth carrying.** `ai-analyze-tools.test.mjs` and
+`ai-naming-tools.test.mjs` are thorough about the tool path, and **every single one asserts on the
+RETURNED VALUE** (`r.subject`). Not one asserts the OUTCOME (`clip.subject`). The returned value was
+always correct. This is §8b-2 #4 in its purest form: *a test that asserts the expression instead of
+the effect cannot see a result that goes nowhere.* When the thing under test produces a side effect,
+assert the side effect — a green assertion on a return value proves only that a function computed.
+
+Tests: `test/ai-naming-actually-lands.test.mjs` (9), every one asserting the CLIP, plus a structural
+guard on the call site because the bug is a one-line revert.
+
+### 2026-07-22 — "Reads only" destroyed the project memory it existed to build
+
+`backfillLedgerFromTree` wrote its own caps, and every one disagreed with the ledger's other writer,
+`recordLedgerEntries` (`03-ai-ollama.js:113-137`):
+
+| field | recordLedgerEntries | backfillLedgerFromTree (before) |
+|---|---|---|
+| `subjects` | `ledgerMerge(…, 200)` → newest | `slice(0, 24)` → kept the **oldest** |
+| `dates` | `ledgerMerge(…, 400)` | `.sort().slice(-24)` |
+| `samples` | array of **objects**, `slice(-60)` | filename **strings** merged in, `slice(0, 8)` |
+
+One run on a record the app had really filed 60 clips into destroyed **16 subjects, 36 dates and 52
+of 60 samples**. The better the project, the more it lost. `dates` is the expensive one:
+`ledger:matchDates` is the strongest placement signal in the app because he shoots in batches, so
+truncating to the 24 most recent days meant a re-import from any older shoot matched nothing.
+
+Three things worth keeping:
+
+1. **This is §5 item 4, and it keeps being true** — when you find a cap on a store, grep for the
+   second one before trusting either. Same shape as the `renameDrafts` double-cap.
+2. **A same-day feature can make a dormant bug urgent.** This code was written long before; what made
+   it critical was giving it a permanent menu route *and* making the ledger feed the subject
+   vocabulary on the same day. The feature built to learn his vocabulary was eating it. **When you
+   make a path more reachable, re-audit it as if it were new — reachability is a severity multiplier.**
+3. **A re-runnable writer needs dedupe that its one-shot sibling does not.** `recordLedgerEntries`
+   appends once per clip filed; the backfill re-reads the whole tree per click.
+
+**⚠ And a fake assertion of my own, caught by breaking it.** The dedupe test first asserted the sample
+COUNT was unchanged across re-runs. With the dedupe deleted it still passed — appending 2 and slicing
+to `-60` holds the count at exactly 60 forever while real samples are evicted from the front, two per
+click. Count was never the harm; eviction was. It now snapshots the samples after the first run and
+asserts later runs are a strict no-op. **A cap makes count-based assertions useless by construction —
+assert identity, not size.**
+
+Tests: `test/backfill-never-shrinks-the-ledger.test.mjs` (7), each break-verified.
+
 ### 2026-07-22 — The subject vocabulary was built from the problem it was supposed to solve
 
 FEATURES.md item 29 calls a controlled subject vocabulary "the unblock": 4,594 clips, 331 named,

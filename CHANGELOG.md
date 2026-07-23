@@ -7,6 +7,36 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+_(nothing yet)_
+
+## [0.6.0] — 2026-07-23
+
+### Your own filing rules were about to fork your Projects tree (2026-07-23)
+
+Both of your standing filing rules point at `2026/2026 - Client Work/Gourgess Lawns`, while your
+Projects folder is already `...\02 - Projects\2026`. So filing would have built
+`...\2026\2026\2026 - Client Work\...` — your year folder twice — right beside the real one.
+**117 of your 309 clips** would have gone there, and the other 154 would have created loose folders
+(`vlog/`, `pov/`, `delete/`) in your year root.
+
+That's the app's fault, not yours. The rules picker offers folders relative to your Projects folder,
+so `2026/...` was correct when you saved those rules — then a health-card button moved your Projects
+folder one level deeper and nothing rechecked the rules.
+
+Filing now lands in the folder you actually have. And **Settings → Folders & setup** shows every rule
+with its real status and a one-click fix, so the stored rule stops saying something untrue.
+
+### Nothing gets filed loose into the top of your Projects folder (2026-07-23)
+
+A clip with no destination was copied straight into the root of your Projects tree and reported as
+filed. It's now reported as skipped, with the reason, and left where it was.
+
+### A face you named on your phone can't be lost any more (2026-07-23)
+
+If `people.json` couldn't be read on launch, applying phone answers marked them applied, marked the
+cluster reviewed, and enrolled nobody — destroying the answer in all three places at once. It now
+refuses and keeps your answers for the next launch.
+
 ### Organize works on a fresh install now (2026-07-23)
 
 If the app didn't already have your exact folder setup — `01 - Uncompressed`, `02 - Compressed`, a

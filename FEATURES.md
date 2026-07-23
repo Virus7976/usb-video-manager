@@ -13,6 +13,13 @@ Two words in that shape everything below:
   (Gourgess Lawns) is the bar he set: offline-capable, queue-backed, and able to do the real job
   rather than view it.
 
+⚠ **Statuses are only as good as the last probe.** Three entries have been found wrong by probing:
+item 84 (marked `dead`; the capability works two ways), item 89's ffmpeg check (reported unreachable;
+it is a sibling, not nested), and the headline premise below about competing subjects (they live in
+`drafts.json`, not the folder Organize scans). Three others were spot-checked and HELD — items 21 and
+24 are correct, and 24 is better than its line describes. **Probe before trusting a status, and
+probe before contradicting one.**
+
 **Status is honest, not aspirational.** `done` means it works and has a test. `partial` means it
 works somewhere but not everywhere it is listed for. `todo` means it does not exist. Nothing is
 marked done because it was written — several things in this codebase were written, shipped, and had

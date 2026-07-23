@@ -119,8 +119,8 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 9 | Watch a NAS folder a phone app uploads into | ✓ | – | – | done |
 | 10 | **Un-set that watch folder** | ✓ | – | – | done (D) — File → “Stop using the wireless backup folder”; the dialog says nothing in it is deleted |
 | 11 | Skip files already pulled from this phone | ✓ | – | – | done |
-| 12 | Upload footage from the phone itself, resumably | – | ✓ | ✓ | partial — backend + core done and tested; **no phone UI yet** |
-| 13 | Resume an upload the phone abandoned when it slept | – | ✓ | ✓ | partial — same |
+| 12 | Upload footage from the phone itself, resumably | – | ✓ | ✓ | done (P) — a file picker on the phone review page sends clips in 1 MB chunks through the resumable API |
+| 13 | Resume an upload the phone abandoned when it slept | – | ✓ | ✓ | done (P) — it asks the server what it already has and carries on from there, so a sleeping phone costs one chunk, not the whole clip |
 | 14 | Ingest what the phone uploaded into the normal flow | ✓ | – | ✓ | done (D) — a Home card brings completed uploads into Uncompressed through `copyFileVerified`, releasing staging only after the copy verifies. Collisions get a new name, never someone else's bytes; a failed copy leaves the upload waiting |
 
 ### B. Copy it safely, then clear the card (15–24)

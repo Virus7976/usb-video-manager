@@ -7,7 +7,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-_(nothing yet)_
+### You can send footage from your phone now (2026-07-23)
+
+The resumable upload has been built and tested for a while — and there was no way to start one from
+your phone. The phone page only did face review.
+
+There's a **Send footage** section on it now. Pick clips, they upload in 1 MB pieces, and if your
+phone sleeps or the WiFi drops it asks the computer what it already has and carries on from there.
+A dropped connection costs one chunk, not the whole clip.
+
+If something doesn't finish it says so plainly — and says nothing was lost, because nothing was:
+pick it again and it resumes. A partial batch tells you both numbers.
+
+Pair with your computer first (the QR flow), then the section appears. Once clips arrive, your
+computer's Home screen offers to bring them in.
 
 ## [0.7.2] — 2026-07-23
 

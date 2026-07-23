@@ -59,6 +59,23 @@
     </div>
   </section>
 
+  <!-- ⚠⚠ SENDING FOOTAGE FROM THE PHONE — FEATURES.md items 12 and 13.
+       The resumable upload API has existed and been tested for a while, and nothing on the phone
+       could reach it: `server/public/review.html` was the face review and nothing else. So the
+       capability was real and unusable, which is this project's most repeated shape.
+       Chunked and resumable on purpose: he locks the phone and walks away, and a 4 GB clip over
+       WiFi WILL be interrupted. A plain form POST restarts from zero every time that happens,
+       which for footage means it effectively never completes. -->
+  <section id="send" class="hide">
+    <div class="note">
+      <p><b>Send footage to your computer</b></p>
+      <p class="muted">Pick clips and they upload in pieces — if your phone sleeps or the WiFi drops,
+        it picks up where it left off instead of starting again.</p>
+      <input id="pick" type="file" accept="video/*,image/*" multiple style="width:100%; margin-top:10px" />
+      <div id="jobs" style="margin-top:12px"></div>
+    </div>
+  </section>
+
   <section id="list"></section>
   <div id="empty" class="note hide"></div>
 </main>
@@ -220,12 +237,14 @@
         $('empty').className = 'note err';
         $('empty').textContent = `Could not read: ${status.broken.join(', ')}. Nothing has been changed.`;
         $('bar').classList.remove('hide');
+      $('send').classList.remove('hide');   // sending footage is available once paired
         return;
       }
       people = (await api('/api/people')).people || [];
       const data = await api('/api/faces/pending');
       $('sub').textContent = `${data.count} to review`;
       $('bar').classList.remove('hide');
+      $('send').classList.remove('hide');   // sending footage is available once paired
       const list = $('list');
       list.innerHTML = '';
       if (!data.count) {
@@ -258,6 +277,99 @@
   $('refresh').onclick = load;
   load();
 })();
+
+  // --- sending footage up ---------------------------------------------------------------------
+  //
+  // ⚠ 1 MB chunks. Big enough that a 4 GB clip is not 40,000 requests, small enough that losing one
+  // in flight costs a second rather than a minute — and small enough to sit comfortably inside the
+  // body limit the server sets for a chunk.
+  const CHUNK = 1024 * 1024;
+  const jobsEl = $('jobs');
+  const jobLines = new Map();
+
+  function line(id, name) {
+    let el = jobLines.get(id);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'muted';
+      el.style.marginTop = '6px';
+      jobsEl.appendChild(el);
+      jobLines.set(id, el);
+    }
+    return el;
+  }
+
+  // Resume is the whole point: ask the server what it already has before sending anything, and start
+  // from there. `status` returns the byte count on disk, so an interrupted upload costs only the
+  // chunk that was in flight.
+  async function sendOne(file) {
+    const beg = await api('/api/upload/begin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: file.name, size: file.size }),
+    });
+    if (!beg || !beg.ok || !beg.id) throw new Error((beg && beg.error) || 'the computer would not start the upload');
+    const id = beg.id;
+    const el = line(id, file.name);
+
+    // ⚠ `offset`, not `received` — probed against core/upload.js rather than assumed:
+    //     begin  -> {ok, id, offset}
+    //     append -> {ok, offset, complete}
+    // The first draft read `beg.received`, which is undefined, so every upload would have restarted
+    // from zero and quietly defeated the entire point of a resumable transfer.
+    let offset = Number(beg.offset) || 0;
+    while (offset < file.size) {
+      const end = Math.min(offset + CHUNK, file.size);
+      const buf = await file.slice(offset, end).arrayBuffer();
+      const r = await api(`/api/upload/${encodeURIComponent(id)}?offset=${offset}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: buf,
+      });
+      if (!r || !r.ok) {
+        // ⚠ SAY WHAT IS TRUE: the bytes already sent are still on the computer, so this is a pause,
+        // not a loss. Telling him it failed would make him start again by hand — the exact thing
+        // resumable uploads exist to prevent.
+        throw new Error(`${(r && r.error) || 'connection lost'} — ${Math.round((offset / file.size) * 100)}% is already there, pick it again to carry on`);
+      }
+      offset = Number(r.offset) || end;
+      el.textContent = `${file.name} — ${Math.round((offset / file.size) * 100)}%`;
+    }
+
+    const fin = await api(`/api/upload/${encodeURIComponent(id)}/finish`, { method: 'POST' });
+    if (!fin || !fin.ok) throw new Error((fin && fin.error) || 'the computer could not finish the file');
+    el.textContent = `${file.name} — done ✓ waiting on your computer`;
+    return fin;
+  }
+
+  const pick = $('pick');
+  if (pick) {
+    pick.addEventListener('change', async () => {
+      const files = [...(pick.files || [])];
+      if (!files.length) return;
+      pick.disabled = true;
+      let done = 0; let failed = 0;
+      for (const f of files) {
+        try { await sendOne(f); done += 1; }
+        catch (e) {
+          failed += 1;
+          const el = line(`err-${f.name}`, f.name);
+          el.style.color = 'var(--warn)';
+          el.textContent = `${f.name} — ${(e && e.message) || e}`;
+        }
+      }
+      pick.disabled = false;
+      pick.value = '';
+      // Both numbers, always. "3 sent" while 2 failed is the shape of report this project has been
+      // burned by more than once.
+      const note = failed
+        ? `${done} sent · ${failed} didn’t finish — nothing was lost, pick them again to carry on`
+        : `${done} sent ✓ — open the app on your computer to bring ${done !== 1 ? 'them' : 'it'} in`;
+      const el = line('summary', '');
+      el.style.color = failed ? 'var(--warn)' : '';
+      el.textContent = note;
+    });
+  }
 </script>
 </body>
 </html>

@@ -112,18 +112,8 @@ test('⚠⚠ Home renders a card for it, leading with the reassurance', async ()
 // This test binds to the thing that actually broke: every identifier interpolated into a card
 // template must exist. It is a source check, but of a kind that would have failed — the previous one
 // could not, because "the string is present" and "the code runs" are different claims.
-test('⚠⚠⚠ every card template interpolates only identifiers that exist', async () => {
-  const { readFileSync } = await import('node:fs');
-  const core = readFileSync(new URL('../src/mod/01-core.js', import.meta.url), 'utf8');
-  const at = core.indexOf('async function renderPendingWork');
-  assert.ok(at > -1, 'the renderer exists');
-  const body = core.slice(at, core.indexOf('\nfunction ', at + 10));
-
-  // Names interpolated inside the card templates, minus locals the function itself defines.
-  const interpolated = [...body.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)].map((m) => m[1]);
-  assert.ok(interpolated.length, 'setup: the cards do interpolate constants');
-  for (const name of new Set(interpolated)) {
-    assert.match(core, new RegExp(`(const|let|var|function)\\s+${name}\\b`),
-      `⚠⚠⚠ "${name}" is interpolated into a card but never defined — renderPendingWork will throw and Home goes blank`);
-  }
-});
+// ⚠ The one-function version of this check lived here and has been REPLACED by
+// `test/no-template-references-a-ghost.test.mjs`, which sweeps the whole bundled renderer. Scoping it
+// to `renderPendingWork` only guarded the function that had already been burned — the same typo in
+// any other template would still have shipped, and the blast radius is identical: a throw takes out
+// the whole screen, not one element.

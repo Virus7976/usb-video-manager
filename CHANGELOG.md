@@ -7,6 +7,22 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+_(nothing yet)_
+
+## [0.7.2] — 2026-07-23
+
+### ⚠ Fixes a blank "work waiting" area on Home that 0.7.1 introduced
+
+0.7.1 added a card to tell you when your archive drive isn't reachable. That card had a typo in it,
+and the typo threw before **any** card could be drawn — so the whole "work waiting" area on Home
+came up empty. No offline warning, no "footage ready to organize", nothing.
+
+My fault, and my test didn't catch it: it checked that the right words were in the code, which stays
+true even when the code never runs. There's now a check that would have caught it, and the card is
+driven in the real app on every build.
+
+If you're on 0.7.1, this is worth taking.
+
 ### Footage you uploaded from your phone stopped being invisible (2026-07-23)
 
 The resumable phone upload has worked for a while — it survives the phone sleeping, and it doesn't

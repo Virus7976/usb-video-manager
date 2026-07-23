@@ -10214,6 +10214,88 @@ app.on('before-quit', () => {
   globalShortcut.unregisterAll();
   endExifTool();
 });
+
+// --- PHONE UPLOADS: the last step nothing walked ------------------------------------------------
+//
+// FEATURES.md item 14. The resumable upload machinery is real and finished — `core/upload.js` plus
+// the server write completed transfers into `<storeDir>/phone-uploads`, `.part` renamed into place
+// on `finish()`. Then nothing happened. Grepping `main-mod/`, `preload.js` and `src/mod/` for that
+// directory returned ZERO hits: footage arrived off his phone and stopped there, invisible to every
+// screen in the app.
+//
+// Same shape as the filing corridor — the hard part built, the last step unwalked.
+//
+// ⚠⚠ THIS MOVES FOOTAGE THAT MAY BE THE ONLY COPY. By the time an upload completes, the clip may
+// already be gone from the phone. So: it COPIES through `copyFileVerified` (the app's staged,
+// fsync'd, fingerprint-checked primitive — never a hand-rolled copy, per PROMPT.md §3), and only
+// removes the staged original once the copy has verified. A failure leaves the upload exactly where
+// it was, still listed, still ingestable.
+function phoneUploadsDir() { return path.join(STORE_DIR, 'phone-uploads'); }
+
+// What has finished uploading and is waiting? `.part` files are still in flight and `.json` is
+// bookkeeping — neither is footage, and listing either would offer him a file that is not there yet.
+async function listPhoneUploads() {
+  const dir = phoneUploadsDir();
+  let names = [];
+  try { names = await fsp.readdir(dir); }
+  catch { return { ok: true, dir, files: [], total: 0 }; }   // nothing uploaded yet is not an error
+  const files = [];
+  for (const n of names) {
+    if (n.endsWith('.part') || n.endsWith('.json')) continue;
+    const full = path.join(dir, n);
+    // eslint-disable-next-line no-await-in-loop
+    try {
+      const st = await fsp.stat(full);
+      if (st.isFile() && st.size > 0) files.push({ name: n, sourcePath: full, size: st.size, mtimeMs: st.mtimeMs });
+    } catch { /* vanished between readdir and stat — simply not offered */ }
+  }
+  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  return { ok: true, dir, files, total: files.length };
+}
+
+ipcMain.handle('uploads:list', () => listPhoneUploads());
+
+ipcMain.handle('uploads:ingest', async (_evt, payload) => {
+  const intake = String((payload && payload.intake) || config.intakeFolder || '');
+  if (!intake) return { ok: false, error: 'No Uncompressed folder set — Settings → Folders & setup.' };
+
+  const listing = await listPhoneUploads();
+  const wanted = Array.isArray(payload && payload.names) && payload.names.length
+    ? new Set(payload.names.map(String))
+    : null;
+  const todo = listing.files.filter((f) => !wanted || wanted.has(f.name));
+  if (!todo.length) return { ok: true, ingested: 0, failed: 0, results: [], nothingToDo: true };
+
+  try { await ensureDir(intake); }
+  catch (e) { return { ok: false, error: `Could not open ${intake}: ${(e && e.message) || e}` }; }
+
+  const results = [];
+  let ingested = 0; let failed = 0;
+  for (const f of todo) {
+    // ⚠ NEVER OVERWRITE. Two phones, or one phone twice, can produce the same filename — and the
+    // ADB path has already had a bug where one photo replaced another. A collision gets a suffix,
+    // never someone else's bytes.
+    // eslint-disable-next-line no-await-in-loop
+    // Reuses the app's existing collision helper rather than adding a fourth — `uniqueDest` is what
+    // the phone pull path already uses, and a second implementation of "pick a free filename" is
+    // exactly how two paths start disagreeing about what is safe.
+    const dest = await uniqueDest(intake, f.name);
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await copyFileVerified(f.sourcePath, dest);
+      // Only now is it safe to let the staged copy go: the verified one exists.
+      // eslint-disable-next-line no-await-in-loop
+      try { await fsp.unlink(f.sourcePath); } catch { /* the copy is what matters; staging self-cleans */ }
+      results.push({ name: f.name, ok: true, dest });
+      ingested += 1;
+    } catch (e) {
+      // Left exactly where it was, still listed, still ingestable next time.
+      results.push({ name: f.name, ok: false, error: (e && e.message) || String(e) });
+      failed += 1;
+    }
+  }
+  return { ok: failed === 0, ingested, failed, results, intake };
+});
 // ---------------------------------------------------------------------------
 // AI TOOLS — deterministic functions the model CHOOSES BETWEEN.
 //

@@ -7,7 +7,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-_(nothing yet)_
+### Footage you uploaded from your phone stopped being invisible (2026-07-23)
+
+The resumable phone upload has worked for a while — it survives the phone sleeping, and it doesn't
+restart a 4 GB clip from zero. But the clips landed in a staging folder that **nothing in the app
+ever read**. They were on your disk and invisible to every screen: not nameable, not filable, not
+backed up.
+
+Home now shows them, and one click brings them into your Uncompressed folder where the normal flow
+picks them up.
+
+It copies rather than moves, through the same verified copy the card import uses — staging is only
+released once the copy checks out, because by the time an upload finishes the original may already
+be gone from your phone. A name that already exists gets a new one rather than overwriting, and if a
+copy fails the upload stays put so you can try again.
 
 ## [0.7.1] — 2026-07-23
 

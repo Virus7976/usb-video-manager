@@ -444,6 +444,7 @@ function showHomeExtras() {
 async function renderPendingWork() {
   const host = $('pendingWork'); if (!host) return;
   let w = {}; try { w = await window.api.pendingWork(); } catch { w = {}; }
+  let uploads = { total: 0 }; try { uploads = (await window.api.listPhoneUploads()) || uploads; } catch { uploads = { total: 0 }; }
   const ready = (w && w.ready) || 0;
   const uncompressed = (w && w.uncompressed) || 0;
   const uncPhotos = (w && w.uncompressedPhotos) || 0;   // stills need no compressing — see below
@@ -487,6 +488,22 @@ async function renderPendingWork() {
   //
   // It leads with the reassurance, because that is the actual question in his head: the footage is
   // fine, the app just cannot see it right now.
+  // ⚠⚠ FOOTAGE THAT UPLOADED FROM HIS PHONE AND THEN SAT THERE — FEATURES.md item 14.
+  //
+  // The resumable upload machinery is finished and works; nothing ever read the folder it writes to,
+  // so clips arrived off the phone and became invisible to every screen. This is the last step, and
+  // it goes ABOVE filing because an un-ingested upload is not yet in the pipeline at all — it cannot
+  // be named, filed, or backed up until it joins the normal flow.
+  if (uploads && uploads.total) {
+    cards.push(`<button type="button" class="settings-card action pw-card" id="pwUploads">
+        <span class="sc-icon accent">${PW_ICON_FILM}</span>
+        <span class="sc-text">
+          <span class="sc-title">${uploads.total} clip${uploads.total !== 1 ? 's' : ''} uploaded from your phone</span>
+          <span class="sc-sub muted small">Waiting in staging — bring ${uploads.total !== 1 ? 'them' : 'it'} into Uncompressed and ${uploads.total !== 1 ? 'they' : 'it'} join${uploads.total !== 1 ? '' : 's'} the normal flow. Your originals are copied and verified, never moved blind.</span>
+        </span>
+        <span class="sc-chev">${CHEV}</span>
+      </button>`);
+  }
   if (w && w.readyUnreachable) {
     cards.push(`<button type="button" class="settings-card action pw-card" id="pwOffline">
         <span class="sc-icon">${PW_ICON_FILM}</span>
@@ -572,6 +589,24 @@ async function renderPendingWork() {
   if (!cards.length) { host.classList.add('hidden'); host.innerHTML = ''; return; }
   host.innerHTML = cards.join('');
   host.classList.remove('hidden');
+  const up = host.querySelector('#pwUploads');
+  if (up) {
+    up.addEventListener('click', async () => {
+      const r = await withBusyBtn(up, 'Bringing them in…', () => window.api.ingestPhoneUploads({}));
+      if (!r || !r.ok) {
+        // Partial success is still success for the ones that landed — say both numbers.
+        const got = (r && r.ingested) || 0;
+        showToast(got
+          ? `${got} brought in · ⚠ ${(r && r.failed) || 0} couldn’t be copied — still waiting, try again.`
+          : `Couldn’t bring them in — ${(r && r.error) || 'unknown error'}`, 8000);
+      } else if (r.nothingToDo) {
+        showToast('Nothing waiting from your phone.', 4000);
+      } else {
+        showToast(`${r.ingested} clip${r.ingested !== 1 ? 's' : ''} brought into Uncompressed ✓ — ready to name.`, 7000);
+      }
+      try { await renderPendingWork(); } catch { /* the toast already said what happened */ }
+    });
+  }
   const off = host.querySelector('#pwOffline');
   if (off) off.addEventListener('click', () => { try { showFoldersAndSetup(); } catch { /* non-fatal */ } });
   const go = host.querySelector('#pwGo');

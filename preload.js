@@ -281,6 +281,11 @@ contextBridge.exposeInMainWorld('api', {
   validateRouteDests: () => ipcRenderer.invoke('routes:validate'),
   repairRouteDests: (ids) => ipcRenderer.invoke('routes:repairDests', ids),
 
+  // Phone uploads waiting in staging — FEATURES.md item 14. Two steps: see what is there, then
+  // bring it into the normal flow.
+  listPhoneUploads: () => ipcRenderer.invoke('uploads:list'),
+  ingestPhoneUploads: (payload) => ipcRenderer.invoke('uploads:ingest', payload),
+
   // Presets — save a setup, share it, load someone else's. Import is TWO steps (preview then apply)
   // so nothing changes before he has seen what would change.
   exportPreset: (payload) => ipcRenderer.invoke('presets:export', payload),

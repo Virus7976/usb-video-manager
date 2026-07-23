@@ -121,7 +121,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 11 | Skip files already pulled from this phone | ✓ | – | – | done |
 | 12 | Upload footage from the phone itself, resumably | – | ✓ | ✓ | partial — backend + core done and tested; **no phone UI yet** |
 | 13 | Resume an upload the phone abandoned when it slept | – | ✓ | ✓ | partial — same |
-| 14 | Ingest what the phone uploaded into the normal flow | ✓ | – | ✓ | todo — uploads land in staging; nothing consumes them yet |
+| 14 | Ingest what the phone uploaded into the normal flow | ✓ | – | ✓ | done (D) — a Home card brings completed uploads into Uncompressed through `copyFileVerified`, releasing staging only after the copy verifies. Collisions get a new name, never someone else's bytes; a failed copy leaves the upload waiting |
 
 ### B. Copy it safely, then clear the card (15–24)
 

@@ -14211,9 +14211,43 @@ async function sendPendingVideosToUncompressed() {
     logIssue('Phone', `Send to Uncompressed failed: ${err}`);
     return;
   }
+  // ⚠⚠ A CALL THAT RESOLVES IS NOT A CALL THAT SUCCEEDED.
+  //
+  // The `err` branch above handles a THROW, and its comment records that this used to claim success
+  // regardless. But main reports partial failure by RESOLVING:
+  //
+  //     { ok: failed === 0, copied, failed, total, okDests, cancelled, error }
+  //
+  // and none of that was read. A send where 2 of 5 moved took this path: pending list cleared, button
+  // hidden, "2 videos → 01 - Uncompressed ✓". The three that failed stay in `_Phone Video Temp`,
+  // nothing names them, and the only control that could retry them is gone for the session. Same bug
+  // as the one the comment above says was fixed — fixed for the throw, missed for the report.
+  const copied = (res && res.copied) || 0;
+  const failed = (res && res.failed) || 0;
+
+  // Keep the ones that did NOT land, so a retry sends exactly those. `okDests` is main's list of
+  // destinations that really exist now, which is the only trustworthy way to tell them apart.
+  const landed = new Set((res && Array.isArray(res.okDests)) ? res.okDests : []);
+  phonePendingVideos = landed.size
+    ? (phonePendingVideos || []).filter((j) => !landed.has(j && j.dest))
+    : (failed || (res && res.cancelled) ? (phonePendingVideos || []) : []);
+
+  if (res && res.cancelled) {
+    // He stopped it himself. Calling that an error trains him to ignore errors.
+    if (btn) { btn.disabled = false; btn.textContent = restoreLabel; }
+    showToast(`Stopped — ${copied} video${copied !== 1 ? 's' : ''} sent. The rest are still pending.`, 6000);
+    return;
+  }
+  if (failed || (res && res.ok === false)) {
+    if (btn) { btn.disabled = false; btn.textContent = restoreLabel; }
+    showToast(`${copied} sent · ⚠ ${failed || 'some'} couldn’t be moved — still pending, try again.`, 8000);
+    logIssue('Phone', (res && res.error) || `${failed} video(s) failed to move`);
+    return;
+  }
+
   phonePendingVideos = [];
   if (btn) { btn.classList.add('hidden'); }
-  showToast(`${(res && res.copied) || 0} video${((res && res.copied) !== 1) ? 's' : ''} → 01 - Uncompressed — Tdarr can compress them now ✓`, 5000);
+  showToast(`${copied} video${copied !== 1 ? 's' : ''} → 01 - Uncompressed — Tdarr can compress them now ✓`, 5000);
 }
 
 async function runCopy() {

@@ -5558,6 +5558,29 @@ test could not tell the difference, because it varied the ROOT (which the handle
 instead of `toDir` (which arrives unnormalised from the caller). Caught by breaking the guard down
 to a string compare and watching the test stay green.
 
+### 2026-07-23 — THREE TIMES NOW: a break that did not apply read as a guard that held
+
+Same failure, three different disguises, all in one day:
+
+1. A probe used `items:` where the payload key was `moves:` — nothing was exercised, and the empty
+   result was written up as "the reported bug does not reproduce". It did reproduce. A correct audit
+   finding got struck out.
+2. A `sed` break used the wrong indentation, matched nothing, and reported `fail 0` — reading as a
+   working guard.
+3. A `python .replace(old, new, 1)` break hit the FIRST of three identical lines in the file — line
+   469, in an unrelated function — while the code under test was line 1101. `fail 0` again.
+
+**The rule, stated once for all three: a negative result is only evidence if the setup that would
+produce a positive result has been demonstrated.** Concretely, before believing any clean run:
+
+- **For a probe**, first make it reproduce the bug against unfixed code, or first make it show the
+  SUCCESS case. `test/phone-send-reports-failures.test.mjs` ships its control as test 1 for exactly
+  this reason, and `test/phone-answers-actually-land.test.mjs` gained one too.
+- **For a break**, confirm the file actually changed AND that it changed the right occurrence.
+  `grep -n` the pattern first — if it appears more than once, target by line, not by first match.
+
+The tell is always the same and always looks like good news: everything passes.
+
 ### 2026-07-23 — The e2e earned its keep again: a screen that read a key nobody exposed
 
 Settings → "Folders & setup" was built and verified structurally — read `06-menus.js`, assert it

@@ -22,7 +22,7 @@ Remotes: `github` (Virus7976/usb-video-manager — also the auto-update release 
 
 ## 2. Where we are
 
-- Suite: **1,696 unit tests passing, 0 failing** · E2E: `npm run test:e2e` (`npm run check`). E2E: `npm run test:e2e`
+- Suite: **1,702 unit tests passing, 0 failing** · E2E: `npm run test:e2e` (`npm run check`). E2E: `npm run test:e2e`
   (Playwright drives the real Electron app; works from WSL).
 - **Never edit `main.js` or `src/renderer.js`** — they are generated. Edit `main-mod/*.js` and
   `src/mod/*.js`, then `npm run bundle`.
@@ -86,8 +86,10 @@ his first successful filing run forks his tree, and he stops trusting the app.
   the `no-projects-root` push, not nested inside it. FEATURES.md #89 is correctly `done`.
 - `ai:health` ignores `advice.kind === 'unset'`, so a fresh machine with a vision model pulled but
   not selected gets no nudge.
-- Phone flow: "Send to Uncompressed" discards main's failure report and hides the retry button, so
-  failed videos are silently stranded; the done-line counts videos that were never renamed.
+- ~~Phone flow: "Send to Uncompressed" discards main's failure report~~ — **REAL, and FIXED.** It now
+  reports partial failure, keeps the failed videos pending (using main's `okDests` to tell them
+  apart), leaves the retry button, logs the issue, and distinguishes a cancel from a failure. Still
+  open from that item: the phone-backup done-line counts videos that were never renamed.
 - ~~`phone:applyQueue` guards `ai.facesPending` but not `ai.people`~~ — **REAL, and FIXED.** Both
   stores are guarded now. Settled by reusing the working fixture in
   `test/phone-answers-actually-land.test.mjs` (it needs `descriptor` AND `descriptors`); two earlier

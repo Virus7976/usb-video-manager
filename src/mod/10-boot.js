@@ -433,6 +433,22 @@ $('finRunBtn').addEventListener('click', async () => {
     for (const e of summary.errors.slice(0, 30)) { const li = document.createElement('li'); li.textContent = e; rl.appendChild(li); }
     rl.classList.remove('hidden');
     console.warn('Finalize issues:', summary.errors);
+    // ⚠⚠ AND WRITE THEM SOMEWHERE THAT OUTLIVES THIS SCREEN.
+    //
+    // The list above is real and readable — but it disappears the moment he navigates away, and a
+    // `console.warn` is not somewhere he will ever look. These are the messages that say a second
+    // copy did not happen: with the NAS unreachable, a run reports `moved: 4, backedUp: 0` plus one
+    // error per clip. He needs to be able to find that tomorrow, not only in the seconds after the
+    // run. The issue log is the one place in this app that answers "what did it actually do".
+    //
+    // Capped at 30 to match the list: an error per clip on a 310-clip run would otherwise bury every
+    // other entry in the log.
+    for (const e of summary.errors.slice(0, 30)) {
+      try { logIssue('Organize', String(e)); } catch { /* the on-screen list already has it */ }
+    }
+    if (summary.errors.length > 30) {
+      try { logIssue('Organize', `…and ${summary.errors.length - 30} more issues in this run`); } catch { /* ignore */ }
+    }
   }
   finRan = true;
   // The one-click fix: if nothing was filed, tick Organize and keep Run on screen so the next click

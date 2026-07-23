@@ -151,6 +151,9 @@ const MENUS = {
       { label: 'Undo last organize…', desc: 'Move the clips from the last Organize back out of the Projects tree.', action: undoLastOrganize },
       { label: 'Filing rules…', action: () => showRoutingRules() },
       { label: 'Restore previous naming…', action: restoreDraftsNow },
+      { label: 'Save this setup as a preset…', desc: 'A shareable file of HOW you work — folder shape, filing rules, AI settings. No folders, people or footage details are in it.', action: savePresetFile },
+      { label: 'Load a preset…', desc: 'Open a preset someone shared, or one of your own. Shows exactly what would change before anything does.', action: loadPresetFile },
+      { sep: true },
       { label: 'Save point now', action: () => saveVersionPoint('Manual save point', false) },
       { label: 'Version history…', action: showVersionHistory }
     ] },

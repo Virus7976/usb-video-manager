@@ -1608,6 +1608,66 @@ async function learnFromProjectsTree() {
     : `Already up to date — ${total} project${total !== 1 ? 's' : ''} known ✓`, 7000);
 }
 
+// ⚠⚠ PRESETS — save this setup, or load one someone sent you.
+//
+// Jake, 2026-07-22: *"I should also be able to have presets, and save my setups as a preset and then
+// share it."* The portable core is `core/presets.js`; this is the route to it.
+//
+// ⚠ IMPORT SHOWS THE DIFF FIRST, ALWAYS. A preset rewrites how the app behaves — every setting that
+// would change is listed before anything is applied, and "Cancel" is the default. This app has a
+// standing rule against silently rewriting his configuration, and an imported file is the most
+// outside-the-app thing that has ever touched it.
+async function savePresetFile() {
+  // No separate "name this preset" prompt: the OS save dialog already asks for a filename, and
+  // asking twice for the same thing is the kind of ceremony this app is trying to remove.
+  let r = null;
+  try { r = await window.api.exportPreset({ name: 'My setup' }); }
+  catch (e) { showToast(`Could not save the preset: ${(e && e.message) || e}`, 6000); return; }
+  if (!r || r.canceled) return;
+  if (!r.ok) { showToast(r.error || 'Could not save the preset', 6000); return; }
+  // Say what actually travelled — a preset is a thing he may hand to someone else, so "saved ✓" on
+  // its own is the wrong amount of information.
+  showToast(`Preset saved ✓ — ${r.keys.length} setting${r.keys.length !== 1 ? 's' : ''}`
+    + `${r.rules ? `, including ${r.rules} filing rule${r.rules !== 1 ? 's' : ''}` : ''}`
+    + '. No folders, people or footage details are in it.', 9000);
+}
+
+async function loadPresetFile() {
+  let r = null;
+  try { r = await window.api.previewPreset(); }
+  catch (e) { showToast(`Could not read that preset: ${(e && e.message) || e}`, 6000); return; }
+  if (!r || r.canceled) return;
+  if (!r.ok) { showToast(r.error || 'That file is not a preset', 7000); return; }
+
+  if (!r.changes.length) {
+    showToast(`“${r.name}” matches your settings already — nothing to change.`, 6000);
+    return;
+  }
+  const lines = r.changes.slice(0, 12).map((c) => `• ${c.key}`).join('\n');
+  const more = r.changes.length > 12 ? `\n…and ${r.changes.length - 12} more` : '';
+  const ignoredNote = r.ignored && r.ignored.length
+    ? `\n\n${r.ignored.length} thing${r.ignored.length !== 1 ? 's were' : ' was'} ignored because a preset is not allowed to set them (folders, people, your naming history).`
+    : '';
+  const ok = await confirmDialog(
+    `Apply “${r.name}”?`,
+    `This changes ${r.changes.length} setting${r.changes.length !== 1 ? 's' : ''}:\n${lines}${more}`
+    + `\n\nYour footage, folders, people and typed names are not touched.${ignoredNote}`,
+  );
+  if (!ok) return;
+
+  let a = null;
+  try { a = await window.api.applyPreset(r.preset); }
+  catch (e) { showToast(`Could not apply that preset: ${(e && e.message) || e}`, 6000); return; }
+  if (!a || !a.ok) { showToast((a && a.error) || 'Could not apply that preset', 6000); return; }
+  // Re-read the settings the visible screens cache, so the change is not invisible until a restart.
+  try { await refreshFields(); } catch { /* non-fatal — the settings are saved either way */ }
+  // Filing rules are cached in the renderer; re-read them from main rather than leaving the map
+  // showing the rules from before the import.
+  try { routesCache = (await window.api.getRoutes()) || routesCache; } catch { /* same */ }
+  showToast(`Applied “${r.name}” — ${a.applied.length} setting${a.applied.length !== 1 ? 's' : ''} changed ✓`
+    + '. Reopen Settings to see them all.', 8000);
+}
+
 // ---------------------------------------------------------------------------
 // Version history / save points. A save point is a full snapshot of every clip's
 // naming (the same map shape as a draft). One is captured automatically before
@@ -7006,6 +7066,9 @@ const MENUS = {
       { label: 'Undo last organize…', desc: 'Move the clips from the last Organize back out of the Projects tree.', action: undoLastOrganize },
       { label: 'Filing rules…', action: () => showRoutingRules() },
       { label: 'Restore previous naming…', action: restoreDraftsNow },
+      { label: 'Save this setup as a preset…', desc: 'A shareable file of HOW you work — folder shape, filing rules, AI settings. No folders, people or footage details are in it.', action: savePresetFile },
+      { label: 'Load a preset…', desc: 'Open a preset someone shared, or one of your own. Shows exactly what would change before anything does.', action: loadPresetFile },
+      { sep: true },
       { label: 'Save point now', action: () => saveVersionPoint('Manual save point', false) },
       { label: 'Version history…', action: showVersionHistory }
     ] },

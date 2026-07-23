@@ -103,5 +103,35 @@ test('⚠ the count of confirmations has not quietly dropped', () => {
   // Its sibling controls landed in the same commit and deliberately do NOT ask: turning fast
   // transfer off flips a transport flag, and forgetting an autocomplete entry offers an inline Undo.
   // A confirmation on either would be the app asking permission to do nothing.
-  assert.equal(all, 19, `19 confirmations, each guarding footage, metadata or a long job — found ${all}`);
+  //
+  // 20 since 2026-07-23. The twentieth is "Apply <preset name>?" — importing a preset.
+  //
+  // It earns its place for a reason none of the others have: the input came from OUTSIDE this app.
+  // Every other confirmation guards his data against something HE just asked for; this one guards
+  // his configuration against a file that may have been emailed to him. It rewrites how filing,
+  // naming and the AI behave, all at once.
+  //
+  // And it is not a bare "are you sure": the dialog LISTS every setting that would change, states
+  // that footage, folders, people and typed names are untouched, and says how many keys the file
+  // tried to set that a preset is not allowed to set. Cancel is the default. The alternative was
+  // applying an outside file's settings and letting him discover the difference later, which is the
+  // shape this project has already been burned by (a stale filing rule silently forking his tree).
+  assert.equal(all, 20, `20 confirmations, each guarding footage, metadata or a long job — found ${all}`);
+});
+
+test('⚠⚠ importing a preset asks, and the dialog says what it will NOT touch', () => {
+  // The twentieth confirmation. Unlike every other one in this file, its input came from outside the
+  // app — so the dialog has to do more than ask: it must show the scope, and it must say plainly
+  // which of his things are safe, because "settings" and "my footage" are not obviously different
+  // categories to someone about to click OK on a file a stranger sent.
+  assert.match(core, /await confirmDialog\(\s*\n?\s*`Apply “\$\{r\.name\}”\?`/, 'importing a preset asks first');
+  assert.match(core, /This changes \$\{r\.changes\.length\} setting/, '⚠ and states the scope');
+  assert.match(core, /Your footage, folders, people and typed names are not touched/,
+    '⚠⚠ and says explicitly what is NOT affected');
+  const at = core.indexOf('async function loadPresetFile');
+  const body = core.slice(at, core.indexOf('\n// ---', at));
+  const askAt = body.indexOf('confirmDialog');
+  const applyAt = body.indexOf('window.api.applyPreset');
+  assert.ok(askAt > -1 && applyAt > askAt, '⚠⚠ the ask precedes the apply');
+  assert.match(body, /if \(!ok\) return;/, '⚠⚠ and declining does nothing');
 });

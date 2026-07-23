@@ -279,6 +279,12 @@ contextBridge.exposeInMainWorld('api', {
   // Only the REPAIR is bridged: the validator is consumed by `ai:health` inside main, and a bridge
   // with no renderer caller is dead surface the reachability guard correctly refuses.
   repairRouteDests: (ids) => ipcRenderer.invoke('routes:repairDests', ids),
+
+  // Presets — save a setup, share it, load someone else's. Import is TWO steps (preview then apply)
+  // so nothing changes before he has seen what would change.
+  exportPreset: (payload) => ipcRenderer.invoke('presets:export', payload),
+  previewPreset: () => ipcRenderer.invoke('presets:preview'),
+  applyPreset: (preset) => ipcRenderer.invoke('presets:apply', preset),
   aiParseRules: (payload) => ipcRenderer.invoke('ai:parseRules', payload),
   getClipObs: () => ipcRenderer.invoke('clipObs:get'),
   saveClipObs: (payload) => ipcRenderer.invoke('clipObs:save', payload),

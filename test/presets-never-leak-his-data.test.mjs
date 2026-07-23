@@ -198,3 +198,51 @@ test('⚠ every allowlisted key is genuinely portable — no path-shaped names c
     assert.ok(!P.ALLOWED.includes(banned), `⚠⚠ "${banned}" is on both lists — that is a contradiction`);
   }
 });
+
+// --- REACHABILITY: a preset engine nothing can call is worth nothing ------------------------------
+//
+// This project's recurring failure mode is a correct feature with no route to it — six capabilities
+// were built, shipped and unreachable. The wiring lands with the feature, not after it.
+
+test('⚠⚠ presets are reachable from the menu, and really call main', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const src = (p) => readFileSync(join(process.cwd(), p), 'utf8').replace(/\/\/.*$/gm, '');
+  const menus = src('src/mod/06-menus.js');
+  const core = src('src/mod/01-core.js');
+  const pre = src('preload.js');
+
+  assert.match(menus, /Save this setup as a preset…/, 'export is in the menu');
+  assert.match(menus, /Load a preset…/, 'import is in the menu');
+  assert.match(menus, /action: savePresetFile/, 'wired to the real function');
+  assert.match(menus, /action: loadPresetFile/, 'and so is import');
+
+  assert.match(core, /await window\.api\.exportPreset\(/, '⚠⚠ export really invokes main');
+  assert.match(core, /await window\.api\.previewPreset\(/, '⚠⚠ preview really invokes main');
+  assert.match(core, /await window\.api\.applyPreset\(/, '⚠⚠ apply really invokes main');
+
+  for (const m of ['exportPreset', 'previewPreset', 'applyPreset']) {
+    assert.ok(pre.includes(`${m}:`), `${m} is bridged in preload`);
+    // The §8h trap: a renderer function sharing a bridge method's name satisfies the reachability
+    // guard while calling nothing. These are deliberately named differently.
+    assert.ok(!new RegExp(`function ${m}\\\\b`).test(core), `⚠ no renderer function shadows ${m}`);
+  }
+});
+
+test('⚠⚠ import is TWO steps — opening a file cannot apply it', async () => {
+  // `presets:preview` reads and describes; `presets:apply` commits. If preview also applied, the
+  // confirm dialog would be theatre — he would be agreeing to something already done.
+  //
+  // ⚠ The first draft of this test was `assert.ok(true)` with a comment claiming the behaviour was
+  // pinned elsewhere. It was not, and a placeholder that always passes is worse than no test: it
+  // occupies the slot where the real check should be. Asserted properly here.
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const main = readFileSync(join(process.cwd(), 'main-mod', '06-copy-transfer.js'), 'utf8');
+  const at = main.indexOf("ipcMain.handle('presets:preview'");
+  assert.ok(at > -1, 'the preview handler exists');
+  const body = main.slice(at, main.indexOf("ipcMain.handle('presets:apply'", at));
+  assert.ok(!/applyPreset/.test(body), '⚠⚠ preview must never apply');
+  assert.ok(!/saveConfig\(\)/.test(body), '⚠⚠ and must never write config');
+  assert.match(body, /diffPreset/, 'it describes the change instead');
+});

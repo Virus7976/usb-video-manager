@@ -137,6 +137,7 @@ const USER_CONFIG = path.join(ROAMING_DIR, 'USB SD Auto-Action', 'config.json');
 const STORE_DIR = path.join(ROAMING_DIR, 'USB SD Auto-Action');
 // Shared with the HTTP backend — see core/clip-key.js for why core/ exists and its three rules.
 const subjects = require('./core/subjects');
+const presets = require('./core/presets');
 // Sweep orphaned atomic-write temp files (`<store>.<pid>.<n>.tmp`) left by a crash/power-loss between
 // openSync and renameSync. Cleanup otherwise only ran in the same-process catch, so these leaked
 // forever — and for the multi-MB stores they can be large. Called once at boot.
@@ -5791,6 +5792,74 @@ async function getContactSheet(srcPath, n) {
   } finally { releasePoster(); }
 }
 
+
+// --- PRESETS: save a setup, share it, load someone else's -----------------------------------------
+//
+// Jake, 2026-07-22: *"I should also be able to have presets, and save my setups as a preset and then
+// share it."* The portable core is `core/presets.js` — read its header for why the export is an
+// allowlist rather than a denylist. These three handlers are the only way in or out.
+//
+// ⚠ IMPORT IS TWO STEPS ON PURPOSE: `presets:preview` reads and describes, `presets:apply` commits.
+// A preset rewrites how the app behaves, so "apply and find out" is not an acceptable shape. The
+// preview never touches config; the apply takes the already-parsed object back from the renderer so
+// the file is read exactly once and cannot change between being shown and being applied.
+
+ipcMain.handle('presets:export', async (_e, payload) => {
+  const name = String((payload && payload.name) || 'My setup').slice(0, 80);
+  const preset = presets.buildPreset(config, { name, note: String((payload && payload.note) || '') });
+  const safe = name.replace(/[^a-z0-9 _-]+/gi, '').trim() || 'preset';
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save your setup as a preset',
+    defaultPath: `${safe}.uaa-preset.json`,
+    filters: [{ name: 'Preset', extensions: ['json'] }],
+  });
+  if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+  try {
+    await fsp.writeFile(res.filePath, JSON.stringify(preset, null, 2), 'utf8');
+  } catch (err) {
+    return { ok: false, error: `Could not write that file: ${(err && err.message) || err}` };
+  }
+  // Report what actually travelled, so he can see the shape of what he is about to SHARE rather than
+  // trusting a tick. `diffPreset` against an empty config gives exactly the settings the file
+  // contains — reusing the same walker the import preview uses, rather than a second guess at it.
+  const included = presets.diffPreset({}, preset);
+  return {
+    ok: true,
+    path: res.filePath,
+    keys: included.ok ? included.changes.map((c) => c.key) : [],
+    rules: (((preset.settings || {}).ai || {}).routes || []).length,
+  };
+});
+
+ipcMain.handle('presets:preview', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Open a preset',
+    filters: [{ name: 'Preset', extensions: ['json'] }],
+    properties: ['openFile'],
+  });
+  if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
+  let raw;
+  try { raw = await fsp.readFile(res.filePaths[0], 'utf8'); }
+  catch (err) { return { ok: false, error: `Could not read that file: ${(err && err.message) || err}` }; }
+  let obj;
+  // ⚠ A PRESET IS UNTRUSTED INPUT — it came from outside this app. Bad JSON is a normal thing for a
+  // file someone emailed to be, and it must read as "that file isn't a preset", not as a crash.
+  try { obj = JSON.parse(raw); }
+  catch { return { ok: false, error: 'That file isn’t readable as a preset — it may be damaged, or not a preset at all.' }; }
+
+  const check = presets.validatePreset(obj);
+  if (!check.ok) return check;
+  const diff = presets.diffPreset(config, obj);
+  if (!diff.ok) return diff;
+  return { ok: true, path: res.filePaths[0], name: obj.name || 'Preset', note: obj.note || '', preset: obj, changes: diff.changes, ignored: diff.ignored };
+});
+
+ipcMain.handle('presets:apply', (_e, preset) => {
+  const r = presets.applyPreset(config, preset);
+  if (!r.ok) return r;
+  saveConfig();
+  return r;
+});
 // ---------------------------------------------------------------------------
 // MEASURED camera motion — vision models guess motion poorly from a contact
 // sheet, so we measure it and feed it to the AI as ground truth. For GoPro clips

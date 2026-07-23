@@ -9,6 +9,34 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 _(nothing yet)_
 
+## [0.6.1] — 2026-07-23
+
+### The phone backup told you it worked when videos hadn't moved (2026-07-23)
+
+Two related problems in the phone flow, both of which made a partial failure look like a success.
+
+- **"Send to Uncompressed" reported a tick regardless.** If some videos failed to move, it said
+  "2 videos → 01 - Uncompressed ✓", cleared the pending list and **hid the Send button** — so the
+  failed ones were stranded in `_Phone Video Temp` with no way to retry them for the rest of the
+  session. It now says how many couldn't be moved, keeps them pending, leaves the button, and logs
+  it. Stopping it yourself is reported as stopped, not as an error.
+- **"N videos named & staged" counted videos that were never renamed.** The count was taken before
+  the rename ran, so a clip whose rename failed was counted as staged and pointed at a filename that
+  didn't exist. Only the ones that really got their name are counted now, and the rest are called out.
+
+### It'll tell you when no vision model is selected (2026-07-23)
+
+If you had a vision model installed but hadn't picked one, AI naming would quietly describe nothing —
+and the health check said everything was fine. It now flags it with a one-click fix. This mostly
+matters on a fresh machine.
+
+### Internal
+
+The check that's supposed to catch unreachable code had a blind spot: it read the source with a
+pattern that missed six handlers, which turned out to be dead legacy code. It now inspects the
+running app instead, and those six are gone.
+
+
 ## [0.6.0] — 2026-07-23
 
 ### Your own filing rules were about to fork your Projects tree (2026-07-23)

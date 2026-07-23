@@ -1,6 +1,6 @@
 {
   "name": "usb-auto-action",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Auto-detects USB/SD insertion on Windows and shows an expandable action menu (compress intake copy, rename, delete from source).",
   "main": "main.js",
   "author": "Jake",

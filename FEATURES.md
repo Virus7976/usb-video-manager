@@ -209,7 +209,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 | 81 | Export a Resolve-compatible CSV | ✓ | – | – | done |
 | 82 | Undo the last filing run, including the ledger | ✓ | ✓ | – | partial — desktop only; single run deep |
 | 83 | File one clip immediately, without a batch | ✓ | ✓ | – | partial — desktop only |
-| 84 | **Read filed metadata back** | ✓ | ✓ | ✓ | **dead** — `finalMeta:get` has no caller |
+| 84 | **Read filed metadata back** | ✓ | ✓ | ✓ | done — verified by probe on all three routes: Organize hydrates the saved record onto each row (`matchType: 'saved'`), Ctrl+K finds a filed clip by its description, and the backend reads the same store via `core/store-read.js`. The `finalMeta:get` IPC has no APP caller and is kept only as an e2e test seam — the capability was never the thing missing |
 
 ### G. Compress (85–89)
 
@@ -246,7 +246,7 @@ Status: `done` (works everywhere listed, with a test) · `partial` (works somewh
 
 ## What this list says
 
-**6 capabilities are built, shipped, and unreachable** (84, plus `faces:image`,
+**5 capabilities are built, shipped, and unreachable** (`faces:image`,
 `feedback:list`, `intake:get`, `ai:visionAdvice`, `ai:recallShoot`). He paid for those and cannot use
 them. Several are small wiring jobs.
 

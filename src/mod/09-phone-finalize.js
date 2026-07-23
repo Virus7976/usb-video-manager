@@ -987,6 +987,7 @@ async function runPhoneCopy() {
   let res = { ok: true, copied: 0 };
   let distributed = 0;
   let photoFailed = 0;
+  let vidFailed = 0;
   let pjobs = []; let dests = {}; let routedN = 0;
   // The two awaits below are individually try/caught, but buildPhotoJobs() between them is
   // NOT — and a sync throw there would unwind past `copyInProgress = false`, jamming the
@@ -995,6 +996,12 @@ async function runPhoneCopy() {
   // finally so it holds no matter what runs in here.
   try {
     if (renameJobs.length) { try { res = await window.api.copyPhoneVideos({ jobs: renameJobs }); } catch (e) { res = { ok: false, error: e.message }; } }
+    // Keep only the clips that really got their final name — see stagedAfterRename.
+    if (renameJobs.length) {
+      const st = stagedAfterRename(phonePendingVideos, res && res.okDests);
+      phonePendingVideos = st.staged;
+      vidFailed = st.failed;
+    }
 
     // Distribute the renamed PHOTOS (already in Photos Temp) to computer/NAS + Projects.
     ({ jobs: pjobs, dests, routedN } = buildPhotoJobs(photos, false));
@@ -1046,7 +1053,8 @@ async function runPhoneCopy() {
   const photoLine = (dests.length || routedN) ? `${distributed} photo cop${distributed !== 1 ? 'ies' : 'y'} → ${destNames || 'Projects'}${routedNote}${photoWarn}` : `${photos.length} photo${photos.length !== 1 ? 's' : ''} in 04 - Photos Temp${photoWarn}`;
 
   const nVid = phonePendingVideos.length;
-  const vidLine = nVid ? `${nVid} video${nVid !== 1 ? 's' : ''} named &amp; staged in _Phone Video Temp (Tdarr won't touch them yet)` : '';
+  const vidWarn = vidFailed ? ` — ⚠ ${vidFailed} couldn’t be renamed and ${vidFailed !== 1 ? 'are' : 'is'} still under the original name` : '';
+  const vidLine = (nVid || vidFailed) ? `${nVid} video${nVid !== 1 ? 's' : ''} named &amp; staged in _Phone Video Temp (Tdarr won't touch them yet)${vidWarn}` : '';
   // Reveal a deliberate "Send to Uncompressed" button so YOU decide when Tdarr compresses.
   const sendBtn = document.getElementById('phSendUncompressedBtn');
   if (sendBtn) { sendBtn.classList.toggle('hidden', !nVid); sendBtn.textContent = nVid ? `Send ${nVid} video${nVid !== 1 ? 's' : ''} to Uncompressed` : 'Send to Uncompressed'; sendBtn.disabled = false; }
@@ -1056,6 +1064,28 @@ async function runPhoneCopy() {
 // Videos wait in _Phone Video Temp (renamed) until the user sends them to Uncompressed —
 // so Tdarr never compresses before they're ready. { src: tempPath, dest: intakePath }.
 let phonePendingVideos = [];
+// ⚠⚠ ONLY THE VIDEOS THAT REALLY GOT THEIR NAME ARE "NAMED & STAGED".
+//
+// `phonePendingVideos` is built from ALL the videos BEFORE the rename runs, with `src` already
+// pointing at the FINAL name. If a rename fails, that clip is still sitting under its original name —
+// but it stayed in the pending list, was counted in "N videos named & staged in _Phone Video Temp",
+// and its `src` pointed at a file that does not exist. The next "Send to Uncompressed" then fails on
+// it for a reason that looks like a mystery.
+//
+// `okDests` is main's list of destinations that really exist after the rename, and the rename jobs'
+// `dest` values are the same strings as the pending list's `src` — so this is an exact match, not a
+// heuristic. Extracted as a function so the rule is unit-testable; inline in a 200-line handler it
+// could only ever be checked by reading the source, which in this project is not evidence.
+function stagedAfterRename(pending, okDests) {
+  const list = Array.isArray(pending) ? pending : [];
+  // No report at all (an old main, or a call that threw before reporting) → change nothing rather
+  // than silently emptying his staged list on a build that cannot tell us.
+  if (!Array.isArray(okDests)) return { staged: list, failed: 0 };
+  const ok = new Set(okDests);
+  const staged = list.filter((j) => j && ok.has(j.src));
+  return { staged, failed: list.length - staged.length };
+}
+
 async function sendPendingVideosToUncompressed() {
   const jobs = (phonePendingVideos || []).slice();
   if (!jobs.length) { showToast('No staged videos to send'); return; }

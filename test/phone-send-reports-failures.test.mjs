@@ -126,3 +126,62 @@ test('⚠ a thrown call still behaves as it did — that fix must not regress', 
   assert.match(toasts.join(' | '), /Couldn’t send to Uncompressed/, 'the throw path still reports');
   assert.ok(!btn._classes.has('hidden'), 'and still leaves the button');
 });
+
+// --- AND THE OTHER HALF: "named & staged" counted videos that were never renamed -----------------
+//
+// `phonePendingVideos` is built from ALL the videos BEFORE the rename runs, with `src` already
+// pointing at the FINAL name. A clip whose rename failed stayed in that list, was counted in
+// "N videos named & staged in _Phone Video Temp", and had a `src` pointing at a file that does not
+// exist — so the next Send failed on it for a reason that looked like a mystery.
+//
+// `okDests` is main's list of destinations that really exist after the rename, and the rename jobs'
+// `dest` values are the same strings as the pending list's `src`, so this is an exact match rather
+// than a heuristic.
+
+const stagedAfterRename = extractFn('src/mod/09-phone-finalize.js', 'stagedAfterRename', [])();
+
+const pending = () => ([
+  { src: '/tmp/vtemp/2026-06-01_a_v1.mp4', dest: '/intake/2026-06-01_a_v1.mp4' },
+  { src: '/tmp/vtemp/2026-06-01_b_v1.mp4', dest: '/intake/2026-06-01_b_v1.mp4' },
+  { src: '/tmp/vtemp/2026-06-01_c_v1.mp4', dest: '/intake/2026-06-01_c_v1.mp4' },
+]);
+
+test('⚠ CONTROL — when every rename works, everything stays staged', () => {
+  const all = pending().map((j) => j.src);
+  const r = stagedAfterRename(pending(), all);
+  assert.equal(r.staged.length, 3, '⚠ all three remain');
+  assert.equal(r.failed, 0, 'and nothing is reported failed');
+});
+
+test('⚠⚠⚠ a video whose rename failed is NOT counted as named & staged', () => {
+  const okDests = [pending()[0].src, pending()[2].src];   // the middle one failed
+  const r = stagedAfterRename(pending(), okDests);
+  assert.equal(r.staged.length, 2, '⚠⚠⚠ only the renamed ones are staged');
+  assert.equal(r.failed, 1, '⚠⚠ and the failure is counted so it can be reported');
+  assert.ok(!r.staged.some((j) => /_b_/.test(j.src)),
+    '⚠⚠⚠ the clip still under its original name is not in the send list');
+});
+
+test('⚠⚠ every rename failing leaves nothing staged, and says so', () => {
+  const r = stagedAfterRename(pending(), []);
+  assert.equal(r.staged.length, 0);
+  assert.equal(r.failed, 3, '⚠⚠ all three reported, rather than a silent empty list');
+});
+
+test('⚠⚠ NO report at all changes nothing — it must not empty his staged list', () => {
+  // An older main, or a call that threw before reporting. Treating "I do not know" as "none
+  // succeeded" would wipe a list of videos that are perfectly fine on disk.
+  for (const noReport of [undefined, null, 'nonsense', 0]) {
+    const r = stagedAfterRename(pending(), noReport);
+    assert.equal(r.staged.length, 3, `⚠⚠ unchanged when okDests is ${JSON.stringify(noReport)}`);
+    assert.equal(r.failed, 0, 'and nothing is claimed to have failed');
+  }
+});
+
+test('⚠ the done line warns about videos that could not be renamed', () => {
+  const src = readSrc('src/mod/09-phone-finalize.js').replace(/\/\/.*$/gm, '');
+  assert.match(src, /couldn’t be renamed/, '⚠ the warning text exists');
+  assert.match(src, /const vidWarn = vidFailed/, 'driven by the real count');
+  assert.match(src, /\(nVid \|\| vidFailed\)/,
+    '⚠⚠ and the line still appears when NOTHING staged but something failed — otherwise a total failure is silent');
+});

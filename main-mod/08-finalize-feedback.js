@@ -915,26 +915,16 @@ ipcMain.handle('descriptions:add', (_evt, value) => {
 
 // Categories & Projects — remembered value history for the organizing fields
 // (used for metadata + the Compressed/<Category>/<Project>/ folder structure).
-function makeListHandlers(key) {
-  ipcMain.handle(`${key}:get`, () => config[key] || []);
-  ipcMain.handle(`${key}:add`, (_evt, name) => {
-    const s = String(name || '').trim();
-    config[key] = config[key] || [];
-    if (s && !config[key].includes(s)) {
-      config[key].push(s);
-      config[key].sort((a, b) => a.localeCompare(b));
-      saveConfig();
-    }
-    return config[key];
-  });
-  ipcMain.handle(`${key}:remove`, (_evt, name) => {
-    config[key] = (config[key] || []).filter((s) => s !== name);
-    saveConfig();
-    return config[key];
-  });
-}
-makeListHandlers('categories');
-makeListHandlers('projects');
+// ⚠ REMOVED 2026-07-23 — `makeListHandlers('categories'|'projects')`, six dead channels.
+//
+// They registered `${key}:get|add|remove` over `config.categories` / `config.projects`. Both stores
+// were migrated ONCE into `config.fieldHistory` (main-mod/01-core.js) and nothing has written to them
+// since; his config already carries `fieldHistory`, so that migration will never run again. No
+// preload bridge, no renderer reference — main-side code no user could reach.
+//
+// They survived this long because they were INVISIBLE to the reachability guard: it grepped for
+// `ipcMain.handle('...')` and these were registered with a template literal. The guard now enumerates
+// the loaded app's real handler map, which is what surfaced them.
 
 // Custom organizing fields (the user-managed taxonomy) + their value history.
 ipcMain.handle('fields:get', () => config.organizeFields);

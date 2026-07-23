@@ -75,9 +75,11 @@ is a "File these 310" button where he already lives — but shipping that before
 his first successful filing run forks his tree, and he stops trusting the app.
 
 **3. Then, ranked, from the 2026-07-22 audit** (details in `AGENTS.md` §8):
-- `ipc-reachability.test.mjs` has two holes: its regex misses template-literal channels (hiding 6
-  genuine orphans in `makeListHandlers`), and its `used()` counts its own `KNOWN_UNUSED` strings as
-  usage, so the array is never consulted and deleting it leaves the test green.
+- ~~`ipc-reachability.test.mjs` has two holes~~ — **BOTH REAL, BOTH FIXED.** It now enumerates the
+  loaded app's real handler map instead of grepping source (200 channels registered vs 196 seen), the
+  6 template-literal orphans it was blind to are deleted, `used()` no longer counts a name's mere
+  mention in a test, and there is ONE shared `used()` so the anti-vacuity test observes the same code
+  it guards.
 - ~~`projects:move` files into the bare root given `rel: ''`~~ — **REAL, and now FIXED.** An earlier
   iteration wrongly marked this "does not reproduce" because its probe used `items:` instead of the
   real payload key `moves:`, so nothing was exercised. See AGENTS.md §8 — "a probe asserting an

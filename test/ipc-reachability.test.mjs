@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadMain } from './harness.mjs';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,9 +33,31 @@ const testSrc = ['test', 'test/e2e']
   .flatMap((d) => fs.readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith('.mjs')).map((f) => path.join(ROOT, d, f)))
   .map((f) => fs.readFileSync(f, 'utf8')).join('\n');
 
-const mainChannels = new Set([...mainSrc.matchAll(/ipcMain\.(?:handle|on)\('([^']+)'/g)].map((m) => m[1]));
+// ⚠⚠ ASK THE RUNNING APP, DO NOT GREP THE SOURCE.
+//
+// This was a regex over `ipcMain.handle('...')`, and it silently missed every handler registered with
+// a TEMPLATE LITERAL. `makeListHandlers(key)` registers `` `${key}:get` `` and friends, so six real
+// channels — categories:get/add/remove, projects:get/add/remove — were invisible to the guard whose
+// entire job is to notice unreachable channels. Measured against the loaded app: 200 channels really
+// registered, 196 seen, and all six of the missing ones were genuine unbridged orphans.
+//
+// A guard with a blind spot is worse than no guard: it reports zero orphans and everyone believes it.
+// Loading main in the harness gives the ACTUAL registration map, so no declaration style can hide.
+const mainChannels = new Set([...loadMain().handlers.keys()]);
 const preloadChannels = new Set([...preloadSrc.matchAll(/ipcRenderer\.(?:invoke|send)\('([^']+)'/g)].map((m) => m[1]));
 const preloadMethods = [...preloadSrc.matchAll(/^\s{2}([A-Za-z0-9_]+):\s*\(/gm)].map((m) => m[1]);
+
+// ⚠⚠ ONE `used()`, SHARED. It was defined twice — once in the dead-method test and once in the
+// anti-vacuity test — so breaking the real one left the guard-of-the-guard computing a healthy answer
+// from its own private copy. Verified by restoring the old self-defeating clause and watching the
+// anti-vacuity test stay green. A check on a check must observe the SAME code, not a sibling of it.
+//
+// `testSrc.includes(`'${m}'`)` used to be in here and made the whole test self-defeating: `testSrc`
+// includes THIS file, `KNOWN_UNUSED` lists those names as quoted strings, so every pinned dead method
+// counted as used, `unused` computed to `[]`, and the pin list was never consulted. Deleting the
+// entire array left the test green. A test seam is a call through the real bridge, not a mention.
+const used = (m) => rendererSrc.includes(`api.${m}`) || rendererSrc.includes(`.${m}(`)
+  || testSrc.includes(`window.api.${m}`);
 
 // Dead bridge methods as of 2026-07-18. Pinned so NEW ones fail rather than quietly joining the pile.
 // Deliberately not deleted in that pass: several belong to phone/AI features that cannot be exercised
@@ -72,8 +95,6 @@ test('every ipcMain handler is reachable — no main-side code a user can never 
 });
 
 test('no NEW dead bridge methods', () => {
-  const used = (m) => rendererSrc.includes(`api.${m}`) || rendererSrc.includes(`.${m}(`)
-    || testSrc.includes(`api.${m}`) || testSrc.includes(`'${m}'`);
   const unused = preloadMethods.filter((m) => !used(m)).sort();
   const added = unused.filter((m) => !KNOWN_UNUSED.includes(m));
   assert.deepEqual(added, [],
@@ -86,4 +107,12 @@ test('the reachability scan is actually finding things (cannot pass vacuously)',
   assert.ok(mainChannels.size > 100, `found the IPC handlers (${mainChannels.size})`);
   assert.ok(preloadMethods.length > 100, `found the bridge methods (${preloadMethods.length})`);
   assert.ok(rendererSrc.length > 100000, 'and the renderer source');
+
+  // ⚠⚠ AND THAT `KNOWN_UNUSED` IS ACTUALLY CONSULTED. The size checks above would still pass while
+  // `unused` computed to `[]` forever — which is exactly the state this file was in. If nothing is
+  // unused, the pin list is decorative and the next dead method joins it unnoticed.
+  const unused = preloadMethods.filter((m) => !used(m));
+  assert.ok(unused.length > 0,
+    '⚠⚠ the dead-method scan finds SOMETHING — if it finds nothing, KNOWN_UNUSED is never consulted');
+  assert.ok(KNOWN_UNUSED.length > 0, 'and the pin list is not empty');
 });

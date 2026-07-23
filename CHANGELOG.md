@@ -7,6 +7,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+_(nothing yet)_
+
+## [0.7.0] — 2026-07-23
+
 ### You set your Projects folder, and filing said you hadn't (2026-07-23)
 
 "Where filed footage goes" was stored in two different settings, and setting one didn't set the

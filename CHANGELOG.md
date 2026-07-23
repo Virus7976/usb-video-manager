@@ -7,6 +7,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+_(nothing yet)_
+
+## [0.8.0] — 2026-07-23
+
 ### You can send footage from your phone now (2026-07-23)
 
 The resumable upload has been built and tested for a while — and there was no way to start one from

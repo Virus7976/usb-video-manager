@@ -62,23 +62,21 @@ test('⚠⚠ Home offers the filing card FIRST, and it is clickable', { skip: !R
   assert.equal(cards[0], 'pwGo', `⚠⚠ filing is the first thing offered — got ${JSON.stringify(cards)}`);
 });
 
-// ⚠⚠ OPEN GAP, RECORDED RATHER THAN HIDDEN — marked `todo` so the suite is honest, not green.
+// ⚠⚠ THIS WAS THE LAST WALL, AND IT IS NOW CLOSED — kept verbatim because the shape recurs.
 //
-// Clicking the card DOES open Organize (`finalize` becomes visible), and the run works when driven
-// through the IPC the screen uses (next test, passing). But the screen's own scan comes back empty:
+// One iteration ago this was a `todo`: the card opened Organize and the screen sat EMPTY, while
+// `window.api.finalizeScan({})` on the same page returned 8 files. Three layers each resolved the
+// source their own way, and only the deepest one had the fallback:
 //
-//     finScan.dir         : none
-//     finScan.files.length: -1   (i.e. no files array populated)
+//     finalize:getSource  -> config.finalizeSource            (nothing else)
+//     openFinalize        -> if (src) finRunScan(); else empty state
+//     finRunScan          -> if (!finScan.dir) return;
+//     finalize:scan       -> finalizeSource || compressed || intake   ← the only one that could cope
 //
-// while `window.api.finalizeScan({})` from the same page returns 8 files. So the screen is not asking
-// the way the IPC answers — it likely needs a source chosen, or scans before the config it depends on
-// is read. That is the LAST wall in this corridor and it is exactly the kind of thing that keeps
-// someone off a screen: it opens, it is empty, and nothing says why.
-//
-// Not fixed this iteration: I ran out of runway after the pending:work resolver fix, and guessing at
-// the finalize screen's scan trigger without probing it is how the last three wrong "findings"
-// happened. Deleting this test would hide a real gap; asserting something weaker would fake it.
-test('⚠⚠⚠ clicking it lands on Organize with the footage already listed', { skip: !RUN, todo: 'the screen opens but its own scan returns empty — see comment' }, async () => {
+// So the screen decided it had nothing to scan, using a narrower answer than the scan itself would
+// have given. All three now ask `organizeSourceDir()`, the one resolver `pending:work` and
+// `finalize:scan` already share.
+test('⚠⚠⚠ clicking it lands on Organize with the footage already listed', { skip: !RUN }, async () => {
   // The corridor: one click should arrive somewhere that can finish the job, not somewhere that
   // asks him to configure something first.
   await app.win.click('#pwGo');

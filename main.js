@@ -8784,7 +8784,22 @@ ipcMain.handle('compress:run', async (evt, payload) => {
   } finally { compressRunning = false; }
 });
 
-ipcMain.handle('finalize:getSource', () => config.finalizeSource || '');
+// ⚠⚠ THE LAST WALL IN THE FILING CORRIDOR. This returned ONLY `config.finalizeSource`, and the
+// Organize screen uses it to decide whether to scan at all:
+//
+//     const src = await window.api.getFinalizeSource();
+//     finScan.dir = src || '';
+//     if (src) finRunScan();          // …else render an empty state
+//     …and finRunScan() itself opens `if (!finScan.dir) return;`
+//
+// So with no explicit source chosen, the screen opened EMPTY — while `finalize:scan` on the very
+// same page returned 8 files, because it resolves the source itself. Measured in the real app:
+// `finScan.dir: none`, `window.api.finalizeScan({})` → 8 files. He clicks the card that says
+// footage is ready, lands on a screen showing nothing, and nothing explains why.
+//
+// It answers with the same ladder everything else uses now, so the card, the screen and the run all
+// agree about where the footage is. `finalize:pickSource` still overrides it whenever he chooses.
+ipcMain.handle('finalize:getSource', () => config.finalizeSource || organizeSourceDir() || '');
 
 ipcMain.handle('finalize:pickSource', async () => {
   const res = await dialog.showOpenDialog(mainWindow, {

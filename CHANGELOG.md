@@ -20,6 +20,14 @@ where. It just asked in a different place.
 Filing now uses your Projects folder when no separate destination is set. If you *have* deliberately
 pointed filing somewhere else, that still wins.
 
+### The Organize screen opens with your footage in it (2026-07-23)
+
+If you hadn't explicitly picked a Compressed folder, Organize opened **empty** — even when the app
+could see your clips perfectly well. Three separate places each worked out where your footage lives,
+and only the deepest one knew how to fall back; the screen gave up before asking it.
+
+They all use the same answer now, so the Home card, the screen it opens, and the run agree.
+
 ### Filing is the first thing Home offers you (2026-07-23)
 
 Your interaction log covers 1,487 clicks over 14 days: 226 face confirmations, 354 typed fields,

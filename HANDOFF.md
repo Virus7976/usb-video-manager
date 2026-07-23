@@ -56,14 +56,11 @@ feature must be shaped like HIS data, and check the CONSUMER before optimising t
 
 ## 4. What to do next — in this order
 
-**0. ⚠ THE LAST WALL IN THE FILING CORRIDOR — start here.** `test/e2e/home-card-to-filed.e2e.mjs`
-carries a `todo` test that documents it: clicking Home's filing card opens Organize, but the screen's
-own scan returns empty (`finScan.dir: none`) while `window.api.finalizeScan({})` from the same page
-returns 8 files. The screen is not asking the way the IPC answers — probably needs a source chosen,
-or scans before reading the config it depends on. Everything else in the corridor now works: the card
-is first, `pending:work` and `finalize:scan` share one source resolver, and `finalize:run` falls back
-to `projectsRoot`. **Probe the screen's scan trigger before changing it.**
-
+**0. ~~The last wall in the filing corridor~~ — CLOSED (`2d16f13`, and the getSource fix).** The whole
+path is now verified end to end in the real app by `test/e2e/home-card-to-filed.e2e.mjs` (4/4): the
+filing card is first on Home, clicking it opens Organize with the footage listed, the run files it
+into the Projects folder he set, and the ledger records it. Everything on that path — `pending:work`,
+`finalize:getSource`, `finalize:scan` — now asks the one `organizeSourceDir()` resolver.
 
 **1. ~~Repair and validate route destinations~~ — DONE (`c6a289e`, `2d94e34`).** The resolve-time repair and the health-check surfacing both landed. Historical detail:
 His two standing filing rules store `dest: "2026/2026 - Client Work/Gourgess Lawns"` while

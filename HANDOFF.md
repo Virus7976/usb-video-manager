@@ -22,7 +22,7 @@ Remotes: `github` (Virus7976/usb-video-manager — also the auto-update release 
 
 ## 2. Where we are
 
-- Suite: **1,707 unit tests passing, 0 failing** · E2E: `npm run test:e2e` (`npm run check`). E2E: `npm run test:e2e`
+- Suite: **1,712 unit tests passing, 0 failing** · E2E: `npm run test:e2e` (`npm run check`). E2E: `npm run test:e2e`
   (Playwright drives the real Electron app; works from WSL).
 - **Never edit `main.js` or `src/renderer.js`** — they are generated. Edit `main-mod/*.js` and
   `src/mod/*.js`, then `npm run bundle`.
@@ -86,8 +86,10 @@ his first successful filing run forks his tree, and he stops trusting the app.
   absence must first be shown to produce the presence".
 - ~~The ffmpeg-missing health check is unreachable~~ — **false.** `if (!ffProbeOk)` is a sibling of
   the `no-projects-root` push, not nested inside it. FEATURES.md #89 is correctly `done`.
-- `ai:health` ignores `advice.kind === 'unset'`, so a fresh machine with a vision model pulled but
-  not selected gets no nudge.
+- ~~`ai:health` ignores `advice.kind === 'unset'`~~ — **REAL, and FIXED.** `visionProblemFor()` now
+  maps both kinds, with distinct wording ("Switch to X" is wrong when nothing is selected). That
+  clears the 2026-07-22 audit backlog; the remaining item is the 5 dead IPC bridges, which are
+  reachable another way and are a deliberate tidy rather than a bug.
 - ~~Phone flow: "Send to Uncompressed" discards main's failure report~~ — **REAL, and FIXED.** It now
   reports partial failure, keeps the failed videos pending (using main's `okDests` to tell them
   apart), leaves the retry button, logs the issue, and distinguishes a cancel from a failure. The

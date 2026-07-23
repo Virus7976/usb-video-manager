@@ -1639,6 +1639,46 @@ ipcMain.handle('subjects:applyMerge', (_e, payload) => {
   return { ok: true, changed, filedChanged, merged: map.size };
 });
 
+// ⚠⚠ `kind: 'unset'` WAS DROPPED ON THE FLOOR — the case a fresh machine is actually in.
+//
+// `visionAdviceInner` reports two different situations:
+//   'upgrade' — a vision model is selected, but a better one is installed
+//   'unset'   — a vision model is INSTALLED and none is selected
+//
+// Only 'upgrade' was turned into a problem card. So someone who has pulled a vision model and never
+// picked one got no nudge at all: AI naming silently does nothing useful, and the health check —
+// whose whole job is "tell him when the AI setup is silently wrong" — says everything is fine.
+//
+// It is 'unset' that a fresh install hits, which is exactly the audience the zero-setup work is for.
+// Extracted as a pure function so both branches are unit-testable; inline in a 200-line health check
+// it could only be verified by reading, which in this project is not evidence.
+function visionProblemFor(advice) {
+  if (!advice || !advice.best) return null;
+  if (advice.kind === 'upgrade') {
+    return {
+      id: 'weak-vision',
+      severity: 'high',
+      title: `Switch to ${advice.best}`,
+      detail: advice.why,
+      fix: 'useVision',
+      fixLabel: `Use ${advice.best}`,
+      arg: advice.best,
+    };
+  }
+  if (advice.kind === 'unset') {
+    return {
+      id: 'no-vision-selected',
+      severity: 'high',
+      title: 'No vision model is selected',
+      detail: `You have ${advice.best} installed, but the app is not set to use anything to LOOK at your footage — so analysing a clip can describe nothing. Pick it and naming starts working.`,
+      fix: 'useVision',
+      fixLabel: `Use ${advice.best}`,
+      arg: advice.best,
+    };
+  }
+  return null;
+}
+
 ipcMain.handle('ai:health', async () => {
   const ai = config.ai || {};
   const problems = [];
@@ -1660,17 +1700,8 @@ ipcMain.handle('ai:health', async () => {
   // 2. A vision model that actually sees what's there.
   let advice = null;
   try { advice = (await visionAdviceInner()) || null; } catch { advice = null; }
-  if (advice && advice.kind === 'upgrade') {
-    problems.push({
-      id: 'weak-vision',
-      severity: 'high',
-      title: `Switch to ${advice.best}`,
-      detail: advice.why,
-      fix: 'useVision',
-      fixLabel: `Use ${advice.best}`,
-      arg: advice.best,
-    });
-  }
+  const visionProblem = visionProblemFor(advice);
+  if (visionProblem) problems.push(visionProblem);
 
   // 3. It has never read the names you already wrote.
   const styles = (ai.styleExamples || []).length;

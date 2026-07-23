@@ -7,6 +7,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### A filing run couldn't overfill your C: drive one folder at a time (2026-07-23)
+
+Filing already refused a run that wouldn't fit — but it checked each destination folder **on its
+own**, against the whole free space. So 47 folders on one drive never added up. Measured on a real
+volume: two folders wanting 575.8 GB each, 959.6 GB free, and the run was allowed to start.
+
+Your 310 clips go into ~47 folders, all on C:, which your own notes call the tight disk. Every
+folder's share is small; the run isn't. It's counted as one run now, and the figure you're shown is
+what the whole thing needs — not one folder's share, which would send you to free up half of what
+you actually need.
+
 ### An unplugged drive no longer looks like "you have nothing" (2026-07-23)
 
 Your archive lives on `L:`, which isn't always connected. When it wasn't, the app couldn't tell the

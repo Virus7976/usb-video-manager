@@ -693,10 +693,27 @@ ipcMain.handle('projects:move', async (_e, payload) => {
       }
       byDir.set(d, (byDir.get(d) || 0) + sz);
     }
+    // ⚠⚠ GROUP BY VOLUME, NOT BY FOLDER — folders on one disk must be checked TOGETHER.
+    //
+    // This checked each destination directory in isolation, so N folders on the same drive each
+    // compared their own share against the WHOLE free space. Measured: two folders on one volume,
+    // each claiming 575.8 GB, against 959.6 GB free — 1,151.5 GB requested, and the run was allowed.
+    // His real shape is 310 clips into 47 folders, all on C:, which is the tight disk.
+    //
+    // `nearestExistingDir` walks up to the first folder that exists, so two not-yet-created
+    // destinations under one root resolve to the same probe — which makes the probe path a good
+    // stand-in for "the same volume" without needing a filesystem id Node does not portably expose.
+    const byVolume = new Map();
     for (const [dir, bytes] of byDir) {
       if (bytes <= 0) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const probe = await nearestExistingDir(dir);
+      byVolume.set(probe, (byVolume.get(probe) || 0) + bytes);
+    }
+    for (const [probeDir, bytes] of byVolume) {
+      if (bytes <= 0) continue;
       try {
-        const st = await fsp.statfs(await nearestExistingDir(dir));
+        const st = await fsp.statfs(probeDir);
         const free = Number(st.bavail) * Number(st.bsize);
         const GB = (n) => `${(n / 1e9).toFixed(1)} GB`;
         if (bytes + 2e9 > free) {

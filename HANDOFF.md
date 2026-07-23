@@ -89,6 +89,15 @@ his first successful filing run forks his tree, and he stops trusting the app.
 - Phone flow: "Send to Uncompressed" discards main's failure report and hides the retry button, so
   failed videos are silently stranded; the done-line counts videos that were never renamed.
 - `phone:applyQueue` guards `ai.facesPending` but not `ai.people`, then marks answers applied anyway.
+  ⚠ **UNVERIFIED — do not treat the audit's repro as confirmed, and do not treat it as disproved.**
+  Two attempts failed to build a probe that reaches the SUCCESS case: with a real
+  `phone-actions.jsonl` in `STORE_DIR` and a seeded `ai.facesPending` cluster, `phone:applyQueue`
+  returns `applied: 1` while `config.ai.people` stays `[]` — so the control never demonstrated a
+  working confirmation, and a failure run therefore proves nothing. Suspect the cluster/action
+  fixture shape (`cropNameOf` reads `thumb`; `savePersonRecord` may need a particular descriptor
+  shape). **Get the control green first** — see the "probe asserting an absence" lesson in AGENTS.md
+  §8. The real repro likely needs a fixture copied from an actual `faces-pending.json` entry rather
+  than a hand-written one.
 - 5 dead IPC bridges are worth deleting rather than wiring (`finalMeta:get`, `intake:get`,
   `feedback:list`, `ai:recallShoot`, `ai:visionAdvice`) — every one is reachable another way.
 

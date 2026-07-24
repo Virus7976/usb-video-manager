@@ -59,7 +59,7 @@ feature must be shaped like HIS data, and check the CONSUMER before optimising t
 **0. ~~FEATURES.md item 14~~ — DONE.** Completed uploads now reach Uncompressed via a Home card.
 
 **1. ~~Repair and validate route destinations~~ — DONE (`c6a289e`, `2d94e34`).** The resolve-time repair and the health-check surfacing both landed. Historical detail:
-His two standing filing rules store `dest: "2026/2026 - Client Work/Gourgess Lawns"` while
+His two standing filing rules store `dest: "2026/2026 - Client Work/a client"` while
 `projectsRoot` is `...\02 - Projects\2026`. `resolveFolderPath` therefore yields
 `.../2026/2026/2026 - Client Work/...` — **117 of 309 clips fork his tree into a duplicate
 `2026\2026\...`**, and the other 154 create bare top-level folders in his year root (`vlog/`, `pov/`,

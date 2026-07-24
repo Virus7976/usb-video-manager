@@ -150,7 +150,7 @@ running app instead, and those six are gone.
 
 ### Your own filing rules were about to fork your Projects tree (2026-07-23)
 
-Both of your standing filing rules point at `2026/2026 - Client Work/Gourgess Lawns`, while your
+Both of your standing filing rules point at `2026/2026 - Client Work/a client`, while your
 Projects folder is already `...\02 - Projects\2026`. So filing would have built
 `...\2026\2026\2026 - Client Work\...` — your year folder twice — right beside the real one.
 **117 of your 309 clips** would have gone there, and the other 154 would have created loose folders

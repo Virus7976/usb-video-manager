@@ -109,7 +109,7 @@ Everything is **offline**. The only network use is talking to your own local Oll
 ## Build from source
 
 ```bash
-git clone https://gitea-gour.jakegour.com/liamgour/USB-Video-Downloader.git
+git clone https://gitea-gour.<you>our.com/liamgour/USB-Video-Downloader.git
 cd USB-Video-Downloader
 npm install
 npm start          # run in dev

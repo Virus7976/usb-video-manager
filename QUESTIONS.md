@@ -154,7 +154,7 @@ checking already exists, and packaged Windows builds work fine from here.
 **The question:** presets (new, 2026-07-23) deliberately exclude every absolute path and all your
 personal data — people, faces, subjects, drafts, the ledger. But they DO include your standing
 filing rules, and a rule is meaningless without its destination folder, so
-`2026 - Client Work/Gourgess Lawns` travels with it. If you send a preset to someone, they learn
+`2026 - Client Work/a client` travels with it. If you send a preset to someone, they learn
 your client names and how you organise them.
 
 **Why it needs you:** filing rules are the single most useful thing in a workflow preset — a preset

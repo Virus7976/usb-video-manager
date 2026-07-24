@@ -75,7 +75,7 @@ no sqlite/postgres/mysql/prisma/drizzle/knex/typeorm/mongo, no `migrations/` fol
 files. Persistence is **hand-rolled JSON files**, all under one folder:
 
 ```
-%APPDATA%\USB SD Auto-Action\        (WSL: /mnt/c/Users/jakeg/AppData/Roaming/USB SD Auto-Action/)
+%APPDATA%\USB SD Auto-Action\        (WSL: /mnt/c/Users/<you>/AppData/Roaming/USB SD Auto-Action/)
 ```
 
 That root is **pinned to `process.env.APPDATA` deliberately, NOT `app.getPath('userData')`**
@@ -136,7 +136,7 @@ does not ship.**
 **Safe backup-before-change for THIS stack** (do this before any store-shape or store-write change):
 copy the whole `%APPDATA%\USB SD Auto-Action\` store dir to a timestamped sibling
 (`…\USB SD Auto-Action.bak-YYYYMMDD-HHMM\`) before running anything that writes, and state in `AGENTS.md`
-where the backup went. From WSL that path is under `/mnt/c/Users/jakeg/AppData/Roaming/`. For code, the
+where the backup went. From WSL that path is under `/mnt/c/Users/<you>/AppData/Roaming/`. For code, the
 backup is git: commit before a risky refactor so `git diff`/revert is a real option.
 
 **Log-and-defer format.** When a rule above blocks you, do not silently skip it and do not ask. Append to
@@ -826,7 +826,7 @@ Three options, none obviously right: **(a)** vendor it (~80 MB on an installer a
 field; **(c)** wizard step. **(b) is the cheapest real fix** and should probably happen regardless.
 
 ### ⚠ DELIBERATELY NOT DONE — the AI prompt example
-The audit's last item was to genericize `"Gourgess Lawns"` in the placement prompt's few-shot example
+The audit's last item was to genericize `"a client"` in the placement prompt's few-shot example
 (03-ai-ollama.js:408, :478). **It is a MEASURED INPUT.** A cosmetic rename of a tool RESULT already
 cost 20 points of accuracy here, 4/4 deterministic ([[usb-app-tool-strings-are-input]]). The prompt
 does say "do not copy its values". Leave it until someone re-measures.
@@ -856,7 +856,7 @@ Four requirements, in his order:
    input** — it is the first thing in this app that arrives from outside.
 
 **Why this is not cosmetic, measured 2026-07-22.** His two standing filing rules store
-`dest: "2026/2026 - Client Work/Gourgess Lawns"` while `projectsRoot` is `...\02 - Projects\2026`.
+`dest: "2026/2026 - Client Work/a client"` while `projectsRoot` is `...\02 - Projects\2026`.
 So `resolveFolderPath` produces `.../2026/2026/2026 - Client Work/...` — **117 of 309 clips would
 fork his tree into a duplicate `2026\2026\...` beside the real one**, and the other 154 create bare
 top-level folders in his year root (`vlog/`, `pov/`, `delete/`). Cause: he clicked the health card's
@@ -1081,7 +1081,7 @@ assertions in the suite.
 - **You CAN build and install locally from WSL** — this is the safe middle ground between "held from
   deploy" and a real release. Bundle in WSL, copy `main.js` / `src/renderer.js` / `src/` /
   `package.json` to the Windows checkout at
-  `C:\Users\jakeg\Downloads\skool-downloader-chrome\usb-auto-action`, then run
+  `C:\Users\<you>\Downloads\skool-downloader-chrome\usb-auto-action`, then run
   `npx electron-builder --win --publish never` **directly** (that checkout predates the `main-mod/`
   split, so `npm run build:win` dies on its missing `prebuild:win` hook). Install with `/S`.
   **Check the app isn't running first** — never replace it mid-scan. This publishes nothing.
